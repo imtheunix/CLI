@@ -1,7 +1,7 @@
-import { createBackgroundJobsRoutes } from './modules/background-jobs/index.js';
 #!/usr/bin/env node
 // Load environment variables before other imports execute.
 import './load-env.js';
+import { createBackgroundJobsRoutes } from './modules/background-jobs/index.js';
 import fs, { promises as fsPromises } from 'fs';
 import path from 'path';
 import os from 'os';
