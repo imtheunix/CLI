@@ -20,7 +20,7 @@
     "runClaudeCli": "プロジェクトディレクトリでClaude CLIを実行して始めましょう"
   },
   "app": {
-    "title": "CloudCLI",
+    "title": "CLI",
     "subtitle": "AIコーディングアシスタント"
   },
   "sessions": {
@@ -72,12 +72,7 @@
     "save": "保存",
     "delete": "削除",
     "rename": "名前の変更",
-    "joinCommunity": "コミュニティに参加",
-    "reportIssue": "問題を報告",
     "starOnGithub": "GitHubでスター"
-  },
-  "branding": {
-    "openSource": "オープンソース"
   },
   "status": {
     "active": "アクティブ",
@@ -121,12 +116,7 @@
     "forkSessionError": "このセッションを分岐できませんでした。もう一度お試しください。",
     "deleteSessionsPartialFailure": "{{total}}件中{{count}}件のセッションを削除できませんでした。もう一度お試しください。"
   },
-  "version": {
-    "updateAvailable": "アップデートあり",
-    "restartRequired": "更新が適用されていません。サーバーを再起動してください"
-  },
   "search": {
-    "modeProjects": "プロジェクト",
     "modeConversations": "会話",
     "modeMore": "その他"
   },
@@ -149,5 +139,8 @@
     "selectedSessions": "選択した{{count}}件のセッション",
     "archiveSessions": "{{count}}件のセッションをアーカイブ",
     "archiveSessionsNotice": "アーカイブすると、セッションはアクティブな一覧から外れますが、履歴は保持されます。"
+  },
+  "branding": {
+    "openSource": "CLI · a modification of CloudCLI v1.37.5 - Open Source"
   }
 }

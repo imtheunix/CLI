@@ -197,6 +197,10 @@ const pluginAssetPath = (pluginName: string, assetFile: string) =>
 // import a named method instead of assembling URLs of their own.
 
 export const api = {
+  backgroundJobs: {
+    list: () => authenticatedFetch('/api/background-jobs'),
+    detail: (id: string) => authenticatedFetch(`/api/background-jobs/${encodeURIComponent(id)}`),
+  },
   // Auth endpoints (no token required)
   auth: {
     status: () => fetch('/api/auth/status'),
@@ -313,22 +317,6 @@ export const api = {
   getFiles: (projectId: string, options: ApiRequestOptions = {}) =>
     get(`/api/file-tree/projects/${projectId}/files${query({ respectGitignore: true })}`, options),
 
-  // File operations
-  createFile: (
-    projectId: string,
-    { path, type, name }: { path: string; type: string; name: string },
-  ) => post(`/api/file-tree/projects/${projectId}/files/create`, { path, type, name }),
-
-  renameFile: (projectId: string, { oldPath, newName }: { oldPath: string; newName: string }) =>
-    put(`/api/file-tree/projects/${projectId}/files/rename`, { oldPath, newName }),
-
-  deleteFile: (projectId: string, { path, type }: { path: string; type: string }) =>
-    del(`/api/file-tree/projects/${projectId}/files`, { path, type }),
-
-  // Uploads with a progress bar go through XMLHttpRequest, which needs the URL.
-  uploadFilesUrl: (projectId: string) =>
-    `/api/file-tree/projects/${encodeURIComponent(projectId)}/files/upload`,
-
   // Browse filesystem for project suggestions
   browseFilesystem: (dirPath: string | null = null) =>
     get(`/api/file-tree/browse-filesystem${query({ path: dirPath })}`),
@@ -336,83 +324,6 @@ export const api = {
   createFolder: (folderPath: string) => post('/api/file-tree/create-folder', { path: folderPath }),
 
   // Git endpoints. The `project` param carries the DB projectId post-migration.
-  git: {
-    status: (projectId: string, options: ApiRequestOptions = {}) =>
-      get(`/api/git/status${query({ project: projectId })}`, options),
-    diff: (projectId: string, filePath: string, options: ApiRequestOptions = {}) =>
-      get(`/api/git/diff${query({ project: projectId, file: filePath })}`, options),
-    commitDiff: (projectId: string, commit: string) =>
-      get(`/api/git/commit-diff${query({ project: projectId, commit })}`),
-    fileWithDiff: (projectId: string, filePath: string) =>
-      get(`/api/git/file-with-diff${query({ project: projectId, file: filePath })}`),
-    branches: (projectId: string, options: ApiRequestOptions = {}) =>
-      get(`/api/git/branches${query({ project: projectId })}`, options),
-    branchDiff: (projectId: string, base: string, options: ApiRequestOptions = {}) =>
-      get(`/api/git/branch-diff${query({ project: projectId, base })}`, options),
-    // `oldPath` is the pre-rename path of a renamed file so the server can diff the rename itself.
-    branchDiffFile: (
-      projectId: string,
-      base: string,
-      filePath: string,
-      oldPath?: string,
-      options: ApiRequestOptions = {},
-    ) => get(`/api/git/branch-diff/file${query({ project: projectId, base, file: filePath, oldPath })}`, options),
-    remoteStatus: (projectId: string) =>
-      get(`/api/git/remote-status${query({ project: projectId })}`),
-    commits: (
-      projectId: string,
-      { limit }: { limit?: number } = {},
-      options: ApiRequestOptions = {},
-    ) => get(`/api/git/commits${query({ project: projectId, limit })}`, options),
-    checkout: (projectId: string, branch: string) =>
-      post('/api/git/checkout', { project: projectId, branch }),
-    createBranch: (projectId: string, branch: string) =>
-      post('/api/git/create-branch', { project: projectId, branch }),
-    deleteBranch: (projectId: string, branch: string, force = false) =>
-      post('/api/git/delete-branch', { project: projectId, branch, force }),
-    fetch: (projectId: string) => post('/api/git/fetch', { project: projectId }),
-    pull: (projectId: string) => post('/api/git/pull', { project: projectId }),
-    push: (projectId: string) => post('/api/git/push', { project: projectId }),
-    publish: (projectId: string, branch: string) =>
-      post('/api/git/publish', { project: projectId, branch }),
-    discard: (projectId: string, file: string) =>
-      post('/api/git/discard', { project: projectId, file }),
-    deleteUntracked: (projectId: string, file: string) =>
-      post('/api/git/delete-untracked', { project: projectId, file }),
-    stage: (projectId: string, files: string[]) =>
-      post('/api/git/stage', { project: projectId, files }),
-    unstage: (projectId: string, files: string[]) =>
-      post('/api/git/unstage', { project: projectId, files }),
-    commit: (projectId: string, message: string, files: string[]) =>
-      post('/api/git/commit', { project: projectId, message, files }),
-    initialCommit: (projectId: string) => post('/api/git/initial-commit', { project: projectId }),
-    init: (projectId: string) => post('/api/git/init', { project: projectId }),
-    revertLocalCommit: (projectId: string) =>
-      post('/api/git/revert-local-commit', { project: projectId }),
-    generateCommitMessage: (projectId: string, files: string[], provider: string) =>
-      post('/api/git/generate-commit-message', { project: projectId, files, provider }),
-  },
-
-  worktrees: {
-    list: (projectId: string) => get(`/api/worktrees${query({ project: projectId })}`),
-    create: (
-      projectId: string,
-      { branch, baseBranch }: { branch: string; baseBranch: string | null },
-    ) => post('/api/worktrees/create', { project: projectId, branch, baseBranch }),
-    open: (projectId: string, worktreePath: string) =>
-      post('/api/worktrees/open', { project: projectId, worktreePath }),
-    merge: (
-      projectId: string,
-      worktreePath: string,
-      options: { squash?: boolean; message?: string; removeAfterMerge?: boolean },
-    ) => post('/api/worktrees/merge', { project: projectId, worktreePath, ...options }),
-    remove: (
-      projectId: string,
-      worktreePath: string,
-      options: { force?: boolean; deleteBranch?: boolean },
-    ) => post('/api/worktrees/remove', { project: projectId, worktreePath, ...options }),
-  },
-
   // Provider (coding agent) endpoints — models, capabilities, sessions, MCP, skills.
   providers: {
     capabilities: () => get('/api/providers/capabilities'),
@@ -607,9 +518,7 @@ export const api = {
     tts: (text: string, options: ApiRequestOptions = {}) => post('/api/voice/tts', { text }, options),
   },
 
-  system: {
-    update: () => post('/api/system/update'),
-  },
+
 };
 
 // ---------------------------
@@ -618,7 +527,7 @@ export const api = {
 
 /**
  * Builds a URL against the user's own OpenAI-compatible voice endpoint. Private to the
- * voice helpers below, which bypass the CloudCLI proxy when a base URL is configured.
+ * voice helpers below, which bypass the CLI proxy when a base URL is configured.
  */
 function voiceDirectUrl(baseUrl: string, path: string): string {
   return `${baseUrl.replace(/\/$/, '')}${path}`;
@@ -634,7 +543,7 @@ export function voiceConfigSignature(): string {
 
 /**
  * Transcribes recorded audio, posting directly to the user's configured OpenAI-compatible
- * endpoint when one is set and otherwise going through the CloudCLI voice proxy.
+ * endpoint when one is set and otherwise going through the CLI voice proxy.
  */
 export function transcribeVoice(blob: Blob, filename: string): Promise<Response> {
   const config = readVoiceConfig();
@@ -656,7 +565,7 @@ export function transcribeVoice(blob: Blob, filename: string): Promise<Response>
 
 /**
  * Synthesizes speech for the given text, using the user's configured OpenAI-compatible
- * endpoint when one is set and otherwise the CloudCLI voice proxy.
+ * endpoint when one is set and otherwise the CLI voice proxy.
  */
 export function synthesizeVoice(text: string, signal: AbortSignal): Promise<Response> {
   const config = readVoiceConfig();
@@ -680,3 +589,9 @@ export function synthesizeVoice(text: string, signal: AbortSignal): Promise<Resp
 
   return api.voice.tts(text, { headers: voiceConfigHeaders(), signal });
 }
+
+/** Plans uses this proxy so service-account credentials never reach the browser. */
+export const plansApi = {
+  usage: () => authenticatedFetch('/api/plans/usage'),
+  history: (plan: string) => authenticatedFetch(`/api/plans/usage/history?${new URLSearchParams({ plan, days: '7' })}`),
+};

@@ -746,3 +746,29 @@ test('other shells and initial commands only get the COLORFGBG hint', () => {
     );
   });
 });
+
+test('shell picker launches interactive shells and independent agent PTYs', () => {
+  const launches: { command: string; args: string[]; cwd: string }[] = [];
+  const processes: ReturnType<typeof createFakePty>[] = [];
+  for (const target of ['workstation', 'archsv', 'claude', 'codex', 'agy']) {
+    const socket = createFakeSocket();
+    const terminal = createFakePty();
+    processes.push(terminal);
+    handleShellConnection(socket as never, {
+      resolveProviderSessionId: () => null,
+      spawnPty: ((command: string, args: string[], options: { cwd: string }) => {
+        launches.push({ command, args, cwd: options.cwd });
+        return terminal;
+      }) as never,
+    });
+    socket.emit('message', JSON.stringify({ type: 'init', projectPath: process.cwd(), sessionId: 'picker-session', provider: 'claude', launchTarget: target }));
+  }
+  assert.equal(launches.length, 5);
+  assert.deepEqual(launches[0].args, ['-c', 'exec bash --login -i']);
+  assert.equal(launches[0].cwd, path.join(os.homedir(), 'Tribeira'));
+  assert.deepEqual(launches[1].args, ['-c', "exec ssh -t archsv 'exec bash --login -i'"]);
+  assert.match(launches[2].args[1], /^claude/);
+  assert.equal(launches[3].args[1], 'codex');
+  assert.equal(launches[4].args[1], 'exec agy');
+  processes.forEach((terminal) => terminal.emitExit());
+});

@@ -1,14 +1,12 @@
-import React, { useCallback, useEffect, type Dispatch, type SetStateAction, useState } from 'react';
+import React, { useCallback, useEffect, type Dispatch, type SetStateAction } from 'react';
 
 import { ChatInterface } from '@/modules/chat';
-import { FileTree } from '@/modules/file-tree';
 import { StandaloneShell } from '@/modules/standalone-shell';
-import { GitPanel } from '@/modules/git-panel';
 import { PluginTabContent } from '@/modules/plugins';
 import { BrowserUsePanel, useBrowserUseEnabled } from '@/modules/browser-use';
 import { usePaletteOpsRegister } from '@/modules/command-palette';
 import { TaskMasterPanel, useTaskMasterProjectSync, useTasksSettings } from '@/modules/task-master';
-import type { AppTab, DirectoryRevealRequest, Project, ProjectSession, SessionEstablishedContext, SessionNavigationOptions, SettingsMainTab } from '@/shared/types';
+import type { AppTab, Project, ProjectSession, SessionEstablishedContext, SessionNavigationOptions, SettingsMainTab } from '@/shared/types';
 import { useUiPreferences } from '@/shared/context/UiPreferencesContext';
 import { useFileOpenResolver } from '@/modules/project-workspace/hooks/useFileOpenResolver';
 import { EditorSidebar, useEditorSidebar } from '@/modules/code-editor';
@@ -31,15 +29,11 @@ type WorkspaceMainProps = {
   onShowSettings: (tab?: SettingsMainTab) => void;
   externalMessageUpdate: number;
   newSessionTrigger: number;
-  /** Switches the app to another project — used by the git panel's Worktrees view. */
-  onProjectSelect: (project: Project) => void;
-  /** Silently re-syncs the sidebar project list after worktree projects change. */
-  onProjectsRefresh: () => void;
   /** Persists a new title for a session; resolves false when the backend refuses it. Used by the header's inline rename. */
   onRenameSession: (sessionId: string, summary: string) => Promise<boolean>;
 };
 
-/** Rendered by ProjectMainRegion to show the selected project's active tab: chat, files, shell, git, tasks, browser or a plugin. */
+/** Rendered by ProjectMainRegion to show the selected project's active tab: chat, shell, tasks, browser or a plugin. */
 function WorkspaceMain({
   selectedProject,
   selectedSession,
@@ -55,8 +49,6 @@ function WorkspaceMain({
   onShowSettings,
   externalMessageUpdate,
   newSessionTrigger,
-  onProjectSelect,
-  onProjectsRefresh,
   onRenameSession,
 }: WorkspaceMainProps) {
   const preferences = useUiPreferences();
@@ -68,7 +60,6 @@ function WorkspaceMain({
   useTaskMasterProjectSync(selectedProject);
   // The folder an in-chat `path/` reference asked to reveal. Held as an object
   // so that re-clicking the same folder is a new request the tree acts on.
-  const [revealDirectory, setRevealDirectory] = useState<DirectoryRevealRequest | null>(null);
 
   const shouldShowTasksTab = Boolean(tasksEnabled && isTaskMasterInstalled);
   const shouldShowBrowserTab = browserUseEnabled;
@@ -114,7 +105,7 @@ function WorkspaceMain({
 
   const openFile = useCallback((filePath: string) => {
     if (handleFileOpen(filePath)) {
-      setActiveTab('files');
+      setActiveTab('chat');
     }
   }, [handleFileOpen, setActiveTab]);
 
@@ -123,11 +114,7 @@ function WorkspaceMain({
     resolvedFileOpen(filePath, undefined, line);
   }, [resolvedFileOpen]);
 
-  // Directories cannot be read as text: reveal them in the file tree instead.
-  const openDirectory = useCallback((directoryPath: string) => {
-    setActiveTab('files');
-    setRevealDirectory({ path: directoryPath });
-  }, [setActiveTab]);
+  const openDirectory = useCallback(() => undefined, []);
 
   // Stable arguments keep usePaletteOpsRegister's effect from tearing down and
   // rewriting the whole palette registry on every render.
@@ -179,15 +166,6 @@ function WorkspaceMain({
             </WorkspaceErrorBoundary>
           </div>
 
-          {activeTab === 'files' && (
-            <div className="h-full overflow-hidden">
-              <FileTree
-                selectedProject={selectedProject}
-                onFileOpen={handleFileOpen}
-                revealDirectory={revealDirectory}
-              />
-            </div>
-          )}
 
           {activeTab === 'shell' && (
             <div className="h-full w-full overflow-hidden">
@@ -200,17 +178,6 @@ function WorkspaceMain({
             </div>
           )}
 
-          {activeTab === 'git' && (
-            <div className="h-full overflow-hidden">
-              <GitPanel
-                selectedProject={selectedProject}
-                isMobile={isMobile}
-                onFileOpen={handleFileOpen}
-                onProjectSelect={onProjectSelect}
-                onProjectsRefresh={onProjectsRefresh}
-              />
-            </div>
-          )}
 
           {shouldShowTasksTab && <TaskMasterPanel isVisible={activeTab === 'tasks'} />}
 
@@ -243,7 +210,7 @@ function WorkspaceMain({
           onToggleEditorExpand={handleToggleEditorExpand}
           onUnsavedChangesChange={handleUnsavedChangesChange}
           projectPath={selectedProject.path}
-          fillSpace={activeTab === 'files'}
+          fillSpace={false}
         />
       </div>
     </div>

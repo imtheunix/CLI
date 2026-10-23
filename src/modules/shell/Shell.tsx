@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import '@xterm/xterm/css/xterm.css';
-import type { Project, ProjectSession } from '@/shared/types';
+import type { Project, ProjectSession, ShellTarget } from '@/shared/types';
 import { useShellRuntime } from '@/modules/shell/hooks/useShellRuntime';
 import { sendSocketMessage } from '@/modules/shell/utils/socket';
 import { getSessionTitle } from '@/shared/utils';
@@ -26,6 +26,7 @@ const PROMPT_MIN_OPTIONS = 2;
 type CliPromptOption = { number: string; label: string };
 
 type ShellProps = {
+  launchTarget?: ShellTarget;
   selectedProject?: Project | null;
   selectedSession?: ProjectSession | null;
   initialCommand?: string | null;
@@ -38,6 +39,7 @@ type ShellProps = {
 
 /** Exported through the shell barrel: the standalone-shell module renders it as a full-page terminal and the task-master module embeds it in its setup modal to run TaskMaster's init command. */
 export default function Shell({
+  launchTarget,
   selectedProject = null,
   selectedSession = null,
   initialCommand = null,
@@ -71,6 +73,7 @@ export default function Shell({
     connectToShell,
     disconnectFromShell,
   } = useShellRuntime({
+    launchTarget,
     selectedProject,
     selectedSession,
     initialCommand,
@@ -216,9 +219,9 @@ export default function Shell({
     }, SHELL_RESTART_DELAY_MS);
   }, []);
 
-  const shellProvider = isPlainShell
+  const shellProvider = launchTarget ?? (isPlainShell
     ? 'plain-shell'
-    : selectedSession?.__provider || readSelectedProvider();
+    : selectedSession?.__provider || readSelectedProvider());
 
   const handleToggleBypassPermissions = useCallback(() => {
     setBypassPermissions((enabled) => !enabled);

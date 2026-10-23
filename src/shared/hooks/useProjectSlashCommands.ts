@@ -65,11 +65,8 @@ const mapSkillToSlashCommand = (skill: ProviderSkill): SlashCommand => ({
 });
 
 /**
- * Used by the chat module (composer `/` menu) and the quick-settings-panel
- * module (Commands tab) to load the slash commands — built-in, provider skills
- * and custom — available to a project. Both surfaces must offer the same list,
- * so the fetch and mapping live here; ordering and filtering stay with the
- * consumer. Returns the list in built-in → skills → custom order. A consumer
+ * Used by the chat composer to load built-in commands, provider skills and
+ * custom commands available to a project. Returns the list in built-in → skills → custom order. A consumer
  * that only shows the list sometimes passes `enabled: false` meanwhile so
  * project switches do not cost a second round-trip; re-enabling refetches.
  */

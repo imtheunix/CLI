@@ -7,7 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 /**
- * Installs the versioned local server runtime used by CloudCLI Desktop.
+ * Installs the versioned local server runtime used by CLI Desktop.
  *
  * Server bundles are cached under:
  *   ~/.cloudcli/server/<version>/dist-server/server/index.js

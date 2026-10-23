@@ -164,15 +164,15 @@ test('a queued message round-trips alongside the draft text', async () => {
   store.writeQueuedMessage('session-a', { content: 'send this next', attachments: [] });
 
   assert.equal(store.readDraftText('session-a'), 'still editing');
-  assert.deepEqual(store.readQueuedMessage('session-a'), {
-    content: 'send this next',
-    attachments: [],
-  });
+  const queued = store.readQueuedMessage('session-a');
+  assert.equal(queued?.content, 'send this next');
+  assert.deepEqual(queued?.attachments, []);
+  assert.ok(queued?.id);
   assert.equal(savedDrafts.length, 1, 'queue actions persist without waiting for the draft debounce');
   assert.deepEqual(savedDrafts, [{
     scope: 'session-a',
     text: 'still editing',
-    queuedMessage: { content: 'send this next', attachments: [] },
+    queuedMessage: { items: [queued], paused: false },
   }]);
 });
 
@@ -228,4 +228,16 @@ test('reset clears the drafts so the next user does not see them', async () => {
 
   assert.equal(store.readDraftText('session-a'), '');
   assert.equal(localStorage.getItem('chat-drafts'), null);
+});
+
+test('multiple queued items retain order, attachments and session scope across a page reload', async () => {
+  const store = await loadStore();
+  store.writeQueuedMessage('session-a', { id: 'one', content: 'first', attachments: [{ name: 'notes.txt' }] });
+  store.writeQueuedMessage('session-a', { id: 'two', content: 'second' });
+  store.writeQueuedMessage('session-b', { id: 'three', content: 'other session' });
+  const restored = await loadStore();
+  assert.deepEqual(restored.readQueuedMessages('session-a').map((item) => item.content), ['first', 'second']);
+  assert.deepEqual(restored.readQueuedMessages('session-a')[0].attachments, [{ name: 'notes.txt' }]);
+  assert.equal(restored.readQueuedMessages('session-b')[0].content, 'other session');
+  assert.equal(savedDrafts.length, 3, 'each queue action is immediately persisted');
 });

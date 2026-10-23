@@ -2,7 +2,7 @@ import { memo, useCallback, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { useDeviceSettings } from '@/shared/hooks/useDeviceSettings';
-import { useVersionCheck } from '@/shared/hooks/useVersionCheck';
+
 import { useUiPreferences, useSetUiPreference } from '@/shared/context/UiPreferencesContext';
 import { useSidebarController } from '@/modules/sidebar/hooks/useSidebarController';
 import { useTaskMaster, useTasksSettings } from '@/modules/task-master';
@@ -14,6 +14,7 @@ import SidebarContent from '@/modules/sidebar/SidebarContent';
 import SidebarModals from '@/modules/sidebar/SidebarModals';
 
 type SidebarProps = {
+  isVisible?: boolean;
   projects: Project[];
   selectedProject: Project | null;
   selectedSession: ProjectSession | null;
@@ -43,6 +44,7 @@ type TaskMasterSidebarContext = {
 
 /** Exported through the sidebar barrel; the project-workspace module renders it as the app's project and session navigation panel. */
 function Sidebar({
+  isVisible = true,
   projects,
   selectedProject,
   selectedSession,
@@ -64,10 +66,6 @@ function Sidebar({
 }: SidebarProps) {
   const { t } = useTranslation(['sidebar', 'common']);
   const { isPWA } = useDeviceSettings({ trackMobile: false });
-  const { updateAvailable, restartRequired, latestVersion, currentVersion, releaseInfo, installMode } = useVersionCheck(
-    'siteboon',
-    'claudecodeui',
-  );
   const preferences = useUiPreferences();
   const setPreference = useSetUiPreference();
   const { sidebarVisible } = preferences;
@@ -97,7 +95,7 @@ function Sidebar({
     runningSessionsCount,
     deletingProjects,
     pendingDeletion,
-    showVersionModal,
+
     filteredProjects,
     archivedProjects,
     archivedSessions,
@@ -145,7 +143,7 @@ function Sidebar({
     setShowNewProject,
     setSearchFilter,
     setPendingDeletion,
-    setShowVersionModal,
+
   } = useSidebarController({
     projects,
     selectedProject,
@@ -251,12 +249,7 @@ function Sidebar({
         onConfirmDeleteProject={confirmDeleteProject}
         onConfirmDeleteSession={confirmDeleteSession}
         onConfirmDeleteSessions={confirmDeleteSessions}
-        showVersionModal={showVersionModal}
-        onCloseVersionModal={() => setShowVersionModal(false)}
-        releaseInfo={releaseInfo}
-        currentVersion={currentVersion}
-        latestVersion={latestVersion}
-        installMode={installMode}
+
         t={t}
       />
 
@@ -264,14 +257,13 @@ function Sidebar({
         <SidebarCollapsed
           onExpand={handleExpandSidebar}
           onShowSettings={onShowSettings}
-          updateAvailable={updateAvailable}
-          restartRequired={restartRequired}
-          onShowVersionModal={() => setShowVersionModal(true)}
+
           t={t}
         />
       ) : (
         <>
         <SidebarContent
+            isVisible={isVisible}
             isPWA={isPWA}
             isMobile={isMobile}
             isLoading={isLoading}
@@ -343,12 +335,7 @@ function Sidebar({
             isRefreshing={isRefreshing}
             onCreateProject={() => setShowNewProject(true)}
             onCollapseSidebar={handleCollapseSidebar}
-            updateAvailable={updateAvailable}
-            restartRequired={restartRequired}
-            releaseInfo={releaseInfo}
-            latestVersion={latestVersion}
-            currentVersion={currentVersion}
-            onShowVersionModal={() => setShowVersionModal(true)}
+
             onShowSettings={onShowSettings}
             projectListProps={projectListProps}
             t={t}

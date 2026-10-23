@@ -1,3 +1,5 @@
+CLI is a modified version of CloudCLI (siteboon/claudecodeui), AGPL-3.0-or-later
+
 <div align="center">
  <img src="public/logo.svg" alt="CloudCLI UI" width="64" height="64">
  <h1>Cloud CLI (aka Claude Code UI)</h1>
@@ -275,3 +277,24 @@ CloudCLI UI - (https://cloudcli.ai).
 <div align="center">
  <strong>Made with care for the Claude Code, Cursor and Codex community.</strong>
 </div>
+
+## CLI workstation edition
+
+The sidebar opens on Sessions (recent conversations with workspace labels), with Running and Archive filters. Select a session to resume it, or use “New session in workspace” to start in an existing directory; the new-workspace button still supports starting a session in a different directory. Plans replaces the Projects tab. Chat, the inline file editor, shell, and push notifications remain available.
+
+Plans reads own-account Claude, ChatGPT, and Google quotas from TRIPAM. Set these **server-only** environment variables in `.env` or the service environment, then restart the server:
+
+```dotenv
+TOKEN_URL=https://your-identity-provider/realms/your-realm/protocol/openid-connect/token
+TRIPAM_PLANS_CLIENT_ID=tribeiracli-plans
+TRIPAM_PLANS_CLIENT_SECRET=replace-with-service-account-secret
+TRIPAM_API_URL=https://your-tripam-api
+```
+
+The OAuth client must use client credentials and have permission to read `/api/plans/usage` and `/api/plans/usage/history`. `TRIPAM_API_URL` is the origin/base prefix before `/api`; no browser TRIPAM token is needed. CLI protects `/api/plans/usage` and `/api/plans/usage/history?plan=claude&days=7` with its existing authentication. Tokens stay in server memory until expiry (with a 30-second margin); concurrent requests share the token request. Missing configuration displays “Plans is not configured.” Readings and history refresh every 60 seconds while Plans is visible; history failure leaves the latest reading available.
+
+Removed UI: Projects, Files, Source Control, Git settings, community/report/star links, plugin recommendations, hosted upsells, and release/update prompts. Git, worktree, self-update, and file-panel create/rename/delete/upload endpoints return JSON 404. The project/session APIs remain for navigation and resume. File listing, content, save, directory browsing and folder creation remain for chat file mentions, attachments, inline editing, and workspace selection. Plugin installation and updating remain explicit user actions; there is no automatic upstream release check.
+
+Theme mapping follows `tribeira-design/src/tokens/tokens.css`: graphite `#0e0f11`, surfaces `#15171a`/`#1c1f23`, text `#eceef0`, steel `#a3abb5`, orange `#ff6b1a`, zero corner radius, Inter/system sans and JetBrains Mono/system monospace. Buttons use black/white action colors; focus and selection use orange. Light surfaces are derived from the steel palette because the reference publishes only dark color tokens. Fonts use local/system fallbacks without Google Fonts calls. The TCLI monogram assets are original to this modification; no third-party logo asset was copied.
+
+Git identity configuration and `/api/user/git-config` remain for first-run onboarding. Provider CLIs can still use Git from chat and shell; removing Source Control removes the dedicated GUI and its API surface.

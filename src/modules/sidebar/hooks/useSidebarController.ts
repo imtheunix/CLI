@@ -108,8 +108,7 @@ export function useSidebarController({
   // state: nothing renders from it, it only stops a second confirmation of the
   // same rows (still on screen until the first settles) from sending them again.
   const sessionIdsBeingDeletedRef = useRef<Set<string>>(new Set());
-  const [showVersionModal, setShowVersionModal] = useState(false);
-  const [searchMode, setSearchMode] = useState<SidebarSearchMode>('projects');
+  const [searchMode, setSearchMode] = useState<SidebarSearchMode>('conversations');
   const [conversationResults, setConversationResults] = useState<ConversationSearchResults | null>(null);
   const [isSearching, setIsSearching] = useState(false);
   const [searchProgress, setSearchProgress] = useState<SearchProgress | null>(null);
@@ -1255,7 +1254,7 @@ export function useSidebarController({
     deletingProjects,
     loadingMoreProjects,
     pendingDeletion,
-    showVersionModal,
+
     filteredProjects,
     runningSessionsCount,
     archivedProjects: filteredArchivedProjects,
@@ -1318,6 +1317,6 @@ export function useSidebarController({
     }, []),
     setSearchFilter,
     setPendingDeletion,
-    setShowVersionModal,
+
   };
 }

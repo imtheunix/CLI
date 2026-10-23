@@ -20,7 +20,7 @@
     "runClaudeCli": "Запустите Claude CLI в каталоге проекта для начала работы"
   },
   "app": {
-    "title": "CloudCLI",
+    "title": "CLI",
     "subtitle": "Интерфейс AI помощника для программирования"
   },
   "sessions": {
@@ -76,12 +76,7 @@
     "save": "Сохранить",
     "delete": "Удалить",
     "rename": "Переименовать",
-    "joinCommunity": "Присоединиться к сообществу",
-    "reportIssue": "Сообщить о проблеме",
     "starOnGithub": "Звезда на GitHub"
-  },
-  "branding": {
-    "openSource": "Открытый исходный код"
   },
   "status": {
     "active": "Активен",
@@ -128,12 +123,7 @@
     "deleteSessionsPartialFailure_many": "Не удалось удалить {{count}} сеансов из {{total}}. Попробуйте снова.",
     "deleteSessionsPartialFailure_other": "Не удалось удалить {{count}} сеансов из {{total}}. Попробуйте снова."
   },
-  "version": {
-    "updateAvailable": "Доступно обновление",
-    "restartRequired": "Обновление установлено — перезапустите сервер для применения"
-  },
   "search": {
-    "modeProjects": "Проекты",
     "modeConversations": "Разговоры",
     "modeMore": "Ещё",
     "conversationsPlaceholder": "Поиск в разговорах...",
@@ -185,5 +175,8 @@
     "archiveSessionsNotice_few": "Архивирование убирает сеансы из активного списка, сохраняя их историю.",
     "archiveSessionsNotice_many": "Архивирование убирает сеансы из активного списка, сохраняя их историю.",
     "archiveSessionsNotice_other": "Архивирование убирает сеансы из активного списка, сохраняя их историю."
+  },
+  "branding": {
+    "openSource": "CLI · a modification of CloudCLI v1.37.5 - Open Source"
   }
 }

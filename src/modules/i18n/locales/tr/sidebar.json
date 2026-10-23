@@ -20,7 +20,7 @@
     "runClaudeCli": "Başlamak için bir proje dizininde Claude CLI çalıştır"
   },
   "app": {
-    "title": "CloudCLI",
+    "title": "CLI",
     "subtitle": "AI kodlama asistanı arayüzü"
   },
   "sessions": {
@@ -74,12 +74,7 @@
     "save": "Kaydet",
     "delete": "Sil",
     "rename": "Yeniden Adlandır",
-    "joinCommunity": "Topluluğa Katıl",
-    "reportIssue": "Sorun Bildir",
     "starOnGithub": "GitHub'da Yıldızla"
-  },
-  "branding": {
-    "openSource": "Açık Kaynak"
   },
   "status": {
     "active": "Aktif",
@@ -124,12 +119,7 @@
     "deleteSessionsPartialFailure_one": "{{total}} oturumdan {{count}} tanesi silinemedi. Lütfen tekrar dene.",
     "deleteSessionsPartialFailure_other": "{{total}} oturumdan {{count}} tanesi silinemedi. Lütfen tekrar dene."
   },
-  "version": {
-    "updateAvailable": "Güncelleme mevcut",
-    "restartRequired": "Güncelleme yüklendi — uygulamak için sunucuyu yeniden başlatın"
-  },
   "search": {
-    "modeProjects": "Projeler",
     "modeConversations": "Konuşmalar",
     "modeMore": "Daha fazla",
     "conversationsPlaceholder": "Konuşmalarda ara...",
@@ -167,5 +157,8 @@
     "archiveSessions_other": "{{count}} oturumu arşivle",
     "archiveSessionsNotice_one": "Arşivleme, oturumu etkin listeden çıkarır ancak geçmişini korur.",
     "archiveSessionsNotice_other": "Arşivleme, oturumları etkin listeden çıkarır ancak geçmişlerini korur."
+  },
+  "branding": {
+    "openSource": "CLI · a modification of CloudCLI v1.37.5 - Open Source"
   }
 }

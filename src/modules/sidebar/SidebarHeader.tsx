@@ -3,9 +3,8 @@ import type { TFunction } from 'i18next';
 
 import { Button, Input } from '@/shared/ui';
 import { CLOUDCLI_WORDMARK_FONT_FAMILY } from '@/shared/constants';
-import { IS_PLATFORM } from '@/shared/utils';
+
 import type { SidebarSearchMode } from '@/shared/types';
-import GitHubStarBadge from '@/modules/sidebar/GitHubStarBadge';
 import SidebarModeTabs from '@/modules/sidebar/SidebarModeTabs';
 
 const MOD_KEY =
@@ -54,11 +53,7 @@ function LogoBlock({ t }: { t: TFunction }) {
 export default function SidebarHeader({
   isPWA,
   isMobile,
-  isLoading,
-  projectsCount,
   runningSessionsCount,
-  archivedSessionsCount,
-  isArchivedSessionsLoading,
   searchFilter,
   onSearchFilterChange,
   onClearSearchFilter,
@@ -70,7 +65,6 @@ export default function SidebarHeader({
   onCollapseSidebar,
   t,
 }: SidebarHeaderProps) {
-  const showSearchTools = (projectsCount > 0 || runningSessionsCount > 0 || archivedSessionsCount > 0 || isArchivedSessionsLoading) && !isLoading;
   const searchPlaceholder = searchMode === 'conversations'
     ? t('search.conversationsPlaceholder')
     : searchMode === 'archived'
@@ -87,17 +81,7 @@ export default function SidebarHeader({
         style={{}}
       >
         <div className="flex items-center justify-between gap-2">
-          {IS_PLATFORM ? (
-            <a
-              href="https://cloudcli.ai/dashboard"
-              className="flex min-w-0 items-center gap-2.5 transition-opacity hover:opacity-80"
-              title={t('tooltips.viewEnvironments')}
-            >
-              <LogoBlock t={t} />
-            </a>
-          ) : (
-            <LogoBlock t={t} />
-          )}
+          <LogoBlock t={t} />
 
           <div className="flex flex-shrink-0 items-center gap-0.5">
             <Button
@@ -135,10 +119,10 @@ export default function SidebarHeader({
           </div>
         </div>
 
-        <GitHubStarBadge />
+
 
         {/* Search bar */}
-        {showSearchTools && (
+        {(
           <div className="mt-2.5 space-y-2">
             {/* Search mode toggle */}
             <SidebarModeTabs
@@ -151,6 +135,7 @@ export default function SidebarHeader({
               <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground/50" />
               <Input
                 type="text"
+                disabled={searchMode === 'plans'}
                 placeholder={searchPlaceholder}
                 value={searchFilter}
                 onChange={(event) => onSearchFilterChange(event.target.value)}
@@ -188,17 +173,7 @@ export default function SidebarHeader({
         style={isPWA && isMobile ? { paddingTop: '16px' } : {}}
       >
         <div className="flex items-center justify-between">
-          {IS_PLATFORM ? (
-            <a
-              href="https://cloudcli.ai/dashboard"
-              className="flex min-w-0 items-center gap-2.5 transition-opacity active:opacity-70"
-              title={t('tooltips.viewEnvironments')}
-            >
-              <LogoBlock t={t} />
-            </a>
-          ) : (
-            <LogoBlock t={t} />
-          )}
+          <LogoBlock t={t} />
 
           <div className="flex flex-shrink-0 gap-1.5">
             <button
@@ -218,7 +193,7 @@ export default function SidebarHeader({
         </div>
 
         {/* Mobile search */}
-        {showSearchTools && (
+        {(
           <div className="mt-2.5 space-y-2">
             <SidebarModeTabs
               searchMode={searchMode}
@@ -230,6 +205,7 @@ export default function SidebarHeader({
               <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground/50" />
               <Input
                 type="text"
+                disabled={searchMode === 'plans'}
                 placeholder={searchPlaceholder}
                 value={searchFilter}
                 onChange={(event) => onSearchFilterChange(event.target.value)}

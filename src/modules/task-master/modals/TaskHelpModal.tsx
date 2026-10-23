@@ -1,4 +1,4 @@
-import { ExternalLink, FileText, X } from 'lucide-react';
+import { FileText, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
 type TaskHelpModalProps = {
@@ -113,15 +113,7 @@ export default function TaskHelpModal({ isOpen, onClose, onCreatePrd }: TaskHelp
           <div className="rounded-lg border border-blue-200 bg-blue-50 p-4 dark:border-blue-800 dark:bg-blue-950/40">
             <h4 className="mb-2 font-medium text-blue-900 dark:text-blue-100">{t('helpGuide.learnMore.title')}</h4>
             <p className="mb-3 text-sm text-blue-800 dark:text-blue-200">{t('helpGuide.learnMore.description')}</p>
-            <a
-              href="https://github.com/eyaltoledano/claude-task-master"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700"
-            >
-              {t('helpGuide.learnMore.githubButton')}
-              <ExternalLink className="h-4 w-4" />
-            </a>
+
           </div>
         </div>
       </div>

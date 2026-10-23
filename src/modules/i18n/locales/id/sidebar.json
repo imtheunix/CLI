@@ -20,7 +20,7 @@
     "runClaudeCli": "Jalankan Claude CLI di direktori proyek untuk memulai"
   },
   "app": {
-    "title": "CloudCLI",
+    "title": "CLI",
     "subtitle": "Antarmuka asisten coding AI"
   },
   "sessions": {
@@ -74,12 +74,7 @@
     "save": "Simpan",
     "delete": "Hapus",
     "rename": "Ganti Nama",
-    "joinCommunity": "Gabung Komunitas",
-    "reportIssue": "Laporkan Masalah",
     "starOnGithub": "Beri Bintang di GitHub"
-  },
-  "branding": {
-    "openSource": "Open Source"
   },
   "status": {
     "active": "Aktif",
@@ -124,12 +119,7 @@
     "deleteSessionsPartialFailure_one": "{{count}} dari {{total}} sesi gagal dihapus. Silakan coba lagi.",
     "deleteSessionsPartialFailure_other": "{{count}} dari {{total}} sesi gagal dihapus. Silakan coba lagi."
   },
-  "version": {
-    "updateAvailable": "Pembaruan tersedia",
-    "restartRequired": "Pembaruan terpasang — mulai ulang server untuk menerapkan"
-  },
   "search": {
-    "modeProjects": "Proyek",
     "modeConversations": "Percakapan",
     "modeMore": "Lainnya",
     "conversationsPlaceholder": "Cari dalam percakapan...",
@@ -175,5 +165,8 @@
     "archiveSessions_other": "Arsipkan {{count}} sesi",
     "archiveSessionsNotice_one": "Pengarsipan menyembunyikan sesi yang dipilih dari daftar aktif tanpa menghapus riwayatnya.",
     "archiveSessionsNotice_other": "Pengarsipan menyembunyikan sesi yang dipilih dari daftar aktif tanpa menghapus riwayatnya."
+  },
+  "branding": {
+    "openSource": "CLI · a modification of CloudCLI v1.37.5 - Open Source"
   }
 }

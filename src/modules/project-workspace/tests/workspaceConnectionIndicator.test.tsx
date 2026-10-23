@@ -139,7 +139,7 @@ test('the header says it is reconnecting while the chat socket is down, and clea
 
   // Still down while the retry handshakes, and on another tab too.
   act(() => { vi.advanceTimersByTime(3000); });
-  view.rerender(header('files'));
+  view.rerender(header('shell'));
   assert.equal(isIndicatorShown(), true);
 
   act(() => latestSocket().serverOpens());

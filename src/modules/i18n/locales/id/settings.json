@@ -1,4 +1,10 @@
 {
+  "chatDisplay": {
+    "showRawParameters": "Tampilkan parameter mentah",
+    "showThinking": "Tampilkan proses berpikir",
+    "sendByCtrlEnter": "Kirim dengan Ctrl+Enter",
+    "title": "Chat display and input"
+  },
   "title": "Pengaturan",
   "tabs": {
     "account": "Akun",
@@ -65,48 +71,6 @@
     "format": "Format audio",
     "note": "URL dasar kustom dipanggil langsung oleh browser dan harus mengizinkan permintaan CORS browser. Kosongkan untuk menggunakan backend yang dikonfigurasi di server."
   },
-  "quickSettings": {
-    "title": "Pengaturan Cepat",
-    "sections": {
-      "appearance": "Tampilan",
-      "toolDisplay": "Tampilan Tool",
-      "inputSettings": "Pengaturan Input"
-    },
-    "darkMode": "Mode Gelap",
-    "showRawParameters": "Tampilkan parameter mentah",
-    "showThinking": "Tampilkan proses berpikir",
-    "sendByCtrlEnter": "Kirim dengan Ctrl+Enter",
-    "voiceEnabled": "Suara (mikrofon + bacakan)",
-    "sendByCtrlEnterDescription": "Jika diaktifkan, Ctrl+Enter akan mengirim pesan, bukan Enter saja. Berguna bagi pengguna IME untuk mencegah pengiriman tidak disengaja.",
-    "dragHandle": {
-      "dragging": "Menyeret handle",
-      "closePanel": "Tutup panel pengaturan",
-      "openPanel": "Buka panel pengaturan",
-      "draggingStatus": "Menyeret...",
-      "toggleAndMove": "Klik untuk membuka/menutup, seret untuk memindahkan"
-    },
-    "tabs": {
-      "settings": "Pengaturan",
-      "commands": "Perintah"
-    },
-    "pin": "Sematkan panel",
-    "unpin": "Lepas sematan panel",
-    "close": "Tutup panel",
-    "commands": {
-      "searchPlaceholder": "Cari perintah…",
-      "noProject": "Pilih proyek untuk melihat perintahnya.",
-      "loading": "Memuat perintah…",
-      "empty": "Tidak ada perintah untuk proyek ini.",
-      "noMatches": "Tidak ada perintah yang cocok dengan pencarian Anda.",
-      "loadError": "Perintah tidak dapat dimuat.",
-      "groups": {
-        "builtIn": "Bawaan",
-        "custom": "Kustom",
-        "skills": "Skill"
-      },
-      "insertTitle": "Sisipkan {{command}} ke chat"
-    }
-  },
   "terminalShortcuts": {
     "title": "Pintasan Terminal",
     "sectionKeys": "Tombol",
@@ -126,7 +90,6 @@
     "label": "Pengaturan",
     "agents": "Agen",
     "appearance": "Tampilan",
-    "git": "Git",
     "apiTokens": "API & Token",
     "voice": "Suara",
     "tasks": "Tugas",
@@ -283,25 +246,6 @@
   "footerActions": {
     "save": "Simpan Pengaturan",
     "cancel": "Batal"
-  },
-  "git": {
-    "title": "Konfigurasi Git",
-    "description": "Konfigurasikan identitas Git untuk commit. Pengaturan ini akan diterapkan secara global melalui git config --global",
-    "name": {
-      "label": "Nama Git",
-      "help": "Nama untuk commit Git"
-    },
-    "email": {
-      "label": "Email Git",
-      "help": "Email untuk commit Git"
-    },
-    "actions": {
-      "save": "Simpan Konfigurasi",
-      "saving": "Menyimpan..."
-    },
-    "status": {
-      "success": "Berhasil disimpan"
-    }
   },
   "apiKeys": {
     "title": "Kunci API",
@@ -536,7 +480,7 @@
     },
     "managed": {
       "badge": "Dikelola",
-      "hint": "Dikelola oleh CloudCLI."
+      "hint": "Dikelola oleh CLI."
     },
     "help": {
       "title": "Tentang MCP Codex",
@@ -563,81 +507,11 @@
     "installFailed": "Instalasi gagal",
     "uninstallFailed": "Uninstal gagal",
     "toggleFailed": "Gagal mengubah status",
-    "starterPluginLabel": "Plugin Starter",
-    "starter": "Starter",
-    "docs": "Dokumentasi",
-    "sections": {
-      "officialTitle": "Plugin Resmi",
-      "officialDescription": "Dikelola oleh tim CloudCLI dan siap langsung diinstal.",
-      "unofficialTitle": "Plugin Lainnya",
-      "unofficialDescription": "Plugin dan integrasi tidak resmi dari pengguna lain. Tinjau kode sumber sebelum menginstal."
-    },
-    "starterPlugin": {
-      "name": "Project Stats",
-      "badge": "starter",
-      "description": "Jumlah file, baris kode, rincian jenis file, dan aktivitas terbaru proyek.",
-      "install": "Instal"
-    },
-    "terminalPlugin": {
-      "name": "Terminal",
-      "badge": "resmi",
-      "description": "Terminal terintegrasi dengan akses shell penuh langsung di dalam antarmuka.",
-      "install": "Instal"
-    },
-    "scheduledPromptPlugin": {
-      "name": "Scheduled Prompts",
-      "badge": "tidak resmi",
-      "description": "Jadwalkan prompt workspace, tinjau riwayat proses, dan kelola tugas lokal berulang.",
-      "install": "Instal"
-    },
-    "prismCloudCLI": {
-      "name": "PRISM CloudCLI",
-      "badge": "tidak resmi",
-      "description": "Intelijen sesi untuk Claude Code di dalam CloudCLI. Lihat penyebab penggunaan token tinggi tanpa meninggalkan browser.",
-      "install": "Instal"
-    },
-    "sessionManagerPlugin": {
-      "name": "Sessions",
-      "badge": "tidak resmi",
-      "description": "Lihat, kelola, dan hentikan sesi Claude Code yang aktif.",
-      "install": "Instal"
-    },
-    "tokenCostCalculatorPlugin": {
-      "name": "Token Cost Calculator",
-      "badge": "tidak resmi",
-      "description": "Hitung biaya API dari harga model dan penggunaan token, dengan dukungan preset harga model.",
-      "install": "Instal"
-    },
-    "taskQueuePlugin": {
-      "name": "Task Queue",
-      "badge": "tidak resmi",
-      "description": "Dasbor antrean tugas untuk melihat, memfilter, dan menjalankan tugas agen.",
-      "install": "Instal"
-    },
-    "githubIssuesBoardPlugin": {
-      "name": "GitHub Issues Board",
-      "badge": "tidak resmi",
-      "description": "Board Kanban untuk GitHub Issues dengan sinkronisasi dua arah TaskMaster dan instalasi otomatis skill CLI /github-task",
-      "install": "Instal"
-    },
-    "claudeUsagePlugin": {
-      "name": "Claude Usage",
-      "badge": "tidak resmi",
-      "description": "Pantau batas paket Claude Code secara langsung dan jelajahi riwayat token serta biaya 30 hari.",
-      "install": "Instal"
-    },
-    "codexUsagePlugin": {
-      "name": "Codex Usage",
-      "badge": "tidak resmi",
-      "description": "Pantau batas paket Codex secara langsung, waktu reset, dan aktivitas token akun selama 30 hari.",
-      "install": "Instal"
-    },
-    "morePlugins": "Lainnya",
     "enable": "Aktifkan",
     "disable": "Nonaktifkan",
-    "installAriaLabel": "URL repositori Git plugin",
     "tab": "tab",
-    "runningStatus": "berjalan"
+    "runningStatus": "berjalan",
+    "installAriaLabel": "URL repositori Git plugin"
   },
   "skillsPage": {
     "description": "Kelola skill {{provider}} dari file lokal, folder lengkap, dan lokasi yang terkait proyek.",
@@ -795,7 +669,7 @@
   "mcpTeamCard": {
     "title": "Konfigurasi MCP Tim",
     "description": "Bagikan konfigurasi server MCP di seluruh tim. Semua anggota tetap tersinkron otomatis.",
-    "proLink": "Tersedia dengan CloudCLI Pro"
+    "proLink": "Tersedia dengan CLI Pro"
   },
   "mcpServersAddErrors": {
     "loadFailedProvider": "Gagal memuat server MCP {{provider}}",
@@ -809,18 +683,6 @@
     "unknownError": "Kesalahan tidak diketahui"
   },
   "about": {
-    "tagline": "Antarmuka asisten coding AI open source",
-    "starOnGitHub": "Beri Bintang di GitHub",
-    "docs": "Dokumentasi",
-    "hostedTitle": "Coba CloudCLI Hosted",
-    "hostedDescription": "Kolaborasi tim, konfigurasi MCP bersama, sinkronisasi pengaturan antar-environment, dan infrastruktur terkelola.",
-    "learnMore": "Pelajari lebih lanjut",
-    "proFeaturesTitle": "Fitur CloudCLI Pro",
-    "syncSettingsTitle": "Sinkronkan Pengaturan",
-    "syncSettingsDescription": "Jaga preferensi, konfigurasi MCP, dan tema tetap sinkron di semua environment.",
-    "teamManagementTitle": "Manajemen Tim",
-    "teamManagementDescription": "Banyak pengguna, akses berbasis peran, dan proyek bersama untuk tim.",
-    "licensed": "Dilisensikan di bawah AGPL-3.0",
-    "proCta": "Tersedia dengan CloudCLI Pro"
+    "licensed": "Dilisensikan di bawah AGPL-3.0"
   }
 }

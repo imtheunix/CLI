@@ -1,7 +1,6 @@
 import {
   Bell,
   Bot,
-  GitBranch,
   Info,
   KeyRound,
   ListChecks,
@@ -20,11 +19,11 @@ type GitStatusFileGroup = 'modified' | 'added' | 'deleted' | 'untracked';
 //----------------- BRANDING ------------
 
 /**
- * Font stack used to render the CloudCLI wordmark consistently wherever the brand name
+ * Font stack used to render the CLI wordmark consistently wherever the brand name
  * appears as text. Apply it inline so the wordmark does not inherit a themed font.
  */
 export const CLOUDCLI_WORDMARK_FONT_FAMILY =
-  'ui-sans-serif, system-ui, sans-serif, Apple Color Emoji, Segoe UI Emoji, Segoe UI Symbol, Noto Color Emoji';
+  'Inter, ui-sans-serif, system-ui, sans-serif, Apple Color Emoji, Segoe UI Emoji, Segoe UI Symbol, Noto Color Emoji';
 
 // ---------------------------
 
@@ -57,7 +56,6 @@ type SettingsMainTabMeta = {
 export const SETTINGS_MAIN_TABS: SettingsMainTabMeta[] = [
   { id: 'agents', label: 'Agents', keywords: 'agents subagents claude code', icon: Bot },
   { id: 'appearance', label: 'Appearance', keywords: 'appearance theme dark light language', icon: Palette },
-  { id: 'git', label: 'Git', keywords: 'git github commits', icon: GitBranch },
   { id: 'api', label: 'API Tokens', keywords: 'api tokens auth keys', icon: KeyRound },
   { id: 'tasks', label: 'Tasks', keywords: 'tasks taskmaster', icon: ListChecks },
   { id: 'browser', label: 'Browser', keywords: 'browser playwright chromium automation', icon: MonitorPlay },
@@ -148,17 +146,6 @@ export const MCP_SUPPORTS_WORKING_DIRECTORY: Record<McpProvider, boolean> = {
   codex: true,
   opencode: false,
 };
-
-// ---------------------------
-
-//----------------- QUICK SETTINGS PANEL ROWS ------------
-
-/**
- * Class list for one row in the quick settings panel. Shared so plain rows and the clickable
- * toggle row (which appends `cursor-pointer`) stay visually identical.
- */
-export const SETTING_ROW_CLASS =
-  'flex items-center justify-between p-3 rounded-lg bg-muted/60 hover:bg-accent transition-colors border border-transparent hover:border-border';
 
 // ---------------------------
 

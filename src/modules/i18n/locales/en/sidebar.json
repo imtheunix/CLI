@@ -20,7 +20,7 @@
     "runClaudeCli": "Run Claude CLI in a project directory to get started"
   },
   "app": {
-    "title": "CloudCLI",
+    "title": "CLI",
     "subtitle": "AI coding assistant interface"
   },
   "sessions": {
@@ -75,12 +75,7 @@
     "save": "Save",
     "delete": "Delete",
     "rename": "Rename",
-    "joinCommunity": "Join Community",
-    "reportIssue": "Report Issue",
     "starOnGithub": "Star on GitHub"
-  },
-  "branding": {
-    "openSource": "Open Source"
   },
   "status": {
     "active": "Active",
@@ -125,13 +120,8 @@
     "deleteSessionsPartialFailure_one": "{{count}} session out of {{total}} could not be deleted. Please try again.",
     "deleteSessionsPartialFailure_other": "{{count}} of {{total}} sessions could not be deleted. Please try again."
   },
-  "version": {
-    "updateAvailable": "Update available",
-    "restartRequired": "Update installed — restart the server to apply"
-  },
   "search": {
-    "modeProjects": "Projects",
-    "modeConversations": "Conversations",
+    "modeConversations": "Sessions",
     "modeMore": "More",
     "conversationsPlaceholder": "Search in conversations...",
     "searching": "Searching...",
@@ -176,5 +166,8 @@
     "archiveSessions_other": "Archive {{count}} sessions",
     "archiveSessionsNotice_one": "Archive keeps the session out of the active list while preserving its history.",
     "archiveSessionsNotice_other": "Archive keeps the sessions out of the active list while preserving their history."
+  },
+  "branding": {
+    "openSource": "CLI · a modification of CloudCLI v1.37.5 - Open Source"
   }
 }

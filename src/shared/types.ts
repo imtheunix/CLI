@@ -1,5 +1,4 @@
 import type { TFunction } from 'i18next';
-import type { CSSProperties } from 'react';
 import type { NavigateFunction } from 'react-router-dom';
 
 //----------------- LLM PROVIDER MODEL CATALOG ------------
@@ -69,7 +68,7 @@ export type ProviderModelActions = {
 //----------------- PROJECTS AND SESSIONS ------------
 
 /** Identifies the workspace pane the user is looking at; plugin panes are namespaced by plugin id. */
-export type AppTab = 'chat' | 'files' | 'shell' | 'git' | 'tasks' | 'browser' | `plugin:${string}`;
+export type AppTab = 'chat' | 'shell' | 'tasks' | 'browser' | `plugin:${string}`;
 
 /** A message queued to be sent to a session at a future time. */
 export type ScheduledMessage = {
@@ -158,7 +157,7 @@ export type ReleaseInfo = {
   publishedAt: string;
 };
 
-/** How this CloudCLI install was obtained; decides whether the UI offers a self-update action. */
+/** How this CLI install was obtained; decides whether the UI offers a self-update action. */
 export type InstallMode = 'git' | 'npm';
 
 // ---------------------------
@@ -1232,7 +1231,7 @@ type McpImportMode = 'form' | 'json';
 
 //----------------- PLUGINS ------------
 
-/** An installed CloudCLI plugin's manifest and runtime status (entry point, slot, permissions, enabled and server-running flags); always import this type explicitly from `@/shared/types`, because `Plugin` is also a DOM global and an unimported reference silently resolves to that instead. */
+/** An installed CLI plugin's manifest and runtime status (entry point, slot, permissions, enabled and server-running flags); always import this type explicitly from `@/shared/types`, because `Plugin` is also a DOM global and an unimported reference silently resolves to that instead. */
 export type Plugin = {
   name: string;
   displayName: string;
@@ -1348,26 +1347,6 @@ export type ProviderAuthStatusMap = Record<LLMProvider, ProviderAuthStatus>;
 
 // ---------------------------
 
-//----------------- QUICK SETTINGS PANEL ------------
-
-/** Identifier of a boolean user preference exposed in the quick settings panel; use it as the key when reading or writing one preference. */
-export type PreferenceToggleKey =
-  | 'showRawParameters'
-  | 'showThinking'
-  | 'sendByCtrlEnter'
-  | 'voiceEnabled';
-
-/** The full set of quick settings booleans keyed by PreferenceToggleKey, held together so the panel can read every toggle from one object. */
-export type QuickSettingsPreferences = Record<PreferenceToggleKey, boolean>;
-
-/** Which content area the quick settings panel is showing: 'settings' (preference toggles) or 'commands' (slash-command list); persisted with the pin state and used by the tab bar and the panel view. */
-export type QuickSettingsTab = 'settings' | 'commands';
-
-/** Inline style for the quick settings drag handle, produced by the drag hook from the stored handle position and applied by the handle component. */
-export type QuickSettingsHandleStyle = CSSProperties;
-
-// ---------------------------
-
 //----------------- SETTINGS ------------
 
 /** The per-provider agent context the agents settings tab builds once and hands to each of its sections. */
@@ -1380,7 +1359,7 @@ export type AgentContext = {
 };
 
 /** Identifier of a top-level section in the settings dialog; use it whenever a tab is stored, compared or requested so deep links, the sidebar and the command palette all agree on the same set of names. */
-export type SettingsMainTab = 'agents' | 'appearance' | 'git' | 'api' | 'voice' | 'tasks' | 'browser' | 'notifications' | 'plugins' | 'about';
+export type SettingsMainTab = 'agents' | 'appearance' | 'api' | 'voice' | 'tasks' | 'browser' | 'notifications' | 'plugins' | 'about';
 
 /** The coding-agent CLI a settings screen is configuring, aliasing LLMProvider so agent-scoped settings read as being about an agent rather than a chat model. */
 export type AgentProvider = LLMProvider;
@@ -1450,7 +1429,7 @@ export type CodeEditorSettingsState = {
 
 //----------------- SETTINGS CREDENTIALS ------------
 
-/** One stored CloudCLI API key as the server returns it, in snake_case, including its masked key, creation and last-used timestamps and active flag; render it, do not rebuild it. */
+/** One stored CLI API key as the server returns it, in snake_case, including its masked key, creation and last-used timestamps and active flag; render it, do not rebuild it. */
 export type ApiKeyItem = {
   id: string;
   key_name: string;
@@ -1571,7 +1550,7 @@ export type ThemeMode = 'light' | 'dark' | 'system';
 export type ProjectSortOrder = 'name' | 'date';
 
 /** Which list the sidebar is currently showing: projects, conversation search results, running sessions or archived items. */
-export type SidebarSearchMode = 'projects' | 'conversations' | 'running' | 'archived';
+export type SidebarSearchMode = 'projects' | 'plans' | 'conversations' | 'running' | 'archived';
 
 /** A Project narrowed to the archived state so archived entries can be listed and restored without being mistaken for active projects. */
 export type ArchivedProjectListItem = Project & { isArchived: true };
@@ -1857,3 +1836,24 @@ type TaskStatus =
 
 /** A TaskMaster task's priority; high, medium and low are the known values and the string fallback tolerates anything else TaskMaster emits. */
 type TaskPriority = 'high' | 'medium' | 'low' | string;
+
+//----------------- SUBSCRIPTION PLANS ------------
+/** Sanitized subscription quota reading returned by the authenticated plans proxy. */
+export type PlanReading = {
+  plan: 'claude' | 'chatgpt' | 'google'; at: string | null; note: string | null;
+  windows: { id: string; label: string; usedPercent: number | null; resetsAt: string | null }[];
+};
+
+//----------------- SHELL LAUNCH TARGETS ------------
+/** Launch choices offered by the Shell tab; independent of the chat provider. */
+export type ShellTarget = 'workstation' | 'archsv' | 'claude' | 'codex' | 'agy';
+
+//----------------- BACKGROUND JOB MONITOR ------------
+/** Read-only external job metadata; inferred entries indicate recent Codex file activity. */
+export type BackgroundJob = {
+  id: string; title: string; tool: 'codex' | 'agy' | 'claude';
+  machine: 'workstation' | 'archsv'; startedAt: string;
+  status: 'queued' | 'running' | 'done' | 'failed'; finishedAt?: string; inferred?: boolean;
+};
+/** Bounded log tail and optional completed-job summary returned by the job monitor. */
+export type BackgroundJobDetail = { job: BackgroundJob; log: string; summary: string };

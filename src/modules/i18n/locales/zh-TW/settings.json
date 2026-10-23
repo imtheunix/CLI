@@ -1,4 +1,10 @@
 {
+  "chatDisplay": {
+    "showRawParameters": "顯示原始參數",
+    "showThinking": "顯示思考過程",
+    "sendByCtrlEnter": "使用 Ctrl+Enter 傳送",
+    "title": "Chat display and input"
+  },
   "title": "設定",
   "tabs": {
     "account": "帳戶",
@@ -49,47 +55,6 @@
     "resetToDefaults": "重設為預設值",
     "cancelChanges": "取消變更"
   },
-  "quickSettings": {
-    "title": "快速設定",
-    "sections": {
-      "appearance": "外觀",
-      "toolDisplay": "工具顯示",
-      "inputSettings": "輸入設定"
-    },
-    "darkMode": "深色模式",
-    "showRawParameters": "顯示原始參數",
-    "showThinking": "顯示思考過程",
-    "sendByCtrlEnter": "使用 Ctrl+Enter 傳送",
-    "sendByCtrlEnterDescription": "啟用後，按 Ctrl+Enter 傳送訊息，而不是僅按 Enter。這對於使用輸入法的使用者可以避免意外傳送。",
-    "dragHandle": {
-      "dragging": "正在拖曳手柄",
-      "closePanel": "關閉設定面板",
-      "openPanel": "開啟設定面板",
-      "draggingStatus": "正在拖曳...",
-      "toggleAndMove": "點擊切換，拖曳移動"
-    },
-    "tabs": {
-      "settings": "設定",
-      "commands": "指令"
-    },
-    "pin": "固定面板",
-    "unpin": "取消固定面板",
-    "close": "關閉面板",
-    "commands": {
-      "searchPlaceholder": "搜尋指令…",
-      "noProject": "選擇一個專案以檢視其指令。",
-      "loading": "正在載入指令…",
-      "empty": "此專案沒有可用的指令。",
-      "noMatches": "沒有符合搜尋的指令。",
-      "loadError": "無法載入指令。",
-      "groups": {
-        "builtIn": "內建",
-        "custom": "自訂",
-        "skills": "技能"
-      },
-      "insertTitle": "將 {{command}} 插入聊天"
-    }
-  },
   "terminalShortcuts": {
     "title": "終端機快速鍵",
     "sectionKeys": "按鍵",
@@ -109,7 +74,6 @@
     "label": "設定",
     "agents": "智慧代理",
     "appearance": "外觀",
-    "git": "Git",
     "apiTokens": "API 和權杖",
     "tasks": "任務",
     "computer": "電腦使用",
@@ -241,25 +205,6 @@
   "footerActions": {
     "save": "儲存設定",
     "cancel": "取消"
-  },
-  "git": {
-    "title": "Git 設定",
-    "description": "設定您的 git 提交身分。這些設定將透過 git config --global 全域套用",
-    "name": {
-      "label": "Git 名稱",
-      "help": "您的 git 提交名稱"
-    },
-    "email": {
-      "label": "Git 電子郵件",
-      "help": "您的 git 提交電子郵件"
-    },
-    "actions": {
-      "save": "儲存設定",
-      "saving": "儲存中..."
-    },
-    "status": {
-      "success": "儲存成功"
-    }
   },
   "apiKeys": {
     "title": "API 金鑰",
@@ -514,19 +459,11 @@
     "uninstallFailed": "解除安裝失敗",
     "toggleFailed": "切換失敗",
     "buildYourOwn": "建立您自己的外掛",
-    "starter": "入門範本",
-    "docs": "文件",
-    "starterPlugin": {
-      "name": "專案統計",
-      "badge": "入門",
-      "description": "查看專案的檔案數、程式碼行數、檔案類型分佈以及最近活動。",
-      "install": "安裝"
-    },
-    "morePlugins": "更多",
     "enable": "啟用",
     "disable": "停用",
-    "installAriaLabel": "外掛 git 儲存庫 URL",
     "tab": "分頁",
-    "runningStatus": "執行中"
-  }
+    "runningStatus": "執行中",
+    "installAriaLabel": "外掛 git 儲存庫 URL"
+  },
+  "about": {}
 }

@@ -1,5 +1,6 @@
 import { useTranslation } from 'react-i18next';
 
+import { useUiPreferences, useSetUiPreference } from '@/shared/context/UiPreferencesContext';
 import { useTheme } from '@/shared/context/ThemeContext';
 import type { CodeEditorSettingsState, ProjectSortOrder, ThemeMode } from '@/shared/types';
 import { LanguageSelector } from '@/modules/i18n';
@@ -30,6 +31,8 @@ export default function AppearanceSettingsTab({
 }: AppearanceSettingsTabProps) {
   const { t } = useTranslation('settings');
   const { themeMode, setThemeMode } = useTheme();
+  const preferences = useUiPreferences();
+  const setPreference = useSetUiPreference();
 
   return (
     <div className="space-y-8">
@@ -56,6 +59,20 @@ export default function AppearanceSettingsTab({
       <SettingsSection title={t('mainTabs.appearance')}>
         <SettingsCard>
           <LanguageSelector />
+        </SettingsCard>
+      </SettingsSection>
+
+      <SettingsSection title={t('chatDisplay.title')}>
+        <SettingsCard divided>
+          {([
+            ['showRawParameters', 'Show raw tool parameters'],
+            ['showThinking', 'Show thinking'],
+            ['sendByCtrlEnter', 'Send with Ctrl / Cmd + Enter'],
+          ] as const).map(([key, label]) => (
+            <SettingsRow key={key} label={t(`chatDisplay.${key}`, { defaultValue: label })}>
+              <SettingsToggle checked={preferences[key]} onChange={(value) => setPreference(key, value)} ariaLabel={t(`chatDisplay.${key}`, { defaultValue: label })} />
+            </SettingsRow>
+          ))}
         </SettingsCard>
       </SettingsSection>
 

@@ -1,3 +1,4 @@
+// Modified by CLI: brand palette, fonts and square controls.
 /** @type {import('tailwindcss').Config} */
 export default {
   darkMode: ["class"],
@@ -15,10 +16,12 @@ export default {
     },
     extend: {
       fontFamily: {
-        sans: ['"Encode Sans"', '-apple-system', 'BlinkMacSystemFont', '"Segoe UI"', 'Roboto', '"Helvetica Neue"', 'Arial', 'sans-serif'],
-        serif: ['Merriweather', 'Georgia', 'Cambria', '"Times New Roman"', 'serif'],
+        sans: ['Inter', '-apple-system', 'BlinkMacSystemFont', '"Segoe UI"', 'Roboto', '"Helvetica Neue"', 'Arial', 'sans-serif'],
+        serif: ['Inter', 'system-ui', 'sans-serif'],
+        mono: ['"JetBrains Mono Variable"', 'ui-monospace', 'monospace'],
       },
       colors: {
+        blue: { 50: "#fff3ec", 100: "#ffe4d2", 200: "#ffc5a1", 300: "#ffa570", 400: "#ff8a47", 500: "#ff6b1a", 600: "#bd4500", 700: "#9c3900", 800: "#702900", 900: "#451900", 950: "#281000" },
         border: "hsl(var(--border))",
         input: "hsl(var(--input))",
         ring: "hsl(var(--ring))",
@@ -55,8 +58,8 @@ export default {
       },
       borderRadius: {
         lg: "var(--radius)",
-        md: "calc(var(--radius) - 2px)",
-        sm: "calc(var(--radius) - 4px)",
+        md: "var(--radius)",
+        sm: "var(--radius)",
       },
       spacing: {
         'safe-area-inset-bottom': 'env(safe-area-inset-bottom)',

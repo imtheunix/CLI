@@ -1,4 +1,10 @@
 {
+  "chatDisplay": {
+    "showRawParameters": "Mostra parametri grezzi",
+    "showThinking": "Mostra ragionamento",
+    "sendByCtrlEnter": "Invia con Ctrl+Invio",
+    "title": "Chat display and input"
+  },
   "title": "Impostazioni",
   "tabs": {
     "account": "Account",
@@ -49,47 +55,6 @@
     "resetToDefaults": "Ripristina predefiniti",
     "cancelChanges": "Annulla modifiche"
   },
-  "quickSettings": {
-    "title": "Impostazioni rapide",
-    "sections": {
-      "appearance": "Aspetto",
-      "toolDisplay": "Visualizzazione strumenti",
-      "inputSettings": "Impostazioni input"
-    },
-    "darkMode": "Modalità scura",
-    "showRawParameters": "Mostra parametri grezzi",
-    "showThinking": "Mostra ragionamento",
-    "sendByCtrlEnter": "Invia con Ctrl+Invio",
-    "sendByCtrlEnterDescription": "Se abilitato, premere Ctrl+Invio invierà il messaggio invece di Invio. Utile per gli utenti IME per evitare invii accidentali.",
-    "dragHandle": {
-      "dragging": "Trascinamento maniglia",
-      "closePanel": "Chiudi pannello impostazioni",
-      "openPanel": "Apri pannello impostazioni",
-      "draggingStatus": "Trascinamento...",
-      "toggleAndMove": "Clicca per attivare/disattivare, trascina per spostare"
-    },
-    "tabs": {
-      "settings": "Impostazioni",
-      "commands": "Comandi"
-    },
-    "pin": "Fissa il pannello aperto",
-    "unpin": "Sblocca il pannello",
-    "close": "Chiudi il pannello",
-    "commands": {
-      "searchPlaceholder": "Cerca comandi…",
-      "noProject": "Seleziona un progetto per vedere i suoi comandi.",
-      "loading": "Caricamento dei comandi…",
-      "empty": "Nessun comando disponibile per questo progetto.",
-      "noMatches": "Nessun comando corrisponde alla ricerca.",
-      "loadError": "Impossibile caricare i comandi.",
-      "groups": {
-        "builtIn": "Integrati",
-        "custom": "Personalizzati",
-        "skills": "Skill"
-      },
-      "insertTitle": "Inserisci {{command}} nella chat"
-    }
-  },
   "terminalShortcuts": {
     "title": "Scorciatoie terminale",
     "sectionKeys": "Tasti",
@@ -109,7 +74,6 @@
     "label": "Impostazioni",
     "agents": "Agenti",
     "appearance": "Aspetto",
-    "git": "Git",
     "apiTokens": "API e Token",
     "tasks": "Attività",
     "notifications": "Notifiche",
@@ -240,25 +204,6 @@
   "footerActions": {
     "save": "Salva impostazioni",
     "cancel": "Annulla"
-  },
-  "git": {
-    "title": "Configurazione Git",
-    "description": "Configura la tua identità git per i commit. Queste impostazioni verranno applicate globalmente tramite git config --global",
-    "name": {
-      "label": "Nome Git",
-      "help": "Il tuo nome per i commit git"
-    },
-    "email": {
-      "label": "Email Git",
-      "help": "La tua email per i commit git"
-    },
-    "actions": {
-      "save": "Salva configurazione",
-      "saving": "Salvataggio..."
-    },
-    "status": {
-      "success": "Salvato con successo"
-    }
   },
   "apiKeys": {
     "title": "Chiavi API",
@@ -512,26 +457,11 @@
     "installFailed": "Installazione fallita",
     "uninstallFailed": "Disinstallazione fallita",
     "toggleFailed": "Attivazione/disattivazione fallita",
-    "starterPluginLabel": "Plugin iniziale",
-    "starter": "Iniziale",
-    "docs": "Documentazione",
-    "starterPlugin": {
-      "name": "Statistiche progetto",
-      "badge": "iniziale",
-      "description": "Conteggio file, righe di codice, ripartizione per tipo di file e attività recente per il tuo progetto.",
-      "install": "Installa"
-    },
-    "terminalPlugin": {
-      "name": "Terminale",
-      "badge": "ufficiale",
-      "description": "Terminale integrato con accesso completo alla shell direttamente nell'interfaccia.",
-      "install": "Installa"
-    },
-    "morePlugins": "Altri",
     "enable": "Abilita",
     "disable": "Disabilita",
-    "installAriaLabel": "URL repository git del plugin",
     "tab": "scheda",
-    "runningStatus": "in esecuzione"
-  }
+    "runningStatus": "in esecuzione",
+    "installAriaLabel": "URL repository git del plugin"
+  },
+  "about": {}
 }

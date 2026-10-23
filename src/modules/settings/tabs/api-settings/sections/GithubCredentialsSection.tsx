@@ -96,14 +96,7 @@ export default function GithubCredentialsSection({
             </Button>
           </div>
 
-          <a
-            href="https://github.com/settings/tokens"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="block text-xs text-primary hover:underline"
-          >
-            {t('apiKeys.github.form.howToCreate')}
-          </a>
+
         </div>
       )}
 

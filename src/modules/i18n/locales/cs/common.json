@@ -20,8 +20,6 @@
   "tabs": {
     "chat": "Chat",
     "shell": "Shell",
-    "files": "Soubory",
-    "git": "Správa verzí",
     "tasks": "Úkoly",
     "browser": "Prohlížeč",
     "computer": "Počítač",
@@ -94,16 +92,8 @@
     "daysAgo_other": "před {{count}} dny",
     "yesterday": "Včera"
   },
-  "fileOperations": {
-    "newFile": "Nový soubor",
-    "newFolder": "Nová složka",
-    "rename": "Přejmenovat",
-    "move": "Přesunout",
-    "copyPath": "Kopírovat cestu",
-    "openInEditor": "Otevřít v editoru"
-  },
   "mainContent": {
-    "loading": "Načítání CloudCLI",
+    "loading": "Načítání CLI",
     "settingUpWorkspace": "Připravuje se váš pracovní prostor...",
     "chooseProject": "Vyberte projekt",
     "selectProjectDescription": "Vyberte projekt v postranním panelu a začněte programovat s asistentem Claude. Každý projekt obsahuje vaše relace chatu a historii souborů.",
@@ -111,85 +101,7 @@
     "createProjectMobile": "Projekty otevřete klepnutím na tlačítko nabídky nahoře",
     "createProjectDesktop": "Nový projekt vytvoříte kliknutím na ikonu složky v postranním panelu",
     "newSession": "Nová relace",
-    "untitledSession": "Relace bez názvu",
-    "projectFiles": "Soubory projektu"
-  },
-  "fileTree": {
-    "loading": "Načítání souborů...",
-    "files": "Soubory",
-    "simpleView": "Jednoduché zobrazení",
-    "compactView": "Kompaktní zobrazení",
-    "detailedView": "Podrobné zobrazení",
-    "searchPlaceholder": "Hledat soubory a složky...",
-    "clearSearch": "Vymazat hledání",
-    "name": "Název",
-    "size": "Velikost",
-    "modified": "Změněno",
-    "permissions": "Oprávnění",
-    "noFilesFound": "Nenalezeny žádné soubory",
-    "checkProjectPath": "Zkontrolujte, zda je cesta k projektu dostupná",
-    "loadFailed": "Nepodařilo se načíst soubory",
-    "noMatchesFound": "Nenalezeny žádné shody",
-    "tryDifferentSearch": "Zkuste jiný hledaný výraz nebo hledání vymažte",
-    "justNow": "právě teď",
-    "minAgo_one": "před {{count}} minutou",
-    "minAgo_few": "před {{count}} minutami",
-    "minAgo_many": "před {{count}} minuty",
-    "minAgo_other": "před {{count}} minutami",
-    "hoursAgo_one": "před {{count}} hodinou",
-    "hoursAgo_few": "před {{count}} hodinami",
-    "hoursAgo_many": "před {{count}} hodiny",
-    "hoursAgo_other": "před {{count}} hodinami",
-    "daysAgo_one": "před {{count}} dnem",
-    "daysAgo_few": "před {{count}} dny",
-    "daysAgo_many": "před {{count}} dne",
-    "daysAgo_other": "před {{count}} dny",
-    "newFile": "Nový soubor (Cmd+N)",
-    "newFolder": "Nová složka (Cmd+Shift+N)",
-    "refresh": "Obnovit",
-    "collapseAll": "Sbalit vše",
-    "dropToUpload": "Přetáhněte sem soubory k nahrání",
-    "dropToUploadTo": "Přetáhněte sem soubory k nahrání do „{{folder}}“",
-    "uploadingFiles": "Nahrávání souborů",
-    "uploadFiles": "Nahrát soubory (max. {{size}} na soubor)",
-    "uploadToFolder": "Nahrát soubory do „{{folder}}“",
-    "uploadComplete": "Nahrávání dokončeno",
-    "uploadFailed": "Nahrávání se nezdařilo",
-    "uploadedCount": "Nahráno {{uploaded}} z {{total}} souborů",
-    "context": {
-      "rename": "Přejmenovat",
-      "delete": "Smazat",
-      "copyPath": "Kopírovat cestu",
-      "download": "Stáhnout",
-      "newFile": "Nový soubor",
-      "newFolder": "Nová složka",
-      "upload": "Nahrát soubory",
-      "refresh": "Obnovit",
-      "menuLabel": "Kontextová nabídka souboru",
-      "loading": "Načítání..."
-    },
-    "delete": {
-      "title": "Smazat položku",
-      "folderWarning": "Tato složka a celý její obsah budou trvale smazány.",
-      "fileWarning": "Tento soubor bude trvale smazán.",
-      "confirm": "Smazat"
-    },
-    "toast": {
-      "renamed": "Přejmenováno",
-      "fileDeleted": "Soubor smazán",
-      "folderDeleted": "Složka smazána",
-      "fileCreated": "Soubor vytvořen",
-      "folderCreated": "Složka vytvořena",
-      "pathCopied": "Cesta zkopírována do schránky",
-      "copyFailed": "Nepodařilo se zkopírovat cestu",
-      "folderDownloaded": "Složka stažena jako ZIP"
-    },
-    "validation": {
-      "emptyName": "Název souboru nesmí být prázdný",
-      "invalidChars": "Název souboru obsahuje neplatné znaky",
-      "reserved": "Název souboru je vyhrazený",
-      "dotsOnly": "Název souboru nesmí obsahovat jen tečky"
-    }
+    "untitledSession": "Relace bez názvu"
   },
   "projectWizard": {
     "title": "Vytvořit nový projekt",
@@ -295,46 +207,6 @@
       }
     }
   },
-  "versionUpdate": {
-    "title": "Je dostupná aktualizace",
-    "newVersionReady": "Nová verze je připravena",
-    "currentVersion": "Aktuální verze",
-    "latestVersion": "Nejnovější verze",
-    "whatsNew": "Novinky:",
-    "viewFullRelease": "Zobrazit celé vydání",
-    "updateProgress": "Průběh aktualizace:",
-    "manualUpgrade": "Ruční aktualizace:",
-    "npmUpgradeCommand": "npm install -g @cloudcli-ai/cloudcli@latest",
-    "manualUpgradeHint": "Nebo klikněte na „Aktualizovat nyní“ a aktualizace proběhne automaticky.",
-    "updateCompleted": "Aktualizace dokončena.",
-    "restartServer": "Restartujte prosím server, aby se změny projevily.",
-    "updateFailed": "Aktualizace se nezdařila",
-    "buttons": {
-      "close": "Zavřít",
-      "later": "Později",
-      "copyCommand": "Kopírovat příkaz",
-      "updateNow": "Aktualizovat nyní",
-      "updating": "Aktualizace..."
-    },
-    "ariaLabels": {
-      "closeModal": "Zavřít okno aktualizace verze",
-      "showSidebar": "Zobrazit postranní panel",
-      "settings": "Nastavení",
-      "updateAvailable": "Je dostupná aktualizace",
-      "closeSidebar": "Zavřít postranní panel",
-      "resizeSidebar": "Změnit šířku postranního panelu"
-    },
-    "startingUpdate": "Spouštění aktualizace...",
-    "updateStartedRestarting": "Aktualizace byla spuštěna. Server se zřejmě restartuje, aby ji použil.",
-    "unexpectedResponse": "Koncový bod aktualizace vrátil neočekávanou odpověď (HTTP {{status}}). Aktualizujte ručně pomocí příkazu níže.",
-    "connectionInterrupted": "Spojení se serverem bylo přerušeno – pravděpodobně se restartuje, aby aktualizaci použil.",
-    "unknownError": "Neznámá chyba",
-    "refreshNow": "Okno se nyní obnovuje...",
-    "refreshIn_one": "Okno se obnoví za {{count}} sekundu. Pokud se aktualizace neprojeví, RESTARTUJTE prostředí.",
-    "refreshIn_few": "Okno se obnoví za {{count}} sekundy. Pokud se aktualizace neprojeví, RESTARTUJTE prostředí.",
-    "refreshIn_many": "Okno se obnoví za {{count}} sekundy. Pokud se aktualizace neprojeví, RESTARTUJTE prostředí.",
-    "refreshIn_other": "Okno se obnoví za {{count}} sekund. Pokud se aktualizace neprojeví, RESTARTUJTE prostředí."
-  },
   "commandPalette": {
     "title": "Paleta příkazů",
     "pages": {
@@ -351,41 +223,20 @@
     "noResults": "Žádné výsledky.",
     "groupActions": "Akce",
     "groupNavigate": "Navigace",
-    "groupGit": "Git",
     "groupSettings": "Nastavení",
     "groupSessions": "Relace",
-    "groupFiles": "Soubory",
-    "groupCommits": "Commity",
-    "groupBranches": "Větve",
     "startNewChat": "Zahájit nový chat",
     "selectProjectFirst": "Nejdříve vyberte projekt",
     "openSettings": "Otevřít nastavení",
     "toggleTheme": "Přepnout motiv",
     "navChat": "Přejít na Chat",
-    "navFiles": "Přejít na Soubory",
     "navShell": "Přejít na Shell",
-    "navGit": "Přejít na Git",
     "navTasks": "Přejít na Úkoly",
-    "gitFetch": "Git: Fetch",
-    "gitPull": "Git: Pull",
-    "gitPush": "Git: Push",
     "settingsItem": "Nastavení: {{label}}",
     "browseAllSessions_one": "Procházet všechny relace ({{count}})",
     "browseAllSessions_few": "Procházet všechny relace ({{count}})",
     "browseAllSessions_many": "Procházet všechny relace ({{count}})",
     "browseAllSessions_other": "Procházet všechny relace ({{count}})",
-    "browseAllFiles_one": "Procházet všechny soubory ({{count}})",
-    "browseAllFiles_few": "Procházet všechny soubory ({{count}})",
-    "browseAllFiles_many": "Procházet všechny soubory ({{count}})",
-    "browseAllFiles_other": "Procházet všechny soubory ({{count}})",
-    "browseAllCommits_one": "Procházet všechny commity ({{count}})",
-    "browseAllCommits_few": "Procházet všechny commity ({{count}})",
-    "browseAllCommits_many": "Procházet všechny commity ({{count}})",
-    "browseAllCommits_other": "Procházet všechny commity ({{count}})",
-    "browseAllBranches_one": "Procházet všechny větve ({{count}})",
-    "browseAllBranches_few": "Procházet všechny větve ({{count}})",
-    "browseAllBranches_many": "Procházet všechny větve ({{count}})",
-    "browseAllBranches_other": "Procházet všechny větve ({{count}})",
     "switchTo": "Přepnout na: {{name}}"
   },
   "folderBrowser": {
@@ -469,5 +320,12 @@
     "taskRowNotLoaded": "Spuštěno dříve v této konverzaci; kliknutím načtete",
     "taskOfAgent": "Spuštěno jedním z agentů této relace"
   },
-  "cancel": "Zrušit"
+  "cancel": "Zrušit",
+  "versionUpdate": {
+    "ariaLabels": {
+      "showSidebar": "Zobrazit postranní panel",
+      "closeSidebar": "Zavřít postranní panel",
+      "resizeSidebar": "Změnit šířku postranního panelu"
+    }
+  }
 }

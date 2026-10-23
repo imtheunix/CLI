@@ -20,8 +20,6 @@
   "tabs": {
     "chat": "Chat",
     "shell": "Shell",
-    "files": "File",
-    "git": "Kontrol Sumber",
     "tasks": "Tugas",
     "browser": "Browser",
     "computer": "Komputer"
@@ -79,16 +77,8 @@
     "daysAgo": "{{count}} hari lalu",
     "yesterday": "Kemarin"
   },
-  "fileOperations": {
-    "newFile": "File Baru",
-    "newFolder": "Folder Baru",
-    "rename": "Ganti Nama",
-    "move": "Pindahkan",
-    "copyPath": "Salin Path",
-    "openInEditor": "Buka di Editor"
-  },
   "mainContent": {
-    "loading": "Memuat CloudCLI",
+    "loading": "Memuat CLI",
     "settingUpWorkspace": "Menyiapkan workspace...",
     "chooseProject": "Pilih Proyek",
     "selectProjectDescription": "Pilih proyek dari sidebar untuk mulai coding dengan Claude. Setiap proyek berisi sesi chat dan riwayat file.",
@@ -96,46 +86,7 @@
     "createProjectMobile": "Ketuk tombol menu di atas untuk mengakses proyek",
     "createProjectDesktop": "Buat proyek baru dengan mengeklik ikon folder di sidebar",
     "newSession": "Sesi Baru",
-    "untitledSession": "Sesi Tanpa Judul",
-    "projectFiles": "File Proyek"
-  },
-  "fileTree": {
-    "loading": "Memuat file...",
-    "files": "File",
-    "simpleView": "Tampilan sederhana",
-    "compactView": "Tampilan ringkas",
-    "detailedView": "Tampilan terperinci",
-    "searchPlaceholder": "Cari file dan folder...",
-    "clearSearch": "Hapus pencarian",
-    "name": "Nama",
-    "size": "Ukuran",
-    "modified": "Diubah",
-    "permissions": "Izin",
-    "noFilesFound": "Tidak ada file",
-    "checkProjectPath": "Periksa apakah path proyek dapat diakses",
-    "loadFailed": "Gagal memuat file",
-    "noMatchesFound": "Tidak ada kecocokan",
-    "tryDifferentSearch": "Coba kata pencarian lain atau hapus pencarian",
-    "justNow": "baru saja",
-    "minAgo": "{{count}} menit lalu",
-    "hoursAgo": "{{count}} jam lalu",
-    "daysAgo": "{{count}} hari lalu",
-    "newFile": "File Baru (Cmd+N)",
-    "newFolder": "Folder Baru (Cmd+Shift+N)",
-    "refresh": "Segarkan",
-    "collapseAll": "Ciutkan Semua",
-    "context": {
-      "rename": "Ganti Nama",
-      "delete": "Hapus",
-      "copyPath": "Salin Path",
-      "download": "Unduh",
-      "newFile": "File Baru",
-      "newFolder": "Folder Baru",
-      "upload": "Unggah File",
-      "refresh": "Segarkan",
-      "menuLabel": "Menu konteks file",
-      "loading": "Memuat..."
-    }
+    "untitledSession": "Sesi Tanpa Judul"
   },
   "projectWizard": {
     "title": "Buat Proyek Baru",
@@ -241,43 +192,6 @@
       }
     }
   },
-  "versionUpdate": {
-    "title": "Pembaruan Tersedia",
-    "newVersionReady": "Versi baru siap digunakan",
-    "currentVersion": "Versi Saat Ini",
-    "latestVersion": "Versi Terbaru",
-    "whatsNew": "Yang Baru:",
-    "viewFullRelease": "Lihat rilis lengkap",
-    "updateProgress": "Progres Pembaruan:",
-    "manualUpgrade": "Pembaruan manual:",
-    "npmUpgradeCommand": "npm install -g @cloudcli-ai/cloudcli@latest",
-    "manualUpgradeHint": "Atau klik \"Perbarui Sekarang\" untuk menjalankan pembaruan secara otomatis.",
-    "updateCompleted": "Pembaruan berhasil diselesaikan!",
-    "restartServer": "Mulai ulang server untuk menerapkan perubahan.",
-    "updateFailed": "Pembaruan gagal",
-    "buttons": {
-      "close": "Tutup",
-      "later": "Nanti",
-      "copyCommand": "Salin Perintah",
-      "updateNow": "Perbarui Sekarang",
-      "updating": "Memperbarui..."
-    },
-    "ariaLabels": {
-      "closeModal": "Tutup modal pembaruan versi",
-      "showSidebar": "Tampilkan sidebar",
-      "settings": "Pengaturan",
-      "updateAvailable": "Pembaruan tersedia",
-      "closeSidebar": "Tutup sidebar"
-    },
-    "startingUpdate": "Memulai pembaruan...",
-    "updateStartedRestarting": "Pembaruan dimulai. Server tampaknya sedang dimulai ulang untuk menerapkannya.",
-    "unexpectedResponse": "Endpoint pembaruan mengembalikan respons yang tidak terduga (HTTP {{status}}). Perbarui secara manual dengan perintah di bawah.",
-    "connectionInterrupted": "Koneksi ke server terputus — kemungkinan server sedang dimulai ulang untuk menerapkan pembaruan.",
-    "unknownError": "Kesalahan tidak diketahui",
-    "refreshNow": "Menyegarkan jendela sekarang...",
-    "refreshIn_one": "Jendela akan disegarkan dalam {{count}} detik. Jika pembaruan tidak diterapkan, MULAI ULANG environment.",
-    "refreshIn_other": "Jendela akan disegarkan dalam {{count}} detik. Jika pembaruan tidak diterapkan, MULAI ULANG environment."
-  },
   "commandPalette": {
     "title": "Palet perintah",
     "pages": {
@@ -294,29 +208,17 @@
     "noResults": "Tidak ada hasil.",
     "groupActions": "Tindakan",
     "groupNavigate": "Navigasi",
-    "groupGit": "Git",
     "groupSettings": "Pengaturan",
     "groupSessions": "Sesi",
-    "groupFiles": "File",
-    "groupCommits": "Commit",
-    "groupBranches": "Branch",
     "startNewChat": "Mulai chat baru",
     "selectProjectFirst": "Pilih proyek terlebih dahulu",
     "openSettings": "Buka pengaturan",
     "toggleTheme": "Ganti tema",
     "navChat": "Buka Chat",
-    "navFiles": "Buka File",
     "navShell": "Buka Shell",
-    "navGit": "Buka Git",
     "navTasks": "Buka Tugas",
-    "gitFetch": "Git: Fetch",
-    "gitPull": "Git: Pull",
-    "gitPush": "Git: Push",
     "settingsItem": "Pengaturan: {{label}}",
     "browseAllSessions": "Telusuri semua sesi ({{count}})",
-    "browseAllFiles": "Telusuri semua file ({{count}})",
-    "browseAllCommits": "Telusuri semua commit ({{count}})",
-    "browseAllBranches": "Telusuri semua branch ({{count}})",
     "switchTo": "Beralih ke: {{name}}"
   },
   "folderBrowser": {
@@ -351,5 +253,11 @@
     "closeLoginModal": "Tutup modal login",
     "pluginLoadFailed": "Plugin gagal dimuat: {{error}}"
   },
-  "cancel": "Batal"
+  "cancel": "Batal",
+  "versionUpdate": {
+    "ariaLabels": {
+      "showSidebar": "Tampilkan sidebar",
+      "closeSidebar": "Tutup sidebar"
+    }
+  }
 }

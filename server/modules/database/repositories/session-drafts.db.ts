@@ -96,27 +96,50 @@ export const sessionDraftsDb = {
     }));
   },
 
-  /** Atomically removes a queued turn only if it has not been edited since listing. */
+  /** Atomically consumes one item; the claim token prevents an edited queue from being sent. */
   claimQueuedMessage(candidate: QueuedSessionMessageRecord): boolean {
-    const result = getConnection()
-      .prepare(
-        `UPDATE session_drafts
-         SET queued_message = NULL, updated_at = CURRENT_TIMESTAMP
-         WHERE user_id = ? AND draft_scope = ? AND queued_message = ?`
-      )
-      .run(candidate.userId, candidate.sessionId, candidate.claimToken);
+    const stored = candidate.queuedMessage as { items?: unknown[]; forceId?: string; paused?: boolean } | null;
+    let remaining: string | null = null;
+    if (Array.isArray(stored?.items)) {
+      const index = stored.forceId ? stored.items.findIndex((item) => (item as { id?: string })?.id === stored.forceId) : 0;
+      const items = stored.items.filter((_, position) => position !== index);
+      remaining = items.length ? JSON.stringify({ items, paused: false }) : null;
+    }
+    const result = getConnection().prepare(
+      `UPDATE session_drafts SET queued_message = ?, updated_at = CURRENT_TIMESTAMP
+       WHERE user_id = ? AND draft_scope = ? AND queued_message = ?`
+    ).run(remaining, candidate.userId, candidate.sessionId, candidate.claimToken);
     return result.changes > 0;
   },
 
-  /** Restores a claim lost to the narrow race where another run starts first. */
+  /** Restores a failed reservation without overwriting edits made since the claim. */
   restoreQueuedMessage(candidate: QueuedSessionMessageRecord): void {
-    getConnection()
-      .prepare(
-        `UPDATE session_drafts
-         SET queued_message = ?, updated_at = CURRENT_TIMESTAMP
-         WHERE user_id = ? AND draft_scope = ? AND queued_message IS NULL`
-      )
-      .run(candidate.claimToken, candidate.userId, candidate.sessionId);
+    const stored = candidate.queuedMessage as { items?: unknown[]; forceId?: string } | null;
+    let expected: string | null = null;
+    if (Array.isArray(stored?.items)) {
+      const index = stored.forceId ? stored.items.findIndex((item) => (item as { id?: string })?.id === stored.forceId) : 0;
+      const items = stored.items.filter((_, position) => position !== index);
+      expected = items.length ? JSON.stringify({ items, paused: false }) : null;
+    }
+    getConnection().prepare(
+      `UPDATE session_drafts SET queued_message = ?, updated_at = CURRENT_TIMESTAMP
+       WHERE user_id = ? AND draft_scope = ? AND queued_message IS ?`
+    ).run(candidate.claimToken, candidate.userId, candidate.sessionId, expected);
+  },
+
+  /** Stops automatic consumption while retaining every pending item, including across restarts. */
+  pauseQueue(scope: string): void {
+    const db = getConnection();
+    db.transaction(() => {
+      const rows = db.prepare('SELECT user_id, queued_message FROM session_drafts WHERE draft_scope = ? AND queued_message IS NOT NULL').all(scope) as { user_id: number; queued_message: string }[];
+      for (const row of rows) {
+        const stored = parseQueuedMessage(row.queued_message) as { items?: unknown[] } | null;
+        if (!stored) continue;
+        const items = Array.isArray(stored.items) ? stored.items : [stored];
+        db.prepare('UPDATE session_drafts SET queued_message = ? WHERE user_id = ? AND draft_scope = ?')
+          .run(JSON.stringify({ items, paused: true }), row.user_id, scope);
+      }
+    })();
   },
 
   /** Removes the placeholder row left after its last queued turn is claimed. */

@@ -1,5 +1,6 @@
 /**
  * i18n Configuration
+ * Modified by CLI: remove retired Git translations.
  *
  * Configures i18next for internationalization support.
  * Features:
@@ -22,7 +23,6 @@ import enCodeEditor from '@/modules/i18n/locales/en/codeEditor.json';
 // oxlint-disable-next-line importx/order
 import enTasks from '@/modules/i18n/locales/en/tasks.json';
 // oxlint-disable-next-line importx/order
-import enGit from '@/modules/i18n/locales/en/git.json';
 
 import frCommon from '@/modules/i18n/locales/fr/common.json';
 import frSettings from '@/modules/i18n/locales/fr/settings.json';
@@ -110,7 +110,6 @@ import idCodeEditor from '@/modules/i18n/locales/id/codeEditor.json';
 // oxlint-disable-next-line importx/order
 import idTasks from '@/modules/i18n/locales/id/tasks.json';
 // oxlint-disable-next-line importx/order
-import idGit from '@/modules/i18n/locales/id/git.json';
 
 import csCommon from '@/modules/i18n/locales/cs/common.json';
 import csSettings from '@/modules/i18n/locales/cs/settings.json';
@@ -121,7 +120,6 @@ import csCodeEditor from '@/modules/i18n/locales/cs/codeEditor.json';
 // oxlint-disable-next-line importx/order
 import csTasks from '@/modules/i18n/locales/cs/tasks.json';
 // oxlint-disable-next-line importx/order
-import csGit from '@/modules/i18n/locales/cs/git.json';
 
 import heCommon from '@/modules/i18n/locales/he/common.json';
 import heSettings from '@/modules/i18n/locales/he/settings.json';
@@ -132,7 +130,6 @@ import heCodeEditor from '@/modules/i18n/locales/he/codeEditor.json';
 // oxlint-disable-next-line importx/order
 import heTasks from '@/modules/i18n/locales/he/tasks.json';
 // oxlint-disable-next-line importx/order
-import heGit from '@/modules/i18n/locales/he/git.json';
 
 import zhTWCommon from '@/modules/i18n/locales/zh-TW/common.json';
 import zhTWSettings from '@/modules/i18n/locales/zh-TW/settings.json';
@@ -152,7 +149,6 @@ import ptBRCodeEditor from '@/modules/i18n/locales/pt-BR/codeEditor.json';
 // oxlint-disable-next-line importx/order
 import ptBRTasks from '@/modules/i18n/locales/pt-BR/tasks.json';
 // oxlint-disable-next-line importx/order
-import ptBRGit from '@/modules/i18n/locales/pt-BR/git.json';
 
 // Import supported languages configuration
 import { languages } from '@/modules/i18n/languages';
@@ -188,7 +184,6 @@ i18n
         chat: enChat,
         codeEditor: enCodeEditor,
         tasks: enTasks,
-git: enGit,
       },
       fr: {
         common: frCommon,
@@ -279,7 +274,6 @@ git: enGit,
         chat: idChat,
         codeEditor: idCodeEditor,
         tasks: idTasks,
-        git: idGit,
       },
       cs: {
         common: csCommon,
@@ -289,7 +283,6 @@ git: enGit,
         chat: csChat,
         codeEditor: csCodeEditor,
         tasks: csTasks,
-        git: csGit,
       },
       he: {
         common: heCommon,
@@ -299,7 +292,6 @@ git: enGit,
         chat: heChat,
         codeEditor: heCodeEditor,
         tasks: heTasks,
-        git: heGit,
       },
       'zh-TW': {
         common: zhTWCommon,
@@ -318,7 +310,6 @@ git: enGit,
         chat: ptBRChat,
         codeEditor: ptBRCodeEditor,
         tasks: ptBRTasks,
-        git: ptBRGit,
       },
     },
 
@@ -332,7 +323,7 @@ git: enGit,
     debug: false,
 
     // Namespaces - load only what's needed
-    ns: ['common', 'settings', 'auth', 'sidebar', 'chat', 'codeEditor', 'tasks', 'git'],
+    ns: ['common', 'settings', 'auth', 'sidebar', 'chat', 'codeEditor', 'tasks'],
     defaultNS: 'common',
 
     // Key separator for nested keys (default: '.')

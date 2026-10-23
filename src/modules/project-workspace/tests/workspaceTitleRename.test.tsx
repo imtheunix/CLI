@@ -51,7 +51,7 @@ const session: ProjectSession = {
 
 const onRenameSession = vi.fn<(sessionId: string, summary: string) => Promise<boolean>>();
 
-const renderTitle = (overrides: { selectedSession?: ProjectSession | null; activeTab?: 'chat' | 'files' } = {}) => render(
+const renderTitle = (overrides: { selectedSession?: ProjectSession | null; activeTab?: 'chat' | 'shell' } = {}) => render(
   <WorkspaceTitle
     activeTab={overrides.activeTab ?? 'chat'}
     selectedProject={project}
@@ -184,7 +184,7 @@ test('the title is not editable without a session or off the chat tab', () => {
   assert.equal(queryRenameInput(), null);
   unmount();
 
-  renderTitle({ activeTab: 'files' });
+  renderTitle({ activeTab: 'shell' });
   fireEvent.doubleClick(titleHeading());
   assert.equal(queryRenameInput(), null);
   assert.equal(onRenameSession.mock.calls.length, 0);

@@ -1,4 +1,10 @@
 {
+  "chatDisplay": {
+    "showRawParameters": "Mostrar parâmetros brutos",
+    "showThinking": "Mostrar raciocínio",
+    "sendByCtrlEnter": "Enviar com Ctrl+Enter",
+    "title": "Chat display and input"
+  },
   "title": "Configurações",
   "tabs": {
     "account": "Conta",
@@ -65,48 +71,6 @@
     "format": "Formato de áudio",
     "note": "Uma URL base personalizada é chamada diretamente pelo seu navegador e deve permitir requisições CORS do navegador. Deixe em branco para usar o backend configurado no servidor."
   },
-  "quickSettings": {
-    "title": "Configurações rápidas",
-    "sections": {
-      "appearance": "Aparência",
-      "toolDisplay": "Exibição de ferramentas",
-      "inputSettings": "Configurações de entrada"
-    },
-    "darkMode": "Modo escuro",
-    "showRawParameters": "Mostrar parâmetros brutos",
-    "showThinking": "Mostrar raciocínio",
-    "sendByCtrlEnter": "Enviar com Ctrl+Enter",
-    "voiceEnabled": "Voz (microfone + leitura em voz alta)",
-    "sendByCtrlEnterDescription": "Quando ativado, pressionar Ctrl+Enter envia a mensagem em vez de apenas Enter. Isso é útil para usuários de IME evitarem envios acidentais.",
-    "dragHandle": {
-      "dragging": "Arrastando alça",
-      "closePanel": "Fechar painel de configurações",
-      "openPanel": "Abrir painel de configurações",
-      "draggingStatus": "Arrastando...",
-      "toggleAndMove": "Clique para alternar, arraste para mover"
-    },
-    "tabs": {
-      "settings": "Configurações",
-      "commands": "Comandos"
-    },
-    "pin": "Fixar painel aberto",
-    "unpin": "Desfixar painel",
-    "close": "Fechar painel",
-    "commands": {
-      "searchPlaceholder": "Pesquisar comandos…",
-      "noProject": "Selecione um projeto para ver seus comandos.",
-      "loading": "Carregando comandos…",
-      "empty": "Nenhum comando disponível para este projeto.",
-      "noMatches": "Nenhum comando corresponde à sua pesquisa.",
-      "loadError": "Os comandos não puderam ser carregados.",
-      "groups": {
-        "builtIn": "Integrados",
-        "custom": "Personalizados",
-        "skills": "Skills"
-      },
-      "insertTitle": "Inserir {{command}} no chat"
-    }
-  },
   "terminalShortcuts": {
     "title": "Atalhos do terminal",
     "sectionKeys": "Teclas",
@@ -126,7 +90,6 @@
     "label": "Configurações",
     "agents": "Agentes",
     "appearance": "Aparência",
-    "git": "Git",
     "apiTokens": "API & Tokens",
     "voice": "Voz",
     "tasks": "Tarefas",
@@ -283,25 +246,6 @@
   "footerActions": {
     "save": "Salvar configurações",
     "cancel": "Cancelar"
-  },
-  "git": {
-    "title": "Configuração do Git",
-    "description": "Configure sua identidade do Git para commits. Estas configurações serão aplicadas globalmente via git config --global",
-    "name": {
-      "label": "Nome do Git",
-      "help": "Seu nome para commits do Git"
-    },
-    "email": {
-      "label": "E-mail do Git",
-      "help": "Seu e-mail para commits do Git"
-    },
-    "actions": {
-      "save": "Salvar configuração",
-      "saving": "Salvando..."
-    },
-    "status": {
-      "success": "Salvo com sucesso"
-    }
   },
   "apiKeys": {
     "title": "Chaves da API",
@@ -549,7 +493,7 @@
     },
     "managed": {
       "badge": "Gerenciado",
-      "hint": "Gerenciado pelo CloudCLI."
+      "hint": "Gerenciado pelo CLI."
     },
     "help": {
       "title": "Sobre MCP do Codex",
@@ -576,93 +520,11 @@
     "installFailed": "Instalação falhou",
     "uninstallFailed": "Desinstalação falhou",
     "toggleFailed": "Alternância falhou",
-    "starterPluginLabel": "Plugin inicial",
-    "starter": "Inicial",
-    "docs": "Docs",
-    "sections": {
-      "officialTitle": "Plugins oficiais",
-      "officialDescription": "Mantidos pela equipe do CloudCLI e prontos para instalação direta.",
-      "unofficialTitle": "Outros plugins",
-      "unofficialDescription": "Plugins e integrações não oficiais de outros usuários. Revise o código-fonte antes de instalar."
-    },
-    "starterPlugin": {
-      "name": "Estatísticas do projeto",
-      "badge": "inicial",
-      "description": "Contagem de arquivos, linhas de código, detalhamento por tipo de arquivo e atividade recente do seu projeto.",
-      "install": "Instalar"
-    },
-    "terminalPlugin": {
-      "name": "Terminal",
-      "badge": "oficial",
-      "description": "Terminal integrado com acesso completo ao shell diretamente na interface.",
-      "install": "Instalar"
-    },
-    "scheduledPromptPlugin": {
-      "name": "Prompts agendados",
-      "badge": "não oficial",
-      "description": "Agende prompts de espaço de trabalho, revise histórico de execuções e gerencie tarefas locais recorrentes.",
-      "install": "Instalar"
-    },
-    "prismCloudCLI": {
-      "name": "PRISM CloudCLI",
-      "badge": "não oficial",
-      "description": "Inteligência de sessão para o Claude Code, dentro do CloudCLI. Veja por que suas sessões estão queimando tokens sem sair do navegador.",
-      "install": "Instalar"
-    },
-    "sessionManagerPlugin": {
-      "name": "Sessões",
-      "badge": "não oficial",
-      "description": "Visualize, gerencie e encerre sessões ativas do Claude Code.",
-      "install": "Instalar"
-    },
-    "tokenCostCalculatorPlugin": {
-      "name": "Calculadora de custo de tokens",
-      "badge": "não oficial",
-      "description": "Calcule custos de API a partir de preços de modelos e uso de tokens, com suporte a preços predefinidos de modelos.",
-      "install": "Instalar"
-    },
-    "taskQueuePlugin": {
-      "name": "Fila de tarefas",
-      "badge": "não oficial",
-      "description": "Dashboard de fila de tarefas para visualizar, filtrar e iniciar tarefas de agentes.",
-      "install": "Instalar"
-    },
-    "githubIssuesBoardPlugin": {
-      "name": "Quadro de Issues do GitHub",
-      "badge": "não oficial",
-      "description": "Quadro Kanban para Issues do GitHub com sincronização bidirecional com TaskMaster e auto-instalação da skill CLI /github-task",
-      "install": "Instalar"
-    },
-    "claudeUsagePlugin": {
-      "name": "Uso do Claude",
-      "badge": "não oficial",
-      "description": "Acompanhe limites do plano do Claude Code em tempo real e explore histórico de 30 dias de tokens e custos.",
-      "install": "Instalar"
-    },
-    "codexUsagePlugin": {
-      "name": "Uso do Codex",
-      "badge": "não oficial",
-      "description": "Acompanhe limites do plano do Codex em tempo real, tempo de reset e atividade de tokens da conta nos últimos 30 dias.",
-      "install": "Instalar"
-    },
-    "glmUsagePlugin": {
-      "name": "Uso do GLM",
-      "badge": "não oficial",
-      "description": "Acompanhe cotas do plano de codificação GLM/Zhipu em tempo real e histórico de 30 dias de tokens.",
-      "install": "Instalar"
-    },
-    "agentMonitorPlugin": {
-      "name": "Monitor de agentes",
-      "badge": "não oficial",
-      "description": "Veja subagentes e shells em segundo plano que continuam rodando após o fim de um chat e pare-os.",
-      "install": "Instalar"
-    },
-    "morePlugins": "Mais",
     "enable": "Ativar",
     "disable": "Desativar",
-    "installAriaLabel": "URL do repositório git do plugin",
     "tab": "aba",
-    "runningStatus": "em execução"
+    "runningStatus": "em execução",
+    "installAriaLabel": "URL do repositório git do plugin"
   },
   "skillsPage": {
     "description": "Gerencie skills do {{provider}} a partir de arquivos locais, pastas completas e locais cientes de projeto.",
@@ -823,7 +685,7 @@
   "mcpTeamCard": {
     "title": "Configs MCP da equipe",
     "description": "Compartilhe configurações de servidores MCP com sua equipe. Todos ficam em sincronia automaticamente.",
-    "proLink": "Disponível com CloudCLI Pro"
+    "proLink": "Disponível com CLI Pro"
   },
   "mcpServersAddErrors": {
     "loadFailedProvider": "Falha ao carregar servidores MCP do {{provider}}",
@@ -837,18 +699,6 @@
     "unknownError": "Erro desconhecido"
   },
   "about": {
-    "tagline": "Interface de assistente de codificação com IA de código aberto",
-    "starOnGitHub": "Dar estrela no GitHub",
-    "docs": "Docs",
-    "hostedTitle": "Experimente o CloudCLI hospedado",
-    "hostedDescription": "Colaboração em equipe, configs MCP compartilhados, sincronização de configurações entre ambientes e infraestrutura gerenciada.",
-    "learnMore": "Saiba mais",
-    "proFeaturesTitle": "Recursos do CloudCLI Pro",
-    "syncSettingsTitle": "Sincronizar configurações",
-    "syncSettingsDescription": "Mantenha suas preferências, configs MCP e tema em sincronia em todos os seus ambientes.",
-    "teamManagementTitle": "Gerenciamento de equipe",
-    "teamManagementDescription": "Múltiplos usuários, acesso baseado em funções e projetos compartilhados para sua equipe.",
-    "licensed": "Licenciado sob AGPL-3.0",
-    "proCta": "Disponível com CloudCLI Pro"
+    "licensed": "Licenciado sob AGPL-3.0"
   }
 }

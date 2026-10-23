@@ -303,7 +303,7 @@ function ChatInterface({
     sessionStore,
   });
 
-  // Lets other modules (the quick settings Commands tab) hand text to the
+  // Lets the command palette hand text to the
   // composer: append it after a separating space, then focus the textarea with
   // the caret at the end once React has rendered the new value.
   const insertComposerText = useCallback((text: string) => {
@@ -565,6 +565,7 @@ function ChatInterface({
           onSubmit={handleSubmit}
           isDragActive={isDragActive}
           queuedDraft={queuedDraft}
+          queueScope={selectedSession?.id || currentSessionId}
           backgroundSendPrompt={backgroundSendPrompt}
           onResolveBackgroundSendPrompt={resolveBackgroundSendPrompt}
           onEditQueuedDraft={editQueuedDraft}

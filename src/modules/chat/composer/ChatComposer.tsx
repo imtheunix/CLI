@@ -31,7 +31,7 @@ import ComposerAttachment from '@/modules/chat/composer/ComposerAttachment';
 import VoiceInputButton from '@/modules/chat/composer/VoiceInputButton';
 import PermissionRequestsBanner from '@/modules/chat/composer/PermissionRequestsBanner';
 import TokenUsageSummary from '@/modules/chat/composer/TokenUsageSummary';
-import QueuedMessageCard from '@/modules/chat/composer/QueuedMessageCard';
+import QueuedMessageList from '@/modules/chat/composer/QueuedMessageList';
 import BackgroundSendDialog from '@/modules/chat/composer/BackgroundSendDialog';
 import { ScheduleMessagePopover } from '@/modules/chat/composer/ScheduleMessagePopover';
 import { ScheduledMessageList } from '@/modules/chat/composer/ScheduledMessageList';
@@ -73,6 +73,7 @@ type ChatComposerProps = {
   onSubmit: (event: FormEvent<HTMLFormElement> | MouseEvent<HTMLButtonElement> | TouchEvent<HTMLButtonElement>) => void;
   isDragActive: boolean;
   queuedDraft: QueuedDraft | null;
+  queueScope?: string | null;
   backgroundSendPrompt: BackgroundSendPrompt | null;
   onResolveBackgroundSendPrompt: (choice: BackgroundSendChoice) => void;
   /** Set while the composer is replacing an already-sent message. */
@@ -150,6 +151,7 @@ export default function ChatComposer({
   onSubmit,
   isDragActive,
   queuedDraft,
+  queueScope,
   backgroundSendPrompt,
   onResolveBackgroundSendPrompt,
   isEditingSentMessage,
@@ -256,7 +258,7 @@ export default function ChatComposer({
   const hasPendingPermissions = pendingPermissionRequests.length > 0;
   const hasActivityIndicator = Boolean(activity && !hasPendingPermissions);
 
-  const hasQueuedDraft = Boolean(queuedDraft);
+  const hasQueuedDraft = false;
   const canQueueDraft = isLoading && Boolean(input.trim() || attachedFiles.length > 0);
   const submitHint = canQueueDraft
     ? hasQueuedDraft
@@ -319,16 +321,7 @@ export default function ChatComposer({
         onResolve={onResolveBackgroundSendPrompt}
       />
 
-      {queuedDraft && (
-        <QueuedMessageCard
-          content={queuedDraft.content}
-          attachmentCount={
-            queuedDraft.uploadedAttachments?.length ?? queuedDraft.attachments.length
-          }
-          onEdit={onEditQueuedDraft}
-          onDelete={onDeleteQueuedDraft}
-        />
-      )}
+      {queueScope && <QueuedMessageList scope={queueScope} busy={isLoading} />}
 
       {!hasQuestionPanel && <div className="relative mx-auto max-w-[54.25rem]">
         {showFileDropdown && filteredFiles.length > 0 && (

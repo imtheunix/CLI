@@ -20,7 +20,7 @@
     "runClaudeCli": "在專案目錄中執行 Claude CLI 以開始使用"
   },
   "app": {
-    "title": "CloudCLI",
+    "title": "CLI",
     "subtitle": "AI 程式開發助手"
   },
   "sessions": {
@@ -73,12 +73,7 @@
     "save": "儲存",
     "delete": "刪除",
     "rename": "重新命名",
-    "joinCommunity": "加入社群",
-    "reportIssue": "回報問題",
     "starOnGithub": "在 GitHub 上加星"
-  },
-  "branding": {
-    "openSource": "開源"
   },
   "status": {
     "active": "使用中",
@@ -123,12 +118,7 @@
     "deleteSessionsPartialFailure_one": "{{total}} 個工作階段中有 {{count}} 個刪除失敗，請重試。",
     "deleteSessionsPartialFailure_other": "{{total}} 個工作階段中有 {{count}} 個刪除失敗，請重試。"
   },
-  "version": {
-    "updateAvailable": "有可用更新",
-    "restartRequired": "已安裝更新 — 請重新啟動伺服器以套用"
-  },
   "search": {
-    "modeProjects": "專案",
     "modeConversations": "對話",
     "modeMore": "更多",
     "conversationsPlaceholder": "搜尋對話內容...",
@@ -166,5 +156,8 @@
     "archiveSessions_other": "封存 {{count}} 個工作階段",
     "archiveSessionsNotice_one": "封存會將所選工作階段移出使用中清單，但保留其歷史記錄。",
     "archiveSessionsNotice_other": "封存會將所選工作階段移出使用中清單，但保留其歷史記錄。"
+  },
+  "branding": {
+    "openSource": "CLI · a modification of CloudCLI v1.37.5 - Open Source"
   }
 }

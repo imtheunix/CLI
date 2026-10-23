@@ -20,8 +20,6 @@
   "tabs": {
     "chat": "Chat",
     "shell": "Shell",
-    "files": "Arquivos",
-    "git": "Controle de origem",
     "tasks": "Tarefas",
     "browser": "Navegador",
     "computer": "Computador"
@@ -79,16 +77,8 @@
     "daysAgo": "{{count}} dias atrás",
     "yesterday": "Ontem"
   },
-  "fileOperations": {
-    "newFile": "Novo arquivo",
-    "newFolder": "Nova pasta",
-    "rename": "Renomear",
-    "move": "Mover",
-    "copyPath": "Copiar caminho",
-    "openInEditor": "Abrir no editor"
-  },
   "mainContent": {
-    "loading": "Carregando CloudCLI",
+    "loading": "Carregando CLI",
     "settingUpWorkspace": "Configurando seu espaço de trabalho...",
     "chooseProject": "Escolha seu projeto",
     "selectProjectDescription": "Selecione um projeto na barra lateral para começar a codar com o Claude. Cada projeto contém suas sessões de chat e histórico de arquivos.",
@@ -97,47 +87,8 @@
     "createProjectDesktop": "Crie um novo projeto clicando no ícone de pasta na barra lateral",
     "newSession": "Nova sessão",
     "untitledSession": "Sessão sem título",
-    "projectFiles": "Arquivos do projeto",
     "renameSessionHint": "{{title}} (clique duas vezes para renomear)",
     "renameSessionLabel": "Título da sessão"
-  },
-  "fileTree": {
-    "loading": "Carregando arquivos...",
-    "files": "Arquivos",
-    "simpleView": "Visualização simples",
-    "compactView": "Visualização compacta",
-    "detailedView": "Visualização detalhada",
-    "searchPlaceholder": "Pesquisar arquivos e pastas...",
-    "clearSearch": "Limpar pesquisa",
-    "name": "Nome",
-    "size": "Tamanho",
-    "modified": "Modificado",
-    "permissions": "Permissões",
-    "noFilesFound": "Nenhum arquivo encontrado",
-    "checkProjectPath": "Verifique se o caminho do projeto está acessível",
-    "loadFailed": "Falha ao carregar arquivos",
-    "noMatchesFound": "Nenhuma correspondência encontrada",
-    "tryDifferentSearch": "Tente outro termo de pesquisa ou limpe a pesquisa",
-    "justNow": "agora mesmo",
-    "minAgo": "{{count}} min atrás",
-    "hoursAgo": "{{count}} horas atrás",
-    "daysAgo": "{{count}} dias atrás",
-    "newFile": "Novo arquivo (Cmd+N)",
-    "newFolder": "Nova pasta (Cmd+Shift+N)",
-    "refresh": "Atualizar",
-    "collapseAll": "Recolher tudo",
-    "context": {
-      "rename": "Renomear",
-      "delete": "Excluir",
-      "copyPath": "Copiar caminho",
-      "download": "Baixar",
-      "newFile": "Novo arquivo",
-      "newFolder": "Nova pasta",
-      "upload": "Enviar arquivos",
-      "refresh": "Atualizar",
-      "menuLabel": "Menu de contexto do arquivo",
-      "loading": "Carregando..."
-    }
   },
   "projectWizard": {
     "title": "Criar novo projeto",
@@ -243,45 +194,6 @@
       }
     }
   },
-  "versionUpdate": {
-    "title": "Atualização disponível",
-    "newVersionReady": "Uma nova versão está pronta",
-    "currentVersion": "Versão atual",
-    "latestVersion": "Versão mais recente",
-    "whatsNew": "O que há de novo:",
-    "viewFullRelease": "Ver release completo",
-    "updateProgress": "Progresso da atualização:",
-    "manualUpgrade": "Atualização manual:",
-    "npmUpgradeCommand": "npm install -g @cloudcli-ai/cloudcli@latest",
-    "manualUpgradeHint": "Ou clique em \"Atualizar agora\" para executar a atualização automaticamente.",
-    "updateCompleted": "Atualização concluída com sucesso!",
-    "restartServer": "Reinicie o servidor para aplicar as mudanças.",
-    "updateFailed": "Atualização falhou",
-    "buttons": {
-      "close": "Fechar",
-      "later": "Depois",
-      "copyCommand": "Copiar comando",
-      "updateNow": "Atualizar agora",
-      "updating": "Atualizando..."
-    },
-    "ariaLabels": {
-      "closeModal": "Fechar modal de atualização de versão",
-      "showSidebar": "Mostrar barra lateral",
-      "settings": "Configurações",
-      "updateAvailable": "Atualização disponível",
-      "closeSidebar": "Fechar barra lateral",
-      "resizeSidebar": "Redimensionar barra lateral"
-    },
-    "startingUpdate": "Iniciando atualização...",
-    "updateStartedRestarting": "Atualização iniciada. O servidor parece estar reiniciando para aplicá-la.",
-    "unexpectedResponse": "O endpoint de atualização retornou uma resposta inesperada (HTTP {{status}}). Atualize manualmente com o comando abaixo.",
-    "connectionInterrupted": "A conexão com o servidor foi interrompida — ele provavelmente está reiniciando para aplicar a atualização.",
-    "unknownError": "Erro desconhecido",
-    "refreshNow": "Atualizando a janela agora...",
-    "refreshIn_one": "Isso atualizará a janela em {{count}} segundo. Se a atualização não for aplicada, REINICIE o ambiente.",
-    "refreshIn_other": "Isso atualizará a janela em {{count}} segundos. Se a atualização não for aplicada, REINICIE o ambiente.",
-    "refreshIn_many": "Isso atualizará a janela em {{count}} segundos. Se a atualização não for aplicada, REINICIE o ambiente."
-  },
   "commandPalette": {
     "title": "Paleta de comandos",
     "pages": {
@@ -298,29 +210,17 @@
     "noResults": "Nenhum resultado.",
     "groupActions": "Ações",
     "groupNavigate": "Navegar",
-    "groupGit": "Git",
     "groupSettings": "Configurações",
     "groupSessions": "Sessões",
-    "groupFiles": "Arquivos",
-    "groupCommits": "Commits",
-    "groupBranches": "Branches",
     "startNewChat": "Iniciar novo chat",
     "selectProjectFirst": "Selecione um projeto primeiro",
     "openSettings": "Abrir configurações",
     "toggleTheme": "Alternar tema",
     "navChat": "Ir para Chat",
-    "navFiles": "Ir para arquivos",
     "navShell": "Ir para Shell",
-    "navGit": "Ir para Git",
     "navTasks": "Ir para tarefas",
-    "gitFetch": "Git: Fetch",
-    "gitPull": "Git: Pull",
-    "gitPush": "Git: Push",
     "settingsItem": "Configurações: {{label}}",
     "browseAllSessions": "Navegar todas as sessões ({{count}})",
-    "browseAllFiles": "Navegar todos os arquivos ({{count}})",
-    "browseAllCommits": "Navegar todos os commits ({{count}})",
-    "browseAllBranches": "Navegar todas as branches ({{count}})",
     "switchTo": "Alternar para: {{name}}"
   },
   "folderBrowser": {
@@ -398,5 +298,12 @@
     "taskRowNotLoaded": "Iniciado anteriormente nesta conversa; clique para carregar",
     "taskOfAgent": "Iniciado por um dos agentes desta sessão"
   },
-  "cancel": "Cancelar"
+  "cancel": "Cancelar",
+  "versionUpdate": {
+    "ariaLabels": {
+      "showSidebar": "Mostrar barra lateral",
+      "closeSidebar": "Fechar barra lateral",
+      "resizeSidebar": "Redimensionar barra lateral"
+    }
+  }
 }

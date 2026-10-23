@@ -497,7 +497,7 @@ export default function ModelLibraryPanel({
             <div className="mb-2 flex items-center justify-between gap-3 px-1">
               <div>
                 <p className="text-xs font-semibold uppercase tracking-[0.14em] text-foreground">Built-in models</p>
-                <p className="mt-0.5 text-[11px] text-muted-foreground">Maintained by CloudCLI and read-only</p>
+                <p className="mt-0.5 text-[11px] text-muted-foreground">Maintained by CLI and read-only</p>
               </div>
               {!builtInModelsHidden && (
                 <Badge variant="secondary" className="rounded-full text-[10px]">{predefinedModels.length}</Badge>

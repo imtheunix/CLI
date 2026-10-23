@@ -1,3 +1,4 @@
+import { sessionDraftsDb } from '@/modules/database/index.js';
 import path from 'node:path';
 
 import type { WebSocket } from 'ws';
@@ -426,6 +427,7 @@ async function handleChatAbort(
     return;
   }
 
+  sessionDraftsDb.pauseQueue(sessionId);
   const run = chatRunRegistry.getRun(sessionId);
   if (!run || run.status !== 'running') {
     sendProtocolError(ws, 'NO_ACTIVE_RUN', `Session "${sessionId}" has no active run.`, sessionId);

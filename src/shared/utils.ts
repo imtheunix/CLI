@@ -1,7 +1,7 @@
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 
-import type { Project, ProjectSession, QuickSettingsTab, SlashCommand } from '@/shared/types';
+import type { Project, ProjectSession, SlashCommand } from '@/shared/types';
 
 //----------------- DEPLOYMENT MODE ------------
 
@@ -194,7 +194,7 @@ export const playChatCompletionSound = (options = {}): Promise<void> => playNoti
 //----------------- DOCUMENT TITLE ------------
 
 /** Browser tab title shown when no project or session is selected. Private to the title helpers. */
-const DEFAULT_PAGE_TITLE = 'CloudCLI UI';
+const DEFAULT_PAGE_TITLE = 'CLI';
 
 /**
  * Resolves the human-readable label for a session: the persisted `summary` (the custom
@@ -245,8 +245,3 @@ export const isSkillCommand = (command: SlashCommand): boolean =>
 
 //----------------- QUICK SETTINGS PANEL ------------
 
-/** DOM id of a quick settings tab button; pairs with `getQuickSettingsTabPanelId` for aria-controls / aria-labelledby. */
-export const getQuickSettingsTabId = (tab: QuickSettingsTab): string => `quick-settings-tab-${tab}`;
-
-/** DOM id of the tabpanel a quick settings tab controls; pairs with `getQuickSettingsTabId`. */
-export const getQuickSettingsTabPanelId = (tab: QuickSettingsTab): string => `quick-settings-tabpanel-${tab}`;

@@ -20,7 +20,7 @@
     "runClaudeCli": "Začněte spuštěním Claude CLI v adresáři projektu"
   },
   "app": {
-    "title": "CloudCLI",
+    "title": "CLI",
     "subtitle": "Rozhraní AI asistenta pro programování"
   },
   "sessions": {
@@ -70,12 +70,7 @@
     "save": "Uložit",
     "delete": "Smazat",
     "rename": "Přejmenovat",
-    "joinCommunity": "Připojit se ke komunitě",
-    "reportIssue": "Nahlásit problém",
     "starOnGithub": "Dát hvězdičku na GitHubu"
-  },
-  "branding": {
-    "openSource": "Open source"
   },
   "status": {
     "active": "Aktivní",
@@ -127,12 +122,7 @@
     "restoreSessionError": "Při obnovování relace došlo k chybě. Zkuste to prosím znovu.",
     "forkSessionError": "Tuto relaci se nepodařilo forknout. Zkuste to prosím znovu."
   },
-  "version": {
-    "updateAvailable": "Je dostupná aktualizace",
-    "restartRequired": "Aktualizace nainstalována – restartujte server, aby se projevila"
-  },
   "search": {
-    "modeProjects": "Projekty",
     "modeConversations": "Konverzace",
     "modeMore": "Další",
     "runningTooltip": "Běžící relace",
@@ -199,5 +189,8 @@
     "deleteAllData": "Trvale smazat všechna data",
     "allConversationsDeleted": "Projekt bude odstraněn z postranního panelu. Vaše soubory, paměť a data relací zůstanou zachovány.",
     "cannotUndo": "Projekt můžete později znovu přidat."
+  },
+  "branding": {
+    "openSource": "CLI · a modification of CloudCLI v1.37.5 - Open Source"
   }
 }

@@ -22,8 +22,6 @@ function ProjectMainRegion({
     externalMessageUpdate,
     newSessionTrigger,
     registerOptimisticSession,
-    handleProjectSelect,
-    refreshProjectsSilently,
     renameSession,
   } = useProjectMainState();
 
@@ -45,9 +43,6 @@ function ProjectMainRegion({
     registerOptimisticSession({ sessionId: targetSessionId, ...context });
   }, [registerOptimisticSession]);
 
-  const handleProjectsRefresh = useCallback(() => {
-    void refreshProjectsSilently();
-  }, [refreshProjectsSilently]);
 
   return (
     <WorkspaceMain
@@ -65,8 +60,6 @@ function ProjectMainRegion({
       onShowSettings={openSettings}
       externalMessageUpdate={externalMessageUpdate}
       newSessionTrigger={newSessionTrigger}
-      onProjectSelect={handleProjectSelect}
-      onProjectsRefresh={handleProjectsRefresh}
       onRenameSession={renameSession}
     />
   );

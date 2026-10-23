@@ -19,7 +19,6 @@ type NavItem = {
 const NAV_ITEMS: NavItem[] = [
   { id: 'agents', labelKey: 'mainTabs.agents', icon: Bot },
   { id: 'appearance', labelKey: 'mainTabs.appearance', icon: Palette },
-  { id: 'git', labelKey: 'mainTabs.git', icon: GitBranch },
   { id: 'api', labelKey: 'mainTabs.apiTokens', icon: Key },
   { id: 'voice', labelKey: 'mainTabs.voice', icon: Mic },
   { id: 'tasks', labelKey: 'mainTabs.tasks', icon: ListChecks },

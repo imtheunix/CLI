@@ -166,7 +166,7 @@ const CodeBlock = ({ node: _node, className, children, forceBlock, ...props }: C
         customStyle={{
           margin: 0,
           borderRadius: 0,
-          fontSize: '0.8125rem',
+          fontSize: '0.875rem',
           lineHeight: 1.6,
           padding: '0.5rem 1rem 1rem',
           // The container owns the background so the label row and code read as one panel.
@@ -191,7 +191,38 @@ const CodeBlock = ({ node: _node, className, children, forceBlock, ...props }: C
  * re-tokenized every mounted code block, so the theme-dependent values are CSS
  * variables and the toggle is a style recalculation instead.
  */
-const syntaxTheme = buildSyntaxTheme(oneLight as PrismStyleSheet, oneDark as PrismStyleSheet);
+// Keep the Prism hues while making small code text readable on the Tribeira panels.
+// Each replacement meets 4.5:1 against the light muted and dark zinc-900 surfaces.
+const LIGHT_SYNTAX_COLORS: Record<string, string> = {
+  'hsl(230, 4%, 64%)': '#626873',
+  'hsl(35, 99%, 36%)': '#875000',
+  'hsl(5, 74%, 59%)': '#ad3026',
+  'hsl(119, 34%, 47%)': '#387234',
+  'hsl(221, 87%, 60%)': '#2857b7',
+  'hsl(198, 99%, 37%)': '#00627d',
+  'hsla(230, 8%, 24%, 0.2)': '#626873',
+  'hsl(230, 6%, 44%)': '#626873',
+  'hsl(230, 1%, 62%)': '#626873',
+};
+const DARK_SYNTAX_COLORS: Record<string, string> = {
+  'hsl(220, 10%, 40%)': '#9ca3af',
+  'hsl(5, 48%, 51%)': '#f28b82',
+  'hsla(220, 14%, 71%, 0.15)': '#9ca3af',
+  'hsl(220, 9%, 55%)': '#9ca3af',
+  'hsl(220, 14%, 45%)': '#9ca3af',
+};
+
+function applySyntaxColors(theme: PrismStyleSheet, colors: Record<string, string>): PrismStyleSheet {
+  return Object.fromEntries(Object.entries(theme).map(([selector, rule]) => [
+    selector,
+    rule.color && colors[rule.color] ? { ...rule, color: colors[rule.color] } : rule,
+  ]));
+}
+
+const syntaxTheme = buildSyntaxTheme(
+  applySyntaxColors(oneLight as PrismStyleSheet, LIGHT_SYNTAX_COLORS),
+  applySyntaxColors(oneDark as PrismStyleSheet, DARK_SYNTAX_COLORS),
+);
 
 // The `:root`/`.dark` declarations backing syntaxTheme.style. Injected once
 // because the values are derived from the Prism theme objects at runtime and so
@@ -238,7 +269,7 @@ const markdownComponents = {
   table: ({ children }: { children?: React.ReactNode }) => (
     <div className="my-3 overflow-x-auto rounded-lg border border-border">
       {/* my-0 cancels Tailwind Typography's table margin, which would show as blank bands inside the border */}
-      <table className="my-0 min-w-full border-collapse text-sm">{children}</table>
+      <table className="my-0 min-w-full border-collapse text-base">{children}</table>
     </div>
   ),
   thead: ({ children }: { children?: React.ReactNode }) => <thead className="bg-muted/60">{children}</thead>,
@@ -246,10 +277,10 @@ const markdownComponents = {
     <tr className="[&:last-child>td]:border-b-0">{children}</tr>
   ),
   th: ({ children }: { children?: React.ReactNode }) => (
-    <th className="border-b border-border px-3 py-2 text-left font-semibold text-foreground">{children}</th>
+    <th className="min-w-[8rem] border-b border-border px-3 py-2 text-left font-semibold text-foreground">{children}</th>
   ),
   td: ({ children }: { children?: React.ReactNode }) => (
-    <td className="border-b border-border/60 px-3 py-2 align-top">{children}</td>
+    <td className="min-w-[8rem] border-b border-border/60 px-3 py-2 align-top">{children}</td>
   ),
 };
 

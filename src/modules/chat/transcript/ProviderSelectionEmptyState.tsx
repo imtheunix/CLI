@@ -313,7 +313,7 @@ export default function ProviderSelectionEmptyState({
             </DialogContent>
           </Dialog>
 
-          <p className="mt-4 text-center text-sm text-muted-foreground/70">
+          <p className="mt-4 text-center text-sm text-muted-foreground">
             {
               {
                 claude: t("providerSelection.readyPrompt.claude", {
@@ -333,7 +333,7 @@ export default function ProviderSelectionEmptyState({
             }
           </p>
 
-          <p className="mt-3 flex items-center justify-center gap-1.5 text-center text-xs text-muted-foreground/60">
+          <p className="mt-3 flex items-center justify-center gap-1.5 text-center text-xs text-muted-foreground">
             <Trans
               ns="chat"
               i18nKey="providerSelection.pressToSearch"

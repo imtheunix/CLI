@@ -1,4 +1,10 @@
 {
+  "chatDisplay": {
+    "showRawParameters": "Zobrazit surové parametry",
+    "showThinking": "Zobrazit přemýšlení",
+    "sendByCtrlEnter": "Odesílat pomocí Ctrl+Enter",
+    "title": "Chat display and input"
+  },
   "title": "Nastavení",
   "tabs": {
     "account": "Účet",
@@ -65,27 +71,6 @@
     "format": "Formát zvuku",
     "note": "Vlastní základní URL volá přímo váš prohlížeč, proto musí povolovat CORS požadavky z prohlížeče. Ponechte pole prázdné, chcete-li použít backend nakonfigurovaný na serveru."
   },
-  "quickSettings": {
-    "title": "Rychlé nastavení",
-    "sections": {
-      "appearance": "Vzhled",
-      "toolDisplay": "Zobrazení nástrojů",
-      "inputSettings": "Nastavení vstupu"
-    },
-    "darkMode": "Tmavý režim",
-    "showRawParameters": "Zobrazit surové parametry",
-    "showThinking": "Zobrazit přemýšlení",
-    "sendByCtrlEnter": "Odesílat pomocí Ctrl+Enter",
-    "voiceEnabled": "Hlas (mikrofon + předčítání)",
-    "sendByCtrlEnterDescription": "Po zapnutí se zpráva odesílá klávesami Ctrl+Enter místo samotného Enter. Hodí se uživatelům IME, aby zprávy neodesílali omylem.",
-    "dragHandle": {
-      "dragging": "Přetahování úchytu",
-      "closePanel": "Zavřít panel nastavení",
-      "openPanel": "Otevřít panel nastavení",
-      "draggingStatus": "Přetahování...",
-      "toggleAndMove": "Kliknutím přepnete, přetažením přesunete"
-    }
-  },
   "terminalShortcuts": {
     "title": "Klávesové zkratky terminálu",
     "sectionKeys": "Klávesy",
@@ -106,7 +91,6 @@
     "label": "Nastavení",
     "agents": "Agenti",
     "appearance": "Vzhled",
-    "git": "Git",
     "apiTokens": "API a tokeny",
     "voice": "Hlas",
     "tasks": "Úkoly",
@@ -256,25 +240,6 @@
   "footerActions": {
     "save": "Uložit nastavení",
     "cancel": "Zrušit"
-  },
-  "git": {
-    "title": "Konfigurace pro Git",
-    "description": "Nastavte identitu, pod kterou se budou vytvářet git commity. Nastavení se použije globálně přes git config --global",
-    "name": {
-      "label": "Jméno pro Git",
-      "help": "Vaše jméno pro git commity"
-    },
-    "email": {
-      "label": "E-mail pro Git",
-      "help": "Váš e-mail pro git commity"
-    },
-    "actions": {
-      "save": "Uložit konfiguraci",
-      "saving": "Ukládání..."
-    },
-    "status": {
-      "success": "Uloženo"
-    }
   },
   "apiKeys": {
     "title": "API klíče",
@@ -515,7 +480,7 @@
     },
     "managed": {
       "badge": "Spravováno",
-      "hint": "Spravuje CloudCLI."
+      "hint": "Spravuje CLI."
     },
     "help": {
       "title": "O MCP pro Codex",
@@ -542,87 +507,11 @@
     "installFailed": "Nepodařilo se nainstalovat plugin",
     "uninstallFailed": "Nepodařilo se odinstalovat plugin",
     "toggleFailed": "Nepodařilo se přepnout plugin",
-    "starterPluginLabel": "Startovací plugin",
-    "starter": "Šablona",
-    "docs": "Dokumentace",
-    "sections": {
-      "officialTitle": "Oficiální pluginy",
-      "officialDescription": "Spravuje je tým CloudCLI a jsou připravené k přímé instalaci.",
-      "unofficialTitle": "Další pluginy",
-      "unofficialDescription": "Neoficiální pluginy a integrace od jiných uživatelů. Před instalací zkontrolujte zdrojový kód."
-    },
-    "starterPlugin": {
-      "name": "Statistiky projektu",
-      "badge": "startovací",
-      "description": "Počty souborů, řádky kódu, rozdělení podle typů souborů a nedávná aktivita vašeho projektu.",
-      "install": "Instalovat"
-    },
-    "terminalPlugin": {
-      "name": "Terminál",
-      "badge": "oficiální",
-      "description": "Integrovaný terminál s plným přístupem k shellu přímo v rozhraní.",
-      "install": "Instalovat"
-    },
-    "scheduledPromptPlugin": {
-      "name": "Plánované prompty",
-      "badge": "neoficiální",
-      "description": "Plánujte prompty v pracovním prostoru, procházejte historii běhů a spravujte opakované lokální úkoly.",
-      "install": "Instalovat"
-    },
-    "prismCloudCLI": {
-      "name": "PRISM CloudCLI",
-      "badge": "neoficiální",
-      "description": "Analýza relací Claude Code přímo v CloudCLI. Zjistěte, proč vaše relace spalují tokeny, aniž byste opustili prohlížeč.",
-      "install": "Instalovat"
-    },
-    "sessionManagerPlugin": {
-      "name": "Relace",
-      "badge": "neoficiální",
-      "description": "Zobrazujte, spravujte a ukončujte aktivní relace Claude Code.",
-      "install": "Instalovat"
-    },
-    "tokenCostCalculatorPlugin": {
-      "name": "Kalkulačka nákladů na tokeny",
-      "badge": "neoficiální",
-      "description": "Vypočítá náklady na API z cen modelů a využití tokenů, s podporou přednastavených ceníků modelů.",
-      "install": "Instalovat"
-    },
-    "taskQueuePlugin": {
-      "name": "Fronta úkolů",
-      "badge": "neoficiální",
-      "description": "Přehled fronty úkolů pro zobrazení, filtrování a spouštění úkolů agentů.",
-      "install": "Instalovat"
-    },
-    "githubIssuesBoardPlugin": {
-      "name": "Nástěnka GitHub Issues",
-      "badge": "neoficiální",
-      "description": "Kanban nástěnka pro GitHub Issues s obousměrnou synchronizací s TaskMaster a automatickou instalací CLI skillu /github-task",
-      "install": "Instalovat"
-    },
-    "claudeUsagePlugin": {
-      "name": "Využití Claude",
-      "badge": "neoficiální",
-      "description": "Sledujte aktuální limity plánu Claude Code a procházejte 30denní historii tokenů a nákladů.",
-      "install": "Instalovat"
-    },
-    "codexUsagePlugin": {
-      "name": "Využití Codex",
-      "badge": "neoficiální",
-      "description": "Sledujte aktuální limity plánu Codex, časy jejich obnovení a 30denní aktivitu tokenů na účtu.",
-      "install": "Instalovat"
-    },
-    "glmUsagePlugin": {
-      "name": "Využití GLM",
-      "badge": "neoficiální",
-      "description": "Sledujte aktuální kvóty programovacího plánu GLM/Zhipu a 30denní historii tokenů.",
-      "install": "Instalovat"
-    },
-    "morePlugins": "Další",
     "enable": "Zapnout",
     "disable": "Vypnout",
-    "installAriaLabel": "URL git repozitáře pluginu",
     "tab": "karta",
-    "runningStatus": "běží"
+    "runningStatus": "běží",
+    "installAriaLabel": "URL git repozitáře pluginu"
   },
   "skillsPage": {
     "description": "Spravujte skilly pro {{provider}} z lokálních souborů, celých složek a umístění v projektech.",
@@ -786,7 +675,7 @@
   "mcpTeamCard": {
     "title": "Týmové konfigurace MCP",
     "description": "Sdílejte konfigurace MCP serverů v rámci týmu. Všichni budou mít vše automaticky synchronizované.",
-    "proLink": "K dispozici v CloudCLI Pro"
+    "proLink": "K dispozici v CLI Pro"
   },
   "mcpServersAddErrors": {
     "loadFailedProvider": "Nepodařilo se načíst MCP servery pro {{provider}}",
@@ -800,18 +689,6 @@
     "unknownError": "Neznámá chyba"
   },
   "about": {
-    "tagline": "Open-source rozhraní pro AI asistenty programování",
-    "starOnGitHub": "Dát hvězdičku na GitHubu",
-    "docs": "Dokumentace",
-    "hostedTitle": "Vyzkoušejte CloudCLI Hosted",
-    "hostedDescription": "Týmová spolupráce, sdílené konfigurace MCP, synchronizace nastavení napříč prostředími a spravovaná infrastruktura.",
-    "learnMore": "Další informace",
-    "proFeaturesTitle": "Funkce CloudCLI Pro",
-    "syncSettingsTitle": "Synchronizace nastavení",
-    "syncSettingsDescription": "Mějte předvolby, konfigurace MCP a motiv synchronizované ve všech svých prostředích.",
-    "teamManagementTitle": "Správa týmu",
-    "teamManagementDescription": "Více uživatelů, přístup podle rolí a sdílené projekty pro váš tým.",
-    "licensed": "Šířeno pod licencí AGPL-3.0",
-    "proCta": "K dispozici v CloudCLI Pro"
+    "licensed": "Šířeno pod licencí AGPL-3.0"
   }
 }

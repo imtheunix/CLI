@@ -1,4 +1,10 @@
 {
+  "chatDisplay": {
+    "showRawParameters": "Show raw parameters",
+    "showThinking": "Show thinking",
+    "sendByCtrlEnter": "Send by Ctrl+Enter",
+    "title": "Chat display and input"
+  },
   "title": "Settings",
   "tabs": {
     "account": "Account",
@@ -65,48 +71,6 @@
     "format": "Audio format",
     "note": "A custom base URL is called directly by your browser and must allow browser CORS requests. Leave it blank to use the server-configured backend."
   },
-  "quickSettings": {
-    "title": "Quick Settings",
-    "sections": {
-      "appearance": "Appearance",
-      "toolDisplay": "Tool Display",
-      "inputSettings": "Input Settings"
-    },
-    "darkMode": "Dark Mode",
-    "showRawParameters": "Show raw parameters",
-    "showThinking": "Show thinking",
-    "sendByCtrlEnter": "Send by Ctrl+Enter",
-    "voiceEnabled": "Voice (mic + read aloud)",
-    "sendByCtrlEnterDescription": "When enabled, pressing Ctrl+Enter will send the message instead of just Enter. This is useful for IME users to avoid accidental sends.",
-    "dragHandle": {
-      "dragging": "Dragging handle",
-      "closePanel": "Close settings panel",
-      "openPanel": "Open settings panel",
-      "draggingStatus": "Dragging...",
-      "toggleAndMove": "Click to toggle, drag to move"
-    },
-    "tabs": {
-      "settings": "Settings",
-      "commands": "Commands"
-    },
-    "pin": "Pin panel open",
-    "unpin": "Unpin panel",
-    "close": "Close panel",
-    "commands": {
-      "searchPlaceholder": "Search commands…",
-      "noProject": "Select a project to see its commands.",
-      "loading": "Loading commands…",
-      "empty": "No commands available for this project.",
-      "noMatches": "No commands match your search.",
-      "loadError": "Commands could not be loaded.",
-      "groups": {
-        "builtIn": "Built-in",
-        "custom": "Custom",
-        "skills": "Skills"
-      },
-      "insertTitle": "Insert {{command}} into the chat"
-    }
-  },
   "terminalShortcuts": {
     "title": "Terminal Shortcuts",
     "sectionKeys": "Keys",
@@ -126,7 +90,6 @@
     "label": "Settings",
     "agents": "Agents",
     "appearance": "Appearance",
-    "git": "Git",
     "apiTokens": "API & Tokens",
     "voice": "Voice",
     "tasks": "Tasks",
@@ -283,25 +246,6 @@
   "footerActions": {
     "save": "Save Settings",
     "cancel": "Cancel"
-  },
-  "git": {
-    "title": "Git Configuration",
-    "description": "Configure your git identity for commits. These settings will be applied globally via git config --global",
-    "name": {
-      "label": "Git Name",
-      "help": "Your name for git commits"
-    },
-    "email": {
-      "label": "Git Email",
-      "help": "Your email for git commits"
-    },
-    "actions": {
-      "save": "Save Configuration",
-      "saving": "Saving..."
-    },
-    "status": {
-      "success": "Saved successfully"
-    }
   },
   "apiKeys": {
     "title": "API Keys",
@@ -549,7 +493,7 @@
     },
     "managed": {
       "badge": "Managed",
-      "hint": "Managed by CloudCLI."
+      "hint": "Managed by CLI."
     },
     "help": {
       "title": "About Codex MCP",
@@ -576,93 +520,11 @@
     "installFailed": "Installation failed",
     "uninstallFailed": "Uninstall failed",
     "toggleFailed": "Toggle failed",
-    "starterPluginLabel": "Starter Plugin",
-    "starter": "Starter",
-    "docs": "Docs",
-    "sections": {
-      "officialTitle": "Official Plugins",
-      "officialDescription": "Maintained by the CloudCLI team and ready for direct install.",
-      "unofficialTitle": "Other Plugins",
-      "unofficialDescription": "Unofficial plugins and integrations from other users. Review the source before installing."
-    },
-    "starterPlugin": {
-      "name": "Project Stats",
-      "badge": "starter",
-      "description": "File counts, lines of code, file-type breakdown, and recent activity for your project.",
-      "install": "Install"
-    },
-    "terminalPlugin": {
-      "name": "Terminal",
-      "badge": "official",
-      "description": "Integrated terminal with full shell access directly within the interface.",
-      "install": "Install"
-    },
-    "scheduledPromptPlugin": {
-      "name": "Scheduled Prompts",
-      "badge": "unofficial",
-      "description": "Schedule workspace prompts, review run history, and manage recurring local tasks.",
-      "install": "Install"
-    },
-    "prismCloudCLI": {
-      "name": "PRISM CloudCLI",
-      "badge": "unofficial",
-      "description": "Session intelligence for Claude Code, inside CloudCLI. See why your sessions are burning tokens without leaving the browser.",
-      "install": "Install"
-    },
-    "sessionManagerPlugin": {
-      "name": "Sessions",
-      "badge": "unofficial",
-      "description": "View, manage, and kill active Claude Code sessions.",
-      "install": "Install"
-    },
-    "tokenCostCalculatorPlugin": {
-      "name": "Token Cost Calculator",
-      "badge": "unofficial",
-      "description": "Calculate API costs from model prices and token usage, with preset model pricing support.",
-      "install": "Install"
-    },
-    "taskQueuePlugin": {
-      "name": "Task Queue",
-      "badge": "unofficial",
-      "description": "Task queue dashboard to view, filter, and launch agent tasks.",
-      "install": "Install"
-    },
-    "githubIssuesBoardPlugin": {
-      "name": "GitHub Issues Board",
-      "badge": "unofficial",
-      "description": "Kanban board for GitHub Issues with bidirectional TaskMaster sync and /github-task CLI skill auto-install",
-      "install": "Install"
-    },
-    "claudeUsagePlugin": {
-      "name": "Claude Usage",
-      "badge": "unofficial",
-      "description": "Track live Claude Code plan limits and explore 30-day token and cost history.",
-      "install": "Install"
-    },
-    "codexUsagePlugin": {
-      "name": "Codex Usage",
-      "badge": "unofficial",
-      "description": "Track live Codex plan limits, reset timing, and 30-day account token activity.",
-      "install": "Install"
-    },
-    "glmUsagePlugin": {
-      "name": "GLM Usage",
-      "badge": "unofficial",
-      "description": "Track live GLM/Zhipu coding-plan quotas and 30-day token history.",
-      "install": "Install"
-    },
-    "agentMonitorPlugin": {
-      "name": "Agent Monitor",
-      "badge": "unofficial",
-      "description": "See background subagents and shells that keep running after a chat ends, and stop them.",
-      "install": "Install"
-    },
-    "morePlugins": "More",
     "enable": "Enable",
     "disable": "Disable",
-    "installAriaLabel": "Plugin git repository URL",
     "tab": "tab",
-    "runningStatus": "running"
+    "runningStatus": "running",
+    "installAriaLabel": "Plugin git repository URL"
   },
   "skillsPage": {
     "description": "Manage {{provider}} skills from local files, complete folders, and project-aware locations.",
@@ -820,7 +682,7 @@
   "mcpTeamCard": {
     "title": "Team MCP Configs",
     "description": "Share MCP server configurations across your team. Everyone stays in sync automatically.",
-    "proLink": "Available with CloudCLI Pro"
+    "proLink": "Available with CLI Pro"
   },
   "mcpServersAddErrors": {
     "loadFailedProvider": "Failed to load {{provider}} MCP servers",
@@ -834,18 +696,6 @@
     "unknownError": "Unknown error"
   },
   "about": {
-    "tagline": "Open-source AI coding assistant interface",
-    "starOnGitHub": "Star on GitHub",
-    "docs": "Docs",
-    "hostedTitle": "Try CloudCLI Hosted",
-    "hostedDescription": "Team collaboration, shared MCP configs, settings sync across environments, and managed infrastructure.",
-    "learnMore": "Learn more",
-    "proFeaturesTitle": "CloudCLI Pro Features",
-    "syncSettingsTitle": "Sync Settings",
-    "syncSettingsDescription": "Keep your preferences, MCP configs, and theme in sync across all your environments.",
-    "teamManagementTitle": "Team Management",
-    "teamManagementDescription": "Multiple users, role-based access, and shared projects for your team.",
-    "licensed": "Licensed under AGPL-3.0",
-    "proCta": "Available with CloudCLI Pro"
+    "licensed": "Licensed under AGPL-3.0"
   }
 }

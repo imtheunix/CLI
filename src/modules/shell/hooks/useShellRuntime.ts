@@ -4,11 +4,12 @@ import type { FitAddon } from '@xterm/addon-fit';
 import type { Terminal } from '@xterm/xterm';
 
 import { useTheme } from '@/shared/context/ThemeContext';
-import type { Project, ProjectSession } from '@/shared/types';
+import type { Project, ProjectSession, ShellTarget } from '@/shared/types';
 import { useShellConnection } from '@/modules/shell/hooks/useShellConnection';
 import { useShellTerminal } from '@/modules/shell/hooks/useShellTerminal';
 
 type UseShellRuntimeOptions = {
+  launchTarget?: ShellTarget;
   selectedProject: Project | null | undefined;
   selectedSession: ProjectSession | null | undefined;
   initialCommand: string | null | undefined;
@@ -36,6 +37,7 @@ type UseShellRuntimeResult = {
 };
 
 export function useShellRuntime({
+  launchTarget,
   selectedProject,
   selectedSession,
   initialCommand,
@@ -53,6 +55,8 @@ export function useShellRuntime({
   const fitAddonRef = useRef<FitAddon | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
 
+  const launchTargetRef = useRef(launchTarget);
+  launchTargetRef.current = launchTarget;
   const selectedProjectRef = useRef(selectedProject);
   const selectedSessionRef = useRef(selectedSession);
   const initialCommandRef = useRef(initialCommand);
@@ -107,6 +111,7 @@ export function useShellRuntime({
     connectToShell,
     disconnectFromShell,
   } = useShellConnection({
+    launchTargetRef,
     wsRef,
     terminalRef,
     fitAddonRef,

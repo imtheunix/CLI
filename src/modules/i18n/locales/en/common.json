@@ -20,8 +20,6 @@
   "tabs": {
     "chat": "Chat",
     "shell": "Shell",
-    "files": "Files",
-    "git": "Source Control",
     "tasks": "Tasks",
     "browser": "Browser",
     "computer": "Computer"
@@ -79,16 +77,8 @@
     "daysAgo": "{{count}} days ago",
     "yesterday": "Yesterday"
   },
-  "fileOperations": {
-    "newFile": "New File",
-    "newFolder": "New Folder",
-    "rename": "Rename",
-    "move": "Move",
-    "copyPath": "Copy Path",
-    "openInEditor": "Open in Editor"
-  },
   "mainContent": {
-    "loading": "Loading CloudCLI",
+    "loading": "Loading CLI",
     "settingUpWorkspace": "Setting up your workspace...",
     "chooseProject": "Choose Your Project",
     "selectProjectDescription": "Select a project from the sidebar to start coding with Claude. Each project contains your chat sessions and file history.",
@@ -97,47 +87,8 @@
     "createProjectDesktop": "Create a new project by clicking the folder icon in the sidebar",
     "newSession": "New Session",
     "untitledSession": "Untitled Session",
-    "projectFiles": "Project Files",
     "renameSessionHint": "{{title}} (double-click to rename)",
     "renameSessionLabel": "Session title"
-  },
-  "fileTree": {
-    "loading": "Loading files...",
-    "files": "Files",
-    "simpleView": "Simple view",
-    "compactView": "Compact view",
-    "detailedView": "Detailed view",
-    "searchPlaceholder": "Search files and folders...",
-    "clearSearch": "Clear search",
-    "name": "Name",
-    "size": "Size",
-    "modified": "Modified",
-    "permissions": "Permissions",
-    "noFilesFound": "No files found",
-    "checkProjectPath": "Check if the project path is accessible",
-    "loadFailed": "Unable to load files",
-    "noMatchesFound": "No matches found",
-    "tryDifferentSearch": "Try a different search term or clear the search",
-    "justNow": "just now",
-    "minAgo": "{{count}} min ago",
-    "hoursAgo": "{{count}} hours ago",
-    "daysAgo": "{{count}} days ago",
-    "newFile": "New File (Cmd+N)",
-    "newFolder": "New Folder (Cmd+Shift+N)",
-    "refresh": "Refresh",
-    "collapseAll": "Collapse All",
-    "context": {
-      "rename": "Rename",
-      "delete": "Delete",
-      "copyPath": "Copy Path",
-      "download": "Download",
-      "newFile": "New File",
-      "newFolder": "New Folder",
-      "upload": "Upload Files",
-      "refresh": "Refresh",
-      "menuLabel": "File context menu",
-      "loading": "Loading..."
-    }
   },
   "projectWizard": {
     "title": "Create New Project",
@@ -243,44 +194,6 @@
       }
     }
   },
-  "versionUpdate": {
-    "title": "Update Available",
-    "newVersionReady": "A new version is ready",
-    "currentVersion": "Current Version",
-    "latestVersion": "Latest Version",
-    "whatsNew": "What's New:",
-    "viewFullRelease": "View full release",
-    "updateProgress": "Update Progress:",
-    "manualUpgrade": "Manual upgrade:",
-    "npmUpgradeCommand": "npm install -g @cloudcli-ai/cloudcli@latest",
-    "manualUpgradeHint": "Or click \"Update Now\" to run the update automatically.",
-    "updateCompleted": "Update completed successfully!",
-    "restartServer": "Please restart the server to apply changes.",
-    "updateFailed": "Update failed",
-    "buttons": {
-      "close": "Close",
-      "later": "Later",
-      "copyCommand": "Copy Command",
-      "updateNow": "Update Now",
-      "updating": "Updating..."
-    },
-    "ariaLabels": {
-      "closeModal": "Close version upgrade modal",
-      "showSidebar": "Show sidebar",
-      "settings": "Settings",
-      "updateAvailable": "Update available",
-      "closeSidebar": "Close sidebar",
-      "resizeSidebar": "Resize sidebar"
-    },
-    "startingUpdate": "Starting update...",
-    "updateStartedRestarting": "Update started. The server appears to be restarting to apply it.",
-    "unexpectedResponse": "The update endpoint returned an unexpected response (HTTP {{status}}). Update manually with the command below.",
-    "connectionInterrupted": "Connection to the server was interrupted — it is likely restarting to apply the update.",
-    "unknownError": "Unknown error",
-    "refreshNow": "Refreshing the window now...",
-    "refreshIn_one": "This will refresh the window in {{count}} second. If the update doesn't apply, RESTART the environment.",
-    "refreshIn_other": "This will refresh the window in {{count}} seconds. If the update doesn't apply, RESTART the environment."
-  },
   "commandPalette": {
     "title": "Command palette",
     "pages": {
@@ -297,29 +210,17 @@
     "noResults": "No results.",
     "groupActions": "Actions",
     "groupNavigate": "Navigate",
-    "groupGit": "Git",
     "groupSettings": "Settings",
     "groupSessions": "Sessions",
-    "groupFiles": "Files",
-    "groupCommits": "Commits",
-    "groupBranches": "Branches",
     "startNewChat": "Start new chat",
     "selectProjectFirst": "Select a project first",
     "openSettings": "Open settings",
     "toggleTheme": "Toggle theme",
     "navChat": "Go to Chat",
-    "navFiles": "Go to Files",
     "navShell": "Go to Shell",
-    "navGit": "Go to Git",
     "navTasks": "Go to Tasks",
-    "gitFetch": "Git: Fetch",
-    "gitPull": "Git: Pull",
-    "gitPush": "Git: Push",
     "settingsItem": "Settings: {{label}}",
     "browseAllSessions": "Browse all sessions ({{count}})",
-    "browseAllFiles": "Browse all files ({{count}})",
-    "browseAllCommits": "Browse all commits ({{count}})",
-    "browseAllBranches": "Browse all branches ({{count}})",
     "switchTo": "Switch to: {{name}}"
   },
   "folderBrowser": {
@@ -394,5 +295,12 @@
     "taskRowNotLoaded": "Launched earlier in this conversation; click to load it",
     "taskOfAgent": "Launched by one of this session's agents"
   },
-  "cancel": "Cancel"
+  "cancel": "Cancel",
+  "versionUpdate": {
+    "ariaLabels": {
+      "showSidebar": "Show sidebar",
+      "closeSidebar": "Close sidebar",
+      "resizeSidebar": "Resize sidebar"
+    }
+  }
 }

@@ -20,8 +20,6 @@
   "tabs": {
     "chat": "צ'אט",
     "shell": "Shell",
-    "files": "קבצים",
-    "git": "ניהול גרסאות",
     "tasks": "משימות",
     "browser": "דפדפן",
     "computer": "מחשב",
@@ -89,16 +87,8 @@
     "daysAgo_other": "לפני {{count}} ימים",
     "yesterday": "אתמול"
   },
-  "fileOperations": {
-    "newFile": "קובץ חדש",
-    "newFolder": "תיקייה חדשה",
-    "rename": "שינוי שם",
-    "move": "העברה",
-    "copyPath": "העתקת נתיב",
-    "openInEditor": "פתיחה בעורך"
-  },
   "mainContent": {
-    "loading": "טוען את CloudCLI",
+    "loading": "טוען את CLI",
     "settingUpWorkspace": "מכין את סביבת העבודה…",
     "chooseProject": "בחירת פרויקט",
     "selectProjectDescription": "יש לבחור פרויקט בסרגל הצד כדי להתחיל לכתוב קוד עם Claude. כל פרויקט מכיל את סשני הצ'אט ואת היסטוריית הקבצים שלו.",
@@ -107,83 +97,8 @@
     "createProjectDesktop": "אפשר ליצור פרויקט חדש בלחיצה על סמל התיקייה בסרגל הצד",
     "newSession": "סשן חדש",
     "untitledSession": "סשן ללא שם",
-    "projectFiles": "קבצי הפרויקט",
     "renameSessionHint": "{{title}} (לחיצה כפולה לשינוי השם)",
     "renameSessionLabel": "שם הסשן"
-  },
-  "fileTree": {
-    "loading": "טוען קבצים…",
-    "files": "קבצים",
-    "simpleView": "תצוגה פשוטה",
-    "compactView": "תצוגה דחוסה",
-    "detailedView": "תצוגה מפורטת",
-    "searchPlaceholder": "חיפוש קבצים ותיקיות…",
-    "clearSearch": "ניקוי החיפוש",
-    "name": "שם",
-    "size": "גודל",
-    "modified": "שונה",
-    "permissions": "הרשאות",
-    "noFilesFound": "לא נמצאו קבצים",
-    "checkProjectPath": "יש לבדוק שנתיב הפרויקט נגיש",
-    "loadFailed": "לא ניתן לטעון את הקבצים",
-    "noMatchesFound": "לא נמצאו התאמות",
-    "tryDifferentSearch": "אפשר לנסות מונח חיפוש אחר או לנקות את החיפוש",
-    "justNow": "הרגע",
-    "minAgo_one": "לפני דקה",
-    "minAgo_two": "לפני שתי דקות",
-    "minAgo_other": "לפני {{count}} דקות",
-    "hoursAgo_one": "לפני שעה",
-    "hoursAgo_two": "לפני שעתיים",
-    "hoursAgo_other": "לפני {{count}} שעות",
-    "daysAgo_one": "לפני יום",
-    "daysAgo_two": "לפני יומיים",
-    "daysAgo_other": "לפני {{count}} ימים",
-    "newFile": "קובץ חדש (Cmd+N)",
-    "newFolder": "תיקייה חדשה (Cmd+Shift+N)",
-    "refresh": "רענון",
-    "collapseAll": "כיווץ הכול",
-    "dropToUpload": "אפשר לשחרר כאן קבצים להעלאה",
-    "dropToUploadTo": "אפשר לשחרר כאן קבצים להעלאה אל \"{{folder}}\"",
-    "uploadingFiles": "מעלה קבצים",
-    "uploadFiles": "העלאת קבצים (עד {{size}} לקובץ)",
-    "uploadToFolder": "העלאת קבצים אל \"{{folder}}\"",
-    "uploadComplete": "ההעלאה הושלמה",
-    "uploadFailed": "ההעלאה נכשלה",
-    "uploadedCount": "הועלו {{uploaded}} מתוך {{total}} קבצים",
-    "context": {
-      "rename": "שינוי שם",
-      "delete": "מחיקה",
-      "copyPath": "העתקת נתיב",
-      "download": "הורדה",
-      "newFile": "קובץ חדש",
-      "newFolder": "תיקייה חדשה",
-      "upload": "העלאת קבצים",
-      "refresh": "רענון",
-      "menuLabel": "תפריט הקשר של קובץ",
-      "loading": "טוען…"
-    },
-    "delete": {
-      "title": "מחיקת פריט",
-      "folderWarning": "התיקייה וכל התוכן שלה יימחקו לצמיתות.",
-      "fileWarning": "הקובץ יימחק לצמיתות.",
-      "confirm": "מחיקה"
-    },
-    "toast": {
-      "renamed": "השם שונה בהצלחה",
-      "fileDeleted": "הקובץ נמחק",
-      "folderDeleted": "התיקייה נמחקה",
-      "fileCreated": "הקובץ נוצר בהצלחה",
-      "folderCreated": "התיקייה נוצרה בהצלחה",
-      "pathCopied": "הנתיב הועתק ללוח",
-      "copyFailed": "העתקת הנתיב נכשלה",
-      "folderDownloaded": "התיקייה הורדה כקובץ ZIP"
-    },
-    "validation": {
-      "emptyName": "שם הקובץ לא יכול להיות ריק",
-      "invalidChars": "שם הקובץ מכיל תווים לא חוקיים",
-      "reserved": "שם הקובץ הוא שם שמור",
-      "dotsOnly": "שם הקובץ לא יכול להכיל נקודות בלבד"
-    }
   },
   "projectWizard": {
     "title": "יצירת פרויקט חדש",
@@ -289,45 +204,6 @@
       }
     }
   },
-  "versionUpdate": {
-    "title": "יש עדכון זמין",
-    "newVersionReady": "גרסה חדשה מוכנה",
-    "currentVersion": "הגרסה הנוכחית",
-    "latestVersion": "הגרסה האחרונה",
-    "whatsNew": "מה חדש:",
-    "viewFullRelease": "לפרטי הגרסה המלאים",
-    "updateProgress": "התקדמות העדכון:",
-    "manualUpgrade": "שדרוג ידני:",
-    "npmUpgradeCommand": "npm install -g @cloudcli-ai/cloudcli@latest",
-    "manualUpgradeHint": "או ללחוץ על \"עדכון עכשיו\" כדי להריץ את העדכון אוטומטית.",
-    "updateCompleted": "העדכון הושלם בהצלחה!",
-    "restartServer": "יש להפעיל מחדש את השרת כדי להחיל את השינויים.",
-    "updateFailed": "העדכון נכשל",
-    "buttons": {
-      "close": "סגירה",
-      "later": "אחר כך",
-      "copyCommand": "העתקת הפקודה",
-      "updateNow": "עדכון עכשיו",
-      "updating": "מעדכן…"
-    },
-    "ariaLabels": {
-      "closeModal": "סגירת חלון שדרוג הגרסה",
-      "showSidebar": "הצגת סרגל הצד",
-      "settings": "הגדרות",
-      "updateAvailable": "יש עדכון זמין",
-      "closeSidebar": "סגירת סרגל הצד",
-      "resizeSidebar": "שינוי גודל סרגל הצד"
-    },
-    "startingUpdate": "מתחיל את העדכון…",
-    "updateStartedRestarting": "העדכון התחיל. נראה שהשרת מופעל מחדש כדי להחיל אותו.",
-    "unexpectedResponse": "נקודת הקצה של העדכון החזירה תגובה לא צפויה (HTTP {{status}}). אפשר לעדכן ידנית עם הפקודה שלמטה.",
-    "connectionInterrupted": "החיבור לשרת נקטע — כנראה הוא מופעל מחדש כדי להחיל את העדכון.",
-    "unknownError": "שגיאה לא ידועה",
-    "refreshNow": "מרענן את החלון עכשיו…",
-    "refreshIn_one": "החלון יתרענן בעוד שנייה. אם העדכון לא נכנס לתוקף, יש להפעיל מחדש (RESTART) את הסביבה.",
-    "refreshIn_two": "החלון יתרענן בעוד שתי שניות. אם העדכון לא נכנס לתוקף, יש להפעיל מחדש (RESTART) את הסביבה.",
-    "refreshIn_other": "החלון יתרענן בעוד {{count}} שניות. אם העדכון לא נכנס לתוקף, יש להפעיל מחדש (RESTART) את הסביבה."
-  },
   "commandPalette": {
     "title": "לוח הפקודות",
     "pages": {
@@ -344,37 +220,19 @@
     "noResults": "אין תוצאות.",
     "groupActions": "פעולות",
     "groupNavigate": "ניווט",
-    "groupGit": "Git",
     "groupSettings": "הגדרות",
     "groupSessions": "סשנים",
-    "groupFiles": "קבצים",
-    "groupCommits": "Commits",
-    "groupBranches": "ענפים",
     "startNewChat": "צ'אט חדש",
     "selectProjectFirst": "יש לבחור פרויקט קודם",
     "openSettings": "פתיחת ההגדרות",
     "toggleTheme": "החלפת ערכת נושא",
     "navChat": "מעבר לצ'אט",
-    "navFiles": "מעבר לקבצים",
     "navShell": "מעבר ל-Shell",
-    "navGit": "מעבר ל-Git",
     "navTasks": "מעבר למשימות",
-    "gitFetch": "Git: Fetch",
-    "gitPull": "Git: Pull",
-    "gitPush": "Git: Push",
     "settingsItem": "הגדרות: {{label}}",
     "browseAllSessions_one": "עיון בכל הסשנים ({{count}})",
     "browseAllSessions_two": "עיון בכל הסשנים ({{count}})",
     "browseAllSessions_other": "עיון בכל הסשנים ({{count}})",
-    "browseAllFiles_one": "עיון בכל הקבצים ({{count}})",
-    "browseAllFiles_two": "עיון בכל הקבצים ({{count}})",
-    "browseAllFiles_other": "עיון בכל הקבצים ({{count}})",
-    "browseAllCommits_one": "עיון בכל ה-commits ({{count}})",
-    "browseAllCommits_two": "עיון בכל ה-commits ({{count}})",
-    "browseAllCommits_other": "עיון בכל ה-commits ({{count}})",
-    "browseAllBranches_one": "עיון בכל הענפים ({{count}})",
-    "browseAllBranches_two": "עיון בכל הענפים ({{count}})",
-    "browseAllBranches_other": "עיון בכל הענפים ({{count}})",
     "switchTo": "מעבר אל: {{name}}"
   },
   "folderBrowser": {
@@ -454,5 +312,12 @@
     "taskRowNotLoaded": "הופעלה מוקדם יותר בשיחה הזו; לחיצה לטעינה",
     "taskOfAgent": "הופעלה על ידי אחד הסוכנים של הסשן הזה"
   },
-  "cancel": "ביטול"
+  "cancel": "ביטול",
+  "versionUpdate": {
+    "ariaLabels": {
+      "showSidebar": "הצגת סרגל הצד",
+      "closeSidebar": "סגירת סרגל הצד",
+      "resizeSidebar": "שינוי גודל סרגל הצד"
+    }
+  }
 }

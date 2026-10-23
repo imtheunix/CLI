@@ -4,7 +4,6 @@ import ProjectEffects from '@/modules/project-workspace/controllers/ProjectEffec
 import type { ProjectWorkspaceShellProps } from '@/shared/types';
 import ProjectCommandPalette from '@/modules/project-workspace/ProjectCommandPalette';
 import ProjectMainRegion from '@/modules/project-workspace/ProjectMainRegion';
-import ProjectQuickSettingsRegion from '@/modules/project-workspace/ProjectQuickSettingsRegion';
 import ProjectSidebarRegion from '@/modules/project-workspace/ProjectSidebarRegion';
 
 /** Rendered by ProjectWorkspaceRoute to lay out the workspace sidebar, main region and global overlays. */
@@ -33,7 +32,6 @@ function ProjectWorkspaceShell({
 
       <ProjectCommandPalette />
       {/* Last flex child on purpose: when pinned it docks to the right of the main region. */}
-      <ProjectQuickSettingsRegion />
     </div>
   );
 }

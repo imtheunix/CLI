@@ -20,7 +20,7 @@
     "runClaudeCli": "Führ Claude CLI in einem Projektverzeichnis aus, um zu beginnen"
   },
   "app": {
-    "title": "CloudCLI",
+    "title": "CLI",
     "subtitle": "KI-Programmierassistent-Oberfläche"
   },
   "sessions": {
@@ -74,12 +74,7 @@
     "save": "Speichern",
     "delete": "Löschen",
     "rename": "Umbenennen",
-    "joinCommunity": "Community beitreten",
-    "reportIssue": "Problem melden",
     "starOnGithub": "Stern auf GitHub"
-  },
-  "branding": {
-    "openSource": "Open Source"
   },
   "status": {
     "active": "Aktiv",
@@ -124,12 +119,7 @@
     "deleteSessionsPartialFailure_one": "{{count}} Sitzung von {{total}} konnte nicht gelöscht werden. Bitte erneut versuchen.",
     "deleteSessionsPartialFailure_other": "{{count}} von {{total}} Sitzungen konnten nicht gelöscht werden. Bitte erneut versuchen."
   },
-  "version": {
-    "updateAvailable": "Update verfügbar",
-    "restartRequired": "Update installiert – zum Anwenden Server neu starten"
-  },
   "search": {
-    "modeProjects": "Projekte",
     "modeConversations": "Unterhaltungen",
     "modeMore": "Mehr",
     "conversationsPlaceholder": "In Unterhaltungen suchen...",
@@ -167,5 +157,8 @@
     "archiveSessions_other": "{{count}} Sitzungen archivieren",
     "archiveSessionsNotice_one": "Beim Archivieren verschwindet die Sitzung aus der aktiven Liste, ihr Verlauf bleibt erhalten.",
     "archiveSessionsNotice_other": "Beim Archivieren verschwinden die Sitzungen aus der aktiven Liste, ihr Verlauf bleibt erhalten."
+  },
+  "branding": {
+    "openSource": "CLI · a modification of CloudCLI v1.37.5 - Open Source"
   }
 }

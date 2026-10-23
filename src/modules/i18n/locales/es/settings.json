@@ -1,4 +1,10 @@
 {
+  "chatDisplay": {
+    "showRawParameters": "Mostrar parámetros sin procesar",
+    "showThinking": "Mostrar razonamiento",
+    "sendByCtrlEnter": "Enviar con Ctrl+Enter",
+    "title": "Chat display and input"
+  },
   "title": "Ajustes",
   "tabs": {
     "account": "Cuenta",
@@ -65,48 +71,6 @@
     "format": "Formato de audio",
     "note": "Una URL base personalizada la llama directamente tu navegador y debe permitir solicitudes CORS. Déjala en blanco para usar el backend configurado en el servidor."
   },
-  "quickSettings": {
-    "title": "Ajustes rápidos",
-    "sections": {
-      "appearance": "Apariencia",
-      "toolDisplay": "Visualización de herramientas",
-      "inputSettings": "Ajustes de entrada"
-    },
-    "darkMode": "Modo oscuro",
-    "showRawParameters": "Mostrar parámetros sin procesar",
-    "showThinking": "Mostrar razonamiento",
-    "sendByCtrlEnter": "Enviar con Ctrl+Enter",
-    "voiceEnabled": "Voz (micro + lectura en voz alta)",
-    "sendByCtrlEnterDescription": "Si está activado, Ctrl+Enter envía el mensaje en lugar de solo Enter. Útil para usuarios de IME y evitar envíos accidentales.",
-    "dragHandle": {
-      "dragging": "Arrastrando el control",
-      "closePanel": "Cerrar panel de ajustes",
-      "openPanel": "Abrir panel de ajustes",
-      "draggingStatus": "Arrastrando...",
-      "toggleAndMove": "Clic para alternar, arrastra para mover"
-    },
-    "tabs": {
-      "settings": "Ajustes",
-      "commands": "Comandos"
-    },
-    "pin": "Fijar el panel abierto",
-    "unpin": "Desfijar el panel",
-    "close": "Cerrar el panel",
-    "commands": {
-      "searchPlaceholder": "Buscar comandos…",
-      "noProject": "Selecciona un proyecto para ver sus comandos.",
-      "loading": "Cargando comandos…",
-      "empty": "No hay comandos disponibles para este proyecto.",
-      "noMatches": "Ningún comando coincide con tu búsqueda.",
-      "loadError": "No se pudieron cargar los comandos.",
-      "groups": {
-        "builtIn": "Integrados",
-        "custom": "Personalizados",
-        "skills": "Skills"
-      },
-      "insertTitle": "Insertar {{command}} en el chat"
-    }
-  },
   "terminalShortcuts": {
     "title": "Atajos de terminal",
     "sectionKeys": "Teclas",
@@ -126,7 +90,6 @@
     "label": "Ajustes",
     "agents": "Agentes",
     "appearance": "Apariencia",
-    "git": "Git",
     "apiTokens": "API y tokens",
     "voice": "Voz",
     "tasks": "Tareas",
@@ -266,25 +229,6 @@
   "footerActions": {
     "save": "Guardar ajustes",
     "cancel": "Cancelar"
-  },
-  "git": {
-    "title": "Configuración de Git",
-    "description": "Configura tu identidad de git para los commits. Estos ajustes se aplicarán globalmente mediante git config --global",
-    "name": {
-      "label": "Nombre para Git",
-      "help": "Tu nombre para los commits de git"
-    },
-    "email": {
-      "label": "Correo para Git",
-      "help": "Tu correo para los commits de git"
-    },
-    "actions": {
-      "save": "Guardar configuración",
-      "saving": "Guardando..."
-    },
-    "status": {
-      "success": "Guardado correctamente"
-    }
   },
   "apiKeys": {
     "title": "Claves API",
@@ -519,7 +463,7 @@
     },
     "managed": {
       "badge": "Gestionado",
-      "hint": "Gestionado por CloudCLI."
+      "hint": "Gestionado por CLI."
     },
     "help": {
       "title": "Acerca de MCP en Codex",
@@ -546,74 +490,11 @@
     "installFailed": "La instalación falló",
     "uninstallFailed": "La desinstalación falló",
     "toggleFailed": "El cambio de estado falló",
-    "starterPluginLabel": "Plugin de inicio",
-    "starter": "Inicio",
-    "docs": "Docs",
-    "sections": {
-      "officialTitle": "Plugins oficiales",
-      "officialDescription": "Mantenidos por el equipo de CloudCLI y listos para instalar directamente.",
-      "unofficialTitle": "Otros plugins",
-      "unofficialDescription": "Plugins e integraciones no oficiales de otros usuarios. Revisa el código fuente antes de instalar."
-    },
-    "starterPlugin": {
-      "name": "Estadísticas del proyecto",
-      "badge": "inicio",
-      "description": "Recuento de archivos, líneas de código, desglose por tipo de archivo y actividad reciente de tu proyecto.",
-      "install": "Instalar"
-    },
-    "terminalPlugin": {
-      "name": "Terminal",
-      "badge": "oficial",
-      "description": "Terminal integrada con acceso completo a la shell directamente en la interfaz.",
-      "install": "Instalar"
-    },
-    "scheduledPromptPlugin": {
-      "name": "Prompts programados",
-      "badge": "no oficial",
-      "description": "Programa prompts del espacio de trabajo, revisa el historial de ejecuciones y gestiona tareas locales recurrentes.",
-      "install": "Instalar"
-    },
-    "prismCloudCLI": {
-      "name": "PRISM CloudCLI",
-      "badge": "no oficial",
-      "description": "Inteligencia de sesiones para Claude Code, dentro de CloudCLI. Descubre por qué tus sesiones queman tokens sin salir del navegador.",
-      "install": "Instalar"
-    },
-    "sessionManagerPlugin": {
-      "name": "Sesiones",
-      "badge": "no oficial",
-      "description": "Ver, gestionar y terminar sesiones activas de Claude Code.",
-      "install": "Instalar"
-    },
-    "tokenCostCalculatorPlugin": {
-      "name": "Calculadora de costes de tokens",
-      "badge": "no oficial",
-      "description": "Calcula costes de API a partir de precios de modelos y uso de tokens, con precios de modelos predefinidos.",
-      "install": "Instalar"
-    },
-    "taskQueuePlugin": {
-      "name": "Cola de tareas",
-      "badge": "no oficial",
-      "description": "Panel de cola de tareas para ver, filtrar y lanzar tareas de agentes.",
-      "install": "Instalar"
-    },
-    "githubIssuesBoardPlugin": {
-      "name": "Tablero de GitHub Issues",
-      "badge": "no oficial",
-      "description": "Tablero Kanban para GitHub Issues con sincronización bidireccional con TaskMaster e instalación automática de la skill CLI /github-task",
-      "install": "Instalar"
-    },
-    "claudeUsagePlugin": {
-      "name": "Uso de Claude",
-      "badge": "no oficial",
-      "description": "Sigue en vivo los límites del plan de Claude Code y explora el historial de tokens y costes de 30 días.",
-      "install": "Instalar"
-    },
-    "morePlugins": "Más",
     "enable": "Activar",
     "disable": "Desactivar",
-    "installAriaLabel": "URL del repositorio git del plugin",
     "tab": "pestaña",
-    "runningStatus": "en ejecución"
-  }
+    "runningStatus": "en ejecución",
+    "installAriaLabel": "URL del repositorio git del plugin"
+  },
+  "about": {}
 }

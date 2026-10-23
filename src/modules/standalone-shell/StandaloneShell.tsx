@@ -2,6 +2,7 @@ import { useCallback, useState } from 'react';
 
 import type { Project, ProjectSession } from '@/shared/types';
 import { Shell } from '@/modules/shell';
+import ShellTargetPicker from '@/modules/standalone-shell/ShellTargetPicker';
 import StandaloneShellEmptyState from '@/modules/standalone-shell/StandaloneShellEmptyState';
 import StandaloneShellHeader from '@/modules/standalone-shell/StandaloneShellHeader';
 
@@ -63,6 +64,10 @@ export default function StandaloneShell({
       )}
 
       <div className="min-h-0 w-full flex-1">
+        {!command && !shouldUsePlainShell ? (
+          <ShellTargetPicker key={session?.id ?? String(project.fullPath || project.path || '')} project={project} session={session} isActive={isActive} autoConnect={autoConnect} />
+        ) : (
+
         <Shell
           selectedProject={project}
           selectedSession={session}
@@ -73,6 +78,7 @@ export default function StandaloneShell({
           minimal={minimal}
           autoConnect={minimal ? true : autoConnect}
         />
+        )}
       </div>
     </div>
   );

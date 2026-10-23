@@ -3,7 +3,7 @@ import type { MutableRefObject } from 'react';
 import type { FitAddon } from '@xterm/addon-fit';
 import type { Terminal } from '@xterm/xterm';
 
-import type { Project, ProjectSession } from '@/shared/types';
+import type { Project, ProjectSession, ShellTarget } from '@/shared/types';
 import { TERMINAL_INIT_DELAY_MS } from '@/shared/constants';
 import { getShellWebSocketUrl, parseShellMessage, sendSocketMessage } from '@/modules/shell/utils/socket';
 import { readSelectedProvider } from '@/shared/selectedProvider';
@@ -13,6 +13,7 @@ const ANSI_ESCAPE_REGEX =
 const PROCESS_EXIT_REGEX = /Process exited with code (\d+)/;
 
 type UseShellConnectionOptions = {
+  launchTargetRef?: MutableRefObject<ShellTarget | undefined>;
   wsRef: MutableRefObject<WebSocket | null>;
   terminalRef: MutableRefObject<Terminal | null>;
   fitAddonRef: MutableRefObject<FitAddon | null>;
@@ -40,6 +41,7 @@ type UseShellConnectionResult = {
 };
 
 export function useShellConnection({
+  launchTargetRef,
   wsRef,
   terminalRef,
   fitAddonRef,
@@ -167,6 +169,7 @@ export function useShellConnection({
 
             sendSocketMessage(socket, {
               type: 'init',
+              launchTarget: launchTargetRef?.current,
               projectPath: currentProject.fullPath || currentProject.path || '',
               sessionId: isPlainShellRef.current ? null : selectedSessionRef.current?.id || null,
               hasSession: isPlainShellRef.current ? false : Boolean(selectedSessionRef.current),
@@ -211,6 +214,7 @@ export function useShellConnection({
       }
     },
     [
+      launchTargetRef,
       bypassPermissionsRef,
       clearTerminalScreen,
       fitAddonRef,

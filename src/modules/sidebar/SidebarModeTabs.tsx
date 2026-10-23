@@ -38,7 +38,7 @@ export default function SidebarModeTabs({
   t,
 }: SidebarModeTabsProps) {
   const tabs: ModeTab[] = [
-    { mode: 'projects', label: t('search.modeProjects'), icon: Folder, showLabel: true },
+    { mode: 'plans', label: 'Plans', icon: Folder, showLabel: true },
     { mode: 'conversations', label: t('search.modeConversations'), icon: MessageSquare, showLabel: true },
     { mode: 'running', label: t('search.runningTooltip', 'Running sessions'), icon: Activity, showLabel: false },
     { mode: 'archived', label: t('search.archiveOnlyTooltip', 'Archive only'), icon: Archive, showLabel: false },

@@ -49,9 +49,9 @@ const renderTabs = (rowWidth: number, searchMode: SidebarSearchMode) => {
 };
 
 test('a wide row shows every tab and no overflow menu', () => {
-  renderTabs(400, 'projects');
+  renderTabs(400, 'plans');
 
-  assert.ok(screen.getByRole('button', { name: 'Projects' }));
+  assert.ok(screen.getByRole('button', { name: 'Plans' }));
   assert.ok(screen.getByRole('button', { name: 'Conversations' }));
   assert.ok(screen.getByRole('button', { name: 'Running sessions' }));
   assert.ok(screen.getByRole('button', { name: 'Archive only' }));
@@ -59,9 +59,9 @@ test('a wide row shows every tab and no overflow menu', () => {
 });
 
 test('a narrow row moves the tabs that no longer fit into the dropdown', () => {
-  const changes = renderTabs(220, 'projects');
+  const changes = renderTabs(220, 'plans');
 
-  assert.ok(screen.getByRole('button', { name: 'Projects' }));
+  assert.ok(screen.getByRole('button', { name: 'Plans' }));
   assert.equal(screen.queryByRole('button', { name: 'Conversations' }), null);
 
   fireEvent.click(screen.getByRole('button', { name: 'More' }));
@@ -81,4 +81,10 @@ test('the section on screen keeps its place in the row', () => {
   assert.equal(archive.getAttribute('aria-pressed'), 'true');
   assert.equal(screen.queryByRole('button', { name: 'Conversations' }), null);
   assert.ok(screen.getByRole('button', { name: 'More' }));
+});
+
+test('the Projects tab is replaced by Plans', () => {
+  renderTabs(400, 'plans');
+  assert.equal(screen.queryByRole('button', { name: 'Projects' }), null);
+  assert.equal(screen.getByRole('button', { name: 'Plans' }).getAttribute('aria-pressed'), 'true');
 });

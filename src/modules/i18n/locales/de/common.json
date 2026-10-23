@@ -20,8 +20,6 @@
   "tabs": {
     "chat": "Chat",
     "shell": "Terminal",
-    "files": "Dateien",
-    "git": "Quellcodeverwaltung",
     "tasks": "Aufgaben",
     "browser": "Browser",
     "computer": "Computer"
@@ -79,16 +77,8 @@
     "daysAgo": "vor {{count}} Tagen",
     "yesterday": "Gestern"
   },
-  "fileOperations": {
-    "newFile": "Neue Datei",
-    "newFolder": "Neuer Ordner",
-    "rename": "Umbenennen",
-    "move": "Verschieben",
-    "copyPath": "Pfad kopieren",
-    "openInEditor": "Im Editor öffnen"
-  },
   "mainContent": {
-    "loading": "CloudCLI wird geladen",
+    "loading": "CLI wird geladen",
     "settingUpWorkspace": "Arbeitsbereich wird eingerichtet...",
     "chooseProject": "Projekt auswählen",
     "selectProjectDescription": "Wähl ein Projekt aus der Seitenleiste, um mit Claude zu programmieren. Jedes Projekt enthält deine Chat-Sitzungen und den Dateiverlauf.",
@@ -96,45 +86,7 @@
     "createProjectMobile": "Tipp oben auf die Menüschaltfläche, um auf Projekte zuzugreifen",
     "createProjectDesktop": "Erstell ein neues Projekt, indem du auf das Ordnersymbol in der Seitenleiste klickst",
     "newSession": "Neue Sitzung",
-    "untitledSession": "Unbenannte Sitzung",
-    "projectFiles": "Projektdateien"
-  },
-  "fileTree": {
-    "loading": "Dateien werden geladen...",
-    "files": "Dateien",
-    "simpleView": "Einfache Ansicht",
-    "compactView": "Kompakte Ansicht",
-    "detailedView": "Detailansicht",
-    "searchPlaceholder": "Dateien und Ordner durchsuchen...",
-    "clearSearch": "Suche leeren",
-    "name": "Name",
-    "size": "Größe",
-    "modified": "Geändert",
-    "permissions": "Berechtigungen",
-    "noFilesFound": "Keine Dateien gefunden",
-    "checkProjectPath": "Überprüf, ob der Projektpfad zugänglich ist",
-    "noMatchesFound": "Keine Treffer gefunden",
-    "tryDifferentSearch": "Versuch einen anderen Suchbegriff oder leere die Suche",
-    "justNow": "gerade eben",
-    "minAgo": "vor {{count}} Min.",
-    "hoursAgo": "vor {{count}} Std.",
-    "daysAgo": "vor {{count}} Tagen",
-    "newFile": "Neue Datei (Cmd+N)",
-    "newFolder": "Neuer Ordner (Cmd+Shift+N)",
-    "refresh": "Aktualisieren",
-    "collapseAll": "Alle einklappen",
-    "context": {
-      "rename": "Umbenennen",
-      "delete": "Löschen",
-      "copyPath": "Pfad kopieren",
-      "download": "Herunterladen",
-      "newFile": "Neue Datei",
-      "newFolder": "Neuer Ordner",
-      "upload": "Dateien hochladen",
-      "refresh": "Aktualisieren",
-      "menuLabel": "Datei-Kontextmenü",
-      "loading": "Lädt..."
-    }
+    "untitledSession": "Unbenannte Sitzung"
   },
   "projectWizard": {
     "title": "Neues Projekt erstellen",
@@ -211,31 +163,8 @@
     }
   },
   "versionUpdate": {
-    "title": "Update verfügbar",
-    "newVersionReady": "Eine neue Version ist verfügbar",
-    "currentVersion": "Aktuelle Version",
-    "latestVersion": "Neueste Version",
-    "whatsNew": "Neuigkeiten:",
-    "viewFullRelease": "Vollständige Version anzeigen",
-    "updateProgress": "Update-Fortschritt:",
-    "manualUpgrade": "Manuelles Upgrade:",
-    "npmUpgradeCommand": "npm install -g @cloudcli-ai/cloudcli@latest",
-    "manualUpgradeHint": "Oder klick auf \"Jetzt aktualisieren\", um das Update automatisch durchzuführen.",
-    "updateCompleted": "Update erfolgreich abgeschlossen!",
-    "restartServer": "Bitte starte den Server neu, um die Änderungen anzuwenden.",
-    "updateFailed": "Update fehlgeschlagen",
-    "buttons": {
-      "close": "Schließen",
-      "later": "Später",
-      "copyCommand": "Befehl kopieren",
-      "updateNow": "Jetzt aktualisieren",
-      "updating": "Wird aktualisiert..."
-    },
     "ariaLabels": {
-      "closeModal": "Versions-Update-Modal schließen",
       "showSidebar": "Seitenleiste anzeigen",
-      "settings": "Einstellungen",
-      "updateAvailable": "Update verfügbar",
       "closeSidebar": "Seitenleiste schließen",
       "resizeSidebar": "Seitenleistenbreite ändern"
     }

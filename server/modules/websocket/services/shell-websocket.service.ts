@@ -8,6 +8,7 @@ import { WebSocket, type RawData } from 'ws';
 import { parseIncomingJsonObject, stripAnsiSequences } from '@/shared/utils.js';
 
 type ShellIncomingMessage = {
+  launchTarget?: string;
   type?: string;
   data?: string;
   cols?: number;
@@ -222,8 +223,12 @@ function buildShellCommand(
 
   const otherProgram = (command: string): ShellLaunch => ({ command, claudeFollowsAppTheme: false });
 
+  if (message.launchTarget === 'workstation') return otherProgram('exec bash --login -i');
+  if (message.launchTarget === 'archsv') return otherProgram("exec ssh -t archsv 'exec bash --login -i'");
+  if (message.launchTarget === 'agy') return otherProgram('exec agy');
+
   if (isPlainShell) {
-    return otherProgram(initialCommand);
+    return otherProgram(initialCommand || 'exec bash --login -i');
   }
 
   if (provider === 'cursor') {
@@ -546,7 +551,22 @@ export function handleShellConnection(
       }
 
       if (data.type === 'init') {
-        const projectPath = readString(data.projectPath, process.cwd());
+        const launchTarget = readString(data.launchTarget);
+        if (launchTarget && !['workstation', 'archsv', 'claude', 'codex', 'agy'].includes(launchTarget)) {
+          ws.send(JSON.stringify({ type: 'error', message: 'Invalid shell target' }));
+          return;
+        }
+        if (launchTarget) {
+          // Explicit picker choices override the chat provider and arbitrary commands.
+          const originalProvider = data.provider;
+          data.provider = launchTarget;
+          data.isPlainShell = ['workstation', 'archsv', 'agy'].includes(launchTarget);
+          data.initialCommand = '';
+          if (originalProvider !== launchTarget) data.hasSession = false;
+        }
+        const projectPath = launchTarget === 'workstation'
+          ? path.join(os.homedir(), 'Tribeira')
+          : readString(data.projectPath, process.cwd());
         const sessionId = readString(data.sessionId) || null;
         const hasSession = readBoolean(data.hasSession);
         const provider = readString(data.provider, 'claude');
@@ -571,7 +591,7 @@ export function handleShellConnection(
           isPlainShell && initialCommand
             ? `_cmd_${Buffer.from(initialCommand).toString('base64').slice(0, 16)}`
             : '';
-        ptySessionKey = `${projectPath}_${sessionId ?? 'default'}${commandSuffix}`;
+        ptySessionKey = `${projectPath}_${sessionId ?? 'default'}_${launchTarget || provider}${commandSuffix}`;
 
         if (isLoginCommand || forceRestart) {
           const oldSession = ptySessionsMap.get(ptySessionKey);

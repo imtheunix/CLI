@@ -1,7 +1,5 @@
 import { Sparkles, X } from 'lucide-react';
 
-const PRD_DOCS_URL =
-  'https://github.com/eyaltoledano/claude-task-master/blob/main/docs/examples.md';
 
 type GenerateTasksModalProps = {
   isOpen: boolean;
@@ -57,14 +55,7 @@ export default function GenerateTasksModal({
           </div>
 
           <div className="border-t border-gray-200 pt-4 text-center dark:border-gray-700">
-            <a
-              href={PRD_DOCS_URL}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-block text-sm font-medium text-purple-600 underline hover:text-purple-700 dark:text-purple-400 dark:hover:text-purple-300"
-            >
-              View TaskMaster documentation
-            </a>
+
           </div>
 
           <button

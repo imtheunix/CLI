@@ -20,7 +20,7 @@
     "runClaudeCli": "Execute o Claude CLI em um diretório de projeto para começar"
   },
   "app": {
-    "title": "CloudCLI",
+    "title": "CLI",
     "subtitle": "Interface de assistente de código com IA"
   },
   "sessions": {
@@ -76,12 +76,7 @@
     "save": "Salvar",
     "delete": "Excluir",
     "rename": "Renomear",
-    "joinCommunity": "Entrar na comunidade",
-    "reportIssue": "Reportar problema",
     "starOnGithub": "Dar estrela no GitHub"
-  },
-  "branding": {
-    "openSource": "Código aberto"
   },
   "status": {
     "active": "Ativo",
@@ -127,12 +122,7 @@
     "deleteSessionsPartialFailure_other": "{{count}} de {{total}} sessões não puderam ser excluídas. Tente novamente.",
     "deleteSessionsPartialFailure_many": "{{count}} de {{total}} sessões não puderam ser excluídas. Tente novamente."
   },
-  "version": {
-    "updateAvailable": "Atualização disponível",
-    "restartRequired": "Atualização instalada — reinicie o servidor para aplicar"
-  },
   "search": {
-    "modeProjects": "Projetos",
     "modeConversations": "Conversas",
     "modeMore": "Mais",
     "conversationsPlaceholder": "Pesquisar em conversas...",
@@ -185,5 +175,8 @@
     "archiveSessionsNotice_one": "Arquivar mantém a sessão fora da lista ativa preservando seu histórico.",
     "archiveSessionsNotice_other": "Arquivar mantém as sessões fora da lista ativa preservando seu histórico.",
     "archiveSessionsNotice_many": "Arquivar mantém as sessões fora da lista ativa preservando seu histórico."
+  },
+  "branding": {
+    "openSource": "CLI · a modification of CloudCLI v1.37.5 - Open Source"
   }
 }

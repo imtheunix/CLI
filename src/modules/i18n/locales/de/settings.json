@@ -1,4 +1,10 @@
 {
+  "chatDisplay": {
+    "showRawParameters": "Rohe Parameter anzeigen",
+    "showThinking": "Denken anzeigen",
+    "sendByCtrlEnter": "Mit Strg+Enter senden",
+    "title": "Chat display and input"
+  },
   "title": "Einstellungen",
   "tabs": {
     "account": "Konto",
@@ -49,47 +55,6 @@
     "resetToDefaults": "Auf Standardwerte zurücksetzen",
     "cancelChanges": "Änderungen abbrechen"
   },
-  "quickSettings": {
-    "title": "Schnelleinstellungen",
-    "sections": {
-      "appearance": "Darstellung",
-      "toolDisplay": "Werkzeuganzeige",
-      "inputSettings": "Eingabeeinstellungen"
-    },
-    "darkMode": "Darkmode",
-    "showRawParameters": "Rohe Parameter anzeigen",
-    "showThinking": "Denken anzeigen",
-    "sendByCtrlEnter": "Mit Strg+Enter senden",
-    "sendByCtrlEnterDescription": "Wenn aktiviert, sendet Strg+Enter die Nachricht anstelle von Enter. Dies ist nützlich für IME-Benutzer:innen, um versehentliches Senden zu vermeiden.",
-    "dragHandle": {
-      "dragging": "Handle wird gezogen",
-      "closePanel": "Einstellungspanel schließen",
-      "openPanel": "Einstellungspanel öffnen",
-      "draggingStatus": "Wird gezogen...",
-      "toggleAndMove": "Klicken zum Umschalten, ziehen zum Verschieben"
-    },
-    "tabs": {
-      "settings": "Einstellungen",
-      "commands": "Befehle"
-    },
-    "pin": "Panel anheften",
-    "unpin": "Panel lösen",
-    "close": "Panel schließen",
-    "commands": {
-      "searchPlaceholder": "Befehle durchsuchen…",
-      "noProject": "Wähle ein Projekt, um seine Befehle zu sehen.",
-      "loading": "Befehle werden geladen…",
-      "empty": "Für dieses Projekt sind keine Befehle verfügbar.",
-      "noMatches": "Keine Befehle entsprechen deiner Suche.",
-      "loadError": "Befehle konnten nicht geladen werden.",
-      "groups": {
-        "builtIn": "Integriert",
-        "custom": "Benutzerdefiniert",
-        "skills": "Skills"
-      },
-      "insertTitle": "{{command}} in den Chat einfügen"
-    }
-  },
   "terminalShortcuts": {
     "title": "Terminal-Tastenkürzel",
     "sectionKeys": "Tasten",
@@ -109,7 +74,6 @@
     "label": "Einstellungen",
     "agents": "Agenten",
     "appearance": "Darstellung",
-    "git": "Git",
     "apiTokens": "API & Token",
     "tasks": "Aufgaben",
     "notifications": "Benachrichtigungen",
@@ -240,25 +204,6 @@
   "footerActions": {
     "save": "Einstellungen speichern",
     "cancel": "Abbrechen"
-  },
-  "git": {
-    "title": "Git-Konfiguration",
-    "description": "Konfiguriere deine Git-Identität für Commits. Diese Einstellungen werden global über git config --global angewendet",
-    "name": {
-      "label": "Git-Name",
-      "help": "Dein Name für Git-Commits"
-    },
-    "email": {
-      "label": "Git-E-Mail",
-      "help": "Deine E-Mail-Adresse für Git-Commits"
-    },
-    "actions": {
-      "save": "Konfiguration speichern",
-      "saving": "Wird gespeichert..."
-    },
-    "status": {
-      "success": "Erfolgreich gespeichert"
-    }
   },
   "apiKeys": {
     "title": "API-Schlüssel",
@@ -513,19 +458,11 @@
     "uninstallFailed": "Deinstallation fehlgeschlagen",
     "toggleFailed": "Umschalten fehlgeschlagen",
     "buildYourOwn": "Eigenes Plugin erstellen",
-    "starter": "Starter",
-    "docs": "Dokumentation",
-    "starterPlugin": {
-      "name": "Projektstatistiken",
-      "badge": "starter",
-      "description": "Dateianzahl, Codezeilen, Dateityp-Aufschlüsselung und aktuelle Aktivitäten für dein Projekt.",
-      "install": "Installieren"
-    },
-    "morePlugins": "Mehr",
     "enable": "Aktivieren",
     "disable": "Deaktivieren",
-    "installAriaLabel": "Git-Repository-URL des Plugins",
     "tab": "Tab",
-    "runningStatus": "läuft"
-  }
+    "runningStatus": "läuft",
+    "installAriaLabel": "Git-Repository-URL des Plugins"
+  },
+  "about": {}
 }

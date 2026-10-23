@@ -20,8 +20,6 @@
   "tabs": {
     "chat": "Sohbet",
     "shell": "Shell",
-    "files": "Dosyalar",
-    "git": "Kaynak Kontrolü",
     "tasks": "Görevler",
     "browser": "Browser",
     "computer": "Bilgisayar"
@@ -79,16 +77,8 @@
     "daysAgo": "{{count}} gün önce",
     "yesterday": "Dün"
   },
-  "fileOperations": {
-    "newFile": "Yeni Dosya",
-    "newFolder": "Yeni Klasör",
-    "rename": "Yeniden Adlandır",
-    "move": "Taşı",
-    "copyPath": "Yolu Kopyala",
-    "openInEditor": "Editörde Aç"
-  },
   "mainContent": {
-    "loading": "CloudCLI Yükleniyor",
+    "loading": "CLI Yükleniyor",
     "settingUpWorkspace": "Çalışma alanın hazırlanıyor...",
     "chooseProject": "Projeni Seç",
     "selectProjectDescription": "Claude ile kodlamaya başlamak için kenar çubuğundan bir proje seç. Her proje kendi sohbet oturumlarını ve dosya geçmişini içerir.",
@@ -96,45 +86,7 @@
     "createProjectMobile": "Projelere erişmek için yukarıdaki menü düğmesine dokun",
     "createProjectDesktop": "Kenar çubuğundaki klasör simgesine tıklayarak yeni bir proje oluştur",
     "newSession": "Yeni Oturum",
-    "untitledSession": "Adsız Oturum",
-    "projectFiles": "Proje Dosyaları"
-  },
-  "fileTree": {
-    "loading": "Dosyalar yükleniyor...",
-    "files": "Dosyalar",
-    "simpleView": "Basit görünüm",
-    "compactView": "Kompakt görünüm",
-    "detailedView": "Detaylı görünüm",
-    "searchPlaceholder": "Dosya ve klasörlerde ara...",
-    "clearSearch": "Aramayı temizle",
-    "name": "İsim",
-    "size": "Boyut",
-    "modified": "Değiştirilme",
-    "permissions": "İzinler",
-    "noFilesFound": "Dosya bulunamadı",
-    "checkProjectPath": "Proje yolunun erişilebilir olduğunu kontrol et",
-    "noMatchesFound": "Eşleşme bulunamadı",
-    "tryDifferentSearch": "Farklı bir arama terimi dene veya aramayı temizle",
-    "justNow": "az önce",
-    "minAgo": "{{count}} dakika önce",
-    "hoursAgo": "{{count}} saat önce",
-    "daysAgo": "{{count}} gün önce",
-    "newFile": "Yeni Dosya (Cmd+N)",
-    "newFolder": "Yeni Klasör (Cmd+Shift+N)",
-    "refresh": "Yenile",
-    "collapseAll": "Tümünü Daralt",
-    "context": {
-      "rename": "Yeniden Adlandır",
-      "delete": "Sil",
-      "copyPath": "Yolu Kopyala",
-      "download": "İndir",
-      "newFile": "Yeni Dosya",
-      "newFolder": "Yeni Klasör",
-      "upload": "Dosya Yükle",
-      "refresh": "Yenile",
-      "menuLabel": "Dosya bağlam menüsü",
-      "loading": "Yükleniyor..."
-    }
+    "untitledSession": "Adsız Oturum"
   },
   "projectWizard": {
     "title": "Yeni Proje Oluştur",
@@ -241,31 +193,8 @@
     }
   },
   "versionUpdate": {
-    "title": "Güncelleme Mevcut",
-    "newVersionReady": "Yeni bir sürüm hazır",
-    "currentVersion": "Mevcut Sürüm",
-    "latestVersion": "Son Sürüm",
-    "whatsNew": "Yenilikler:",
-    "viewFullRelease": "Tam sürüm notlarını gör",
-    "updateProgress": "Güncelleme İlerlemesi:",
-    "manualUpgrade": "Manuel yükseltme:",
-    "npmUpgradeCommand": "npm install -g @cloudcli-ai/cloudcli@latest",
-    "manualUpgradeHint": "Veya güncellemeyi otomatik çalıştırmak için \"Şimdi Güncelle\"ye tıkla.",
-    "updateCompleted": "Güncelleme başarıyla tamamlandı!",
-    "restartServer": "Değişikliklerin uygulanması için sunucuyu yeniden başlat.",
-    "updateFailed": "Güncelleme başarısız",
-    "buttons": {
-      "close": "Kapat",
-      "later": "Daha Sonra",
-      "copyCommand": "Komutu Kopyala",
-      "updateNow": "Şimdi Güncelle",
-      "updating": "Güncelleniyor..."
-    },
     "ariaLabels": {
-      "closeModal": "Sürüm yükseltme modalını kapat",
       "showSidebar": "Kenar çubuğunu göster",
-      "settings": "Ayarlar",
-      "updateAvailable": "Güncelleme mevcut",
       "closeSidebar": "Kenar çubuğunu kapat",
       "resizeSidebar": "Kenar çubuğunu yeniden boyutlandır"
     }

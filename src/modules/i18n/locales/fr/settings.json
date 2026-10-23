@@ -1,4 +1,10 @@
 {
+  "chatDisplay": {
+    "showRawParameters": "Afficher les paramètres bruts",
+    "showThinking": "Afficher la réflexion",
+    "sendByCtrlEnter": "Envoyer avec Ctrl+Entrée",
+    "title": "Chat display and input"
+  },
   "title": "Paramètres",
   "tabs": {
     "account": "Compte",
@@ -49,47 +55,6 @@
     "resetToDefaults": "Rétablir les valeurs par défaut",
     "cancelChanges": "Annuler les modifications"
   },
-  "quickSettings": {
-    "title": "Paramètres rapides",
-    "sections": {
-      "appearance": "Apparence",
-      "toolDisplay": "Affichage des outils",
-      "inputSettings": "Paramètres de saisie"
-    },
-    "darkMode": "Mode sombre",
-    "showRawParameters": "Afficher les paramètres bruts",
-    "showThinking": "Afficher la réflexion",
-    "sendByCtrlEnter": "Envoyer avec Ctrl+Entrée",
-    "sendByCtrlEnterDescription": "Lorsqu'activé, appuyer sur Ctrl+Entrée envoie le message au lieu de simplement Entrée. Utile pour les utilisateurs IME pour éviter les envois accidentels.",
-    "dragHandle": {
-      "dragging": "Glissement en cours",
-      "closePanel": "Fermer le panneau de paramètres",
-      "openPanel": "Ouvrir le panneau de paramètres",
-      "draggingStatus": "Glissement...",
-      "toggleAndMove": "Cliquer pour basculer, glisser pour déplacer"
-    },
-    "tabs": {
-      "settings": "Paramètres",
-      "commands": "Commandes"
-    },
-    "pin": "Épingler le panneau",
-    "unpin": "Détacher le panneau",
-    "close": "Fermer le panneau",
-    "commands": {
-      "searchPlaceholder": "Rechercher des commandes…",
-      "noProject": "Sélectionnez un projet pour voir ses commandes.",
-      "loading": "Chargement des commandes…",
-      "empty": "Aucune commande disponible pour ce projet.",
-      "noMatches": "Aucune commande ne correspond à votre recherche.",
-      "loadError": "Impossible de charger les commandes.",
-      "groups": {
-        "builtIn": "Intégrées",
-        "custom": "Personnalisées",
-        "skills": "Skills"
-      },
-      "insertTitle": "Insérer {{command}} dans le chat"
-    }
-  },
   "terminalShortcuts": {
     "title": "Raccourcis terminal",
     "sectionKeys": "Touches",
@@ -109,7 +74,6 @@
     "label": "Paramètres",
     "agents": "Agents",
     "appearance": "Apparence",
-    "git": "Git",
     "apiTokens": "API & Tokens",
     "tasks": "Tâches",
     "notifications": "Notifications",
@@ -240,25 +204,6 @@
   "footerActions": {
     "save": "Enregistrer les paramètres",
     "cancel": "Annuler"
-  },
-  "git": {
-    "title": "Configuration Git",
-    "description": "Configurez votre identité git pour les commits. Ces paramètres seront appliqués globalement via git config --global",
-    "name": {
-      "label": "Nom Git",
-      "help": "Votre nom pour les commits git"
-    },
-    "email": {
-      "label": "E-mail Git",
-      "help": "Votre e-mail pour les commits git"
-    },
-    "actions": {
-      "save": "Enregistrer la configuration",
-      "saving": "Enregistrement..."
-    },
-    "status": {
-      "success": "Enregistré avec succès"
-    }
   },
   "apiKeys": {
     "title": "Clés API",
@@ -516,68 +461,11 @@
     "installFailed": "Échec de l'installation",
     "uninstallFailed": "Échec de la désinstallation",
     "toggleFailed": "Échec du basculement",
-    "starterPluginLabel": "Plugin de démarrage",
-    "starter": "Démarrage",
-    "docs": "Docs",
-    "sections": {
-      "officialTitle": "Plugins officiels",
-      "officialDescription": "Maintenus par l'équipe CloudCLI et prêts à être installés directement.",
-      "unofficialTitle": "Autres plugins",
-      "unofficialDescription": "Plugins non officiels et intégrations d'autres utilisateurs. Examinez le code source avant d'installer."
-    },
-    "starterPlugin": {
-      "name": "Statistiques du projet",
-      "badge": "démarrage",
-      "description": "Nombre de fichiers, lignes de code, répartition par type de fichier et activité récente pour votre projet.",
-      "install": "Installer"
-    },
-    "terminalPlugin": {
-      "name": "Terminal",
-      "badge": "officiel",
-      "description": "Terminal intégré avec accès shell complet directement dans l'interface.",
-      "install": "Installer"
-    },
-    "scheduledPromptPlugin": {
-      "name": "Invites planifiées",
-      "badge": "non officiel",
-      "description": "Planifiez des invites d'espace de travail, consultez l'historique des exécutions et gérez les tâches locales récurrentes.",
-      "install": "Installer"
-    },
-    "prismCloudCLI": {
-      "name": "PRISM CloudCLI",
-      "badge": "non officiel",
-      "description": "Intelligence de session pour Claude Code, dans CloudCLI. Voyez pourquoi vos sessions consomment des tokens sans quitter le navigateur.",
-      "install": "Installer"
-    },
-    "sessionManagerPlugin": {
-      "name": "Sessions",
-      "badge": "non officiel",
-      "description": "Visualisez, gérez et terminez les sessions Claude Code actives.",
-      "install": "Installer"
-    },
-    "tokenCostCalculatorPlugin": {
-      "name": "Calculateur de coût en tokens",
-      "badge": "non officiel",
-      "description": "Calculez les coûts API à partir des prix des modèles et de l'utilisation des tokens, avec prise en charge des tarifs préréglés.",
-      "install": "Installer"
-    },
-    "taskQueuePlugin": {
-      "name": "File de tâches",
-      "badge": "non officiel",
-      "description": "Tableau de bord de file de tâches pour visualiser, filtrer et lancer des tâches d'agent.",
-      "install": "Installer"
-    },
-    "githubIssuesBoardPlugin": {
-      "name": "Tableau des issues GitHub",
-      "badge": "non officiel",
-      "description": "Tableau Kanban pour les issues GitHub avec synchronisation bidirectionnelle TaskMaster et installation automatique de la compétence CLI /github-task",
-      "install": "Installer"
-    },
-    "morePlugins": "Plus",
     "enable": "Activer",
     "disable": "Désactiver",
-    "installAriaLabel": "URL du dépôt git du plugin",
     "tab": "onglet",
-    "runningStatus": "en cours"
-  }
+    "runningStatus": "en cours",
+    "installAriaLabel": "URL du dépôt git du plugin"
+  },
+  "about": {}
 }

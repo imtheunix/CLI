@@ -1,8 +1,10 @@
+import type { ShellTarget } from '@/shared/types';
 import { IS_PLATFORM } from '@/shared/utils';
 import { getStoredAuthToken } from '@/shared/authToken';
 
 type ShellInitMessage = {
   type: 'init';
+  launchTarget?: ShellTarget;
   projectPath: string;
   sessionId: string | null;
   hasSession: boolean;

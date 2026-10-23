@@ -352,3 +352,54 @@ test('scheduling validates its input', async () => {
     );
   });
 });
+
+test('a persistent queue consumes one item per pass, in order, keeping each attachment and session isolated', async () => {
+  await withIsolatedDatabase(async (userId) => {
+    const items = [1, 2, 3].map((index) => ({ id: String(index), content: `prompt ${index}`, attachments: [{ name: `${index}.png` }] }));
+    sessionDraftsDb.saveDraft(userId, SESSION_ID, { text: 'unsent', queuedMessage: { items } });
+    sessionDraftsDb.saveDraft(userId, 'other-session', { text: '', queuedMessage: { items: [{ content: 'other' }] } });
+    const runs: RunCall[] = [];
+    for (let index = 0; index < 3; index++) {
+      assert.equal(await dispatchQueuedMessages(createRuntime(runs)), 1);
+      assert.equal(runs[index].command, `prompt ${index + 1}`);
+      assert.deepEqual(runs[index].options.attachments, [{ name: `${index + 1}.png` }]);
+    }
+    assert.equal(sessionDraftsDb.getDrafts(userId).find((draft) => draft.scope === SESSION_ID)?.text, 'unsent');
+    assert.ok(sessionDraftsDb.getDrafts(userId).find((draft) => draft.scope === 'other-session')?.queuedMessage);
+  });
+});
+
+test('paused queues survive reload, and a failed turn preserves and pauses the rest', async () => {
+  await withIsolatedDatabase(async (userId) => {
+    const items = [{ id: 'a', content: 'first' }, { id: 'b', content: 'second' }];
+    sessionDraftsDb.saveDraft(userId, SESSION_ID, { text: '', queuedMessage: { items } });
+    sessionDraftsDb.pauseQueue(SESSION_ID);
+    closeConnection();
+    await initializeDatabase();
+    assert.equal(await dispatchQueuedMessages(createRuntime([])), 0);
+    const queue = sessionDraftsDb.getDrafts(userId)[0].queuedMessage as { items: unknown[]; paused: boolean };
+    assert.deepEqual(queue.items, items);
+    assert.equal(queue.paused, true);
+    sessionDraftsDb.saveDraft(userId, SESSION_ID, { text: '', queuedMessage: { items, paused: false } });
+    await dispatchQueuedMessages(createRuntime([], 'throw'));
+    const failed = sessionDraftsDb.getDrafts(userId)[0].queuedMessage as { items: unknown[]; paused: boolean };
+    assert.equal(failed.paused, true);
+    assert.ok(failed.items.some((item) => (item as { id: string }).id === 'b'));
+    assert.equal(await dispatchQueuedMessages(createRuntime([])), 0);
+  });
+});
+
+test('Send now interrupts the active turn, consumes the selected item and leaves the others ordered', async () => {
+  await withIsolatedDatabase(async (userId) => {
+    const items = ['a', 'b', 'c'].map((id) => ({ id, content: id }));
+    sessionDraftsDb.saveDraft(userId, SESSION_ID, { text: '', queuedMessage: { items, forceId: 'b' } });
+    chatRunRegistry.startRun({ appSessionId: SESSION_ID, provider: 'claude', providerSessionId: null, connection: null, userId });
+    const runs: RunCall[] = [];
+    const aborts: string[] = [];
+    assert.equal(await dispatchQueuedMessages(createRuntime(runs, 'ok', aborts)), 1);
+    assert.deepEqual(aborts, [SESSION_ID]);
+    assert.equal(runs[0].command, 'b');
+    const remaining = sessionDraftsDb.getDrafts(userId)[0].queuedMessage as { items: { id: string }[] };
+    assert.deepEqual(remaining.items.map((item) => item.id), ['a', 'c']);
+  });
+});

@@ -15,7 +15,7 @@ type LanguageSelectorProps = {
  * A dropdown component for selecting the application language.
  * Automatically updates the i18n language and persists it as a user preference.
  *
- * Used by the settings module (appearance tab) and the quick-settings-panel module
+ * Used by the settings module (appearance tab) 
  * so the user can switch language from either surface.
  *
  * Props:
@@ -29,7 +29,7 @@ export default function LanguageSelector({ compact = false }: LanguageSelectorPr
     i18n.changeLanguage(newLanguage);
   };
 
-  // Compact style for QuickSettingsPanel
+  // Compact selector style
   if (compact) {
     return (
       <div className="flex items-center justify-between rounded-lg border border-transparent bg-muted/50 p-3 transition-colors hover:border-border hover:bg-accent">

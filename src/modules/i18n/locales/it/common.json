@@ -20,8 +20,6 @@
   "tabs": {
     "chat": "Chat",
     "shell": "Terminale",
-    "files": "File",
-    "git": "Controllo Versione",
     "tasks": "Attività",
     "browser": "Browser",
     "computer": "Computer"
@@ -79,16 +77,8 @@
     "daysAgo": "{{count}} giorni fa",
     "yesterday": "Ieri"
   },
-  "fileOperations": {
-    "newFile": "Nuovo file",
-    "newFolder": "Nuova cartella",
-    "rename": "Rinomina",
-    "move": "Sposta",
-    "copyPath": "Copia percorso",
-    "openInEditor": "Apri nell'editor"
-  },
   "mainContent": {
-    "loading": "Caricamento CloudCLI",
+    "loading": "Caricamento CLI",
     "settingUpWorkspace": "Preparazione dell'area di lavoro...",
     "chooseProject": "Scegli il tuo progetto",
     "selectProjectDescription": "Seleziona un progetto dalla barra laterale per iniziare a programmare con Claude. Ogni progetto contiene le tue sessioni di chat e la cronologia dei file.",
@@ -96,45 +86,7 @@
     "createProjectMobile": "Tocca il pulsante menu in alto per accedere ai progetti",
     "createProjectDesktop": "Crea un nuovo progetto cliccando l'icona cartella nella barra laterale",
     "newSession": "Nuova sessione",
-    "untitledSession": "Sessione senza titolo",
-    "projectFiles": "File del progetto"
-  },
-  "fileTree": {
-    "loading": "Caricamento file...",
-    "files": "File",
-    "simpleView": "Vista semplice",
-    "compactView": "Vista compatta",
-    "detailedView": "Vista dettagliata",
-    "searchPlaceholder": "Cerca file e cartelle...",
-    "clearSearch": "Cancella ricerca",
-    "name": "Nome",
-    "size": "Dimensione",
-    "modified": "Modificato",
-    "permissions": "Permessi",
-    "noFilesFound": "Nessun file trovato",
-    "checkProjectPath": "Verifica che il percorso del progetto sia accessibile",
-    "noMatchesFound": "Nessuna corrispondenza trovata",
-    "tryDifferentSearch": "Prova con un termine di ricerca diverso o cancella la ricerca",
-    "justNow": "adesso",
-    "minAgo": "{{count}} min fa",
-    "hoursAgo": "{{count}} ore fa",
-    "daysAgo": "{{count}} giorni fa",
-    "newFile": "Nuovo file (Cmd+N)",
-    "newFolder": "Nuova cartella (Cmd+Shift+N)",
-    "refresh": "Aggiorna",
-    "collapseAll": "Comprimi tutto",
-    "context": {
-      "rename": "Rinomina",
-      "delete": "Elimina",
-      "copyPath": "Copia percorso",
-      "download": "Scarica",
-      "newFile": "Nuovo file",
-      "newFolder": "Nuova cartella",
-      "upload": "Carica file",
-      "refresh": "Aggiorna",
-      "menuLabel": "Menu contestuale file",
-      "loading": "Caricamento..."
-    }
+    "untitledSession": "Sessione senza titolo"
   },
   "projectWizard": {
     "title": "Crea nuovo progetto",
@@ -241,31 +193,8 @@
     }
   },
   "versionUpdate": {
-    "title": "Aggiornamento disponibile",
-    "newVersionReady": "Una nuova versione è pronta",
-    "currentVersion": "Versione attuale",
-    "latestVersion": "Ultima versione",
-    "whatsNew": "Novità:",
-    "viewFullRelease": "Vedi release completa",
-    "updateProgress": "Progresso aggiornamento:",
-    "manualUpgrade": "Aggiornamento manuale:",
-    "npmUpgradeCommand": "npm install -g @cloudcli-ai/cloudcli@latest",
-    "manualUpgradeHint": "Oppure clicca \"Aggiorna ora\" per eseguire l'aggiornamento automaticamente.",
-    "updateCompleted": "Aggiornamento completato con successo!",
-    "restartServer": "Riavvia il server per applicare le modifiche.",
-    "updateFailed": "Aggiornamento fallito",
-    "buttons": {
-      "close": "Chiudi",
-      "later": "Più tardi",
-      "copyCommand": "Copia comando",
-      "updateNow": "Aggiorna ora",
-      "updating": "Aggiornamento..."
-    },
     "ariaLabels": {
-      "closeModal": "Chiudi finestra aggiornamento versione",
       "showSidebar": "Mostra barra laterale",
-      "settings": "Impostazioni",
-      "updateAvailable": "Aggiornamento disponibile",
       "closeSidebar": "Chiudi barra laterale",
       "resizeSidebar": "Ridimensiona barra laterale"
     }

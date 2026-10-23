@@ -33,7 +33,7 @@ body.cc-modal-window {
   --tab-hover-bg: rgba(255, 255, 255, 0.08);
   --tab-active-bg: rgba(255, 255, 255, 0.14);
   --mono: "SF Mono", "Geist Mono", "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
-  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, sans-serif;
+  --sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   color-scheme: dark;
 }
 

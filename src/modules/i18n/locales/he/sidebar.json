@@ -20,7 +20,7 @@
     "runClaudeCli": "כדי להתחיל, יש להריץ את Claude CLI בתיקיית פרויקט"
   },
   "app": {
-    "title": "CloudCLI",
+    "title": "CLI",
     "subtitle": "ממשק לעוזר תכנות AI"
   },
   "sessions": {
@@ -77,12 +77,7 @@
     "save": "שמירה",
     "delete": "מחיקה",
     "rename": "שינוי שם",
-    "joinCommunity": "הצטרפות לקהילה",
-    "reportIssue": "דיווח על בעיה",
     "starOnGithub": "כוכב ב-GitHub"
-  },
-  "branding": {
-    "openSource": "קוד פתוח"
   },
   "status": {
     "active": "פעיל",
@@ -134,12 +129,7 @@
     "deleteSessionsPartialFailure_two": "שני סשנים מתוך {{total}} לא נמחקו. יש לנסות שוב.",
     "deleteSessionsPartialFailure_other": "{{count}} מתוך {{total}} סשנים לא נמחקו. יש לנסות שוב."
   },
-  "version": {
-    "updateAvailable": "יש עדכון זמין",
-    "restartRequired": "העדכון הותקן — יש להפעיל מחדש את השרת כדי להחיל אותו"
-  },
   "search": {
-    "modeProjects": "פרויקטים",
     "modeConversations": "שיחות",
     "modeMore": "עוד",
     "runningTooltip": "סשנים פועלים",
@@ -216,5 +206,8 @@
     "archiveSessionsNotice_one": "העברה לארכיון מוציאה את הסשן מהרשימה הפעילה ושומרת את ההיסטוריה שלו.",
     "archiveSessionsNotice_two": "העברה לארכיון מוציאה את הסשנים מהרשימה הפעילה ושומרת את ההיסטוריה שלהם.",
     "archiveSessionsNotice_other": "העברה לארכיון מוציאה את הסשנים מהרשימה הפעילה ושומרת את ההיסטוריה שלהם."
+  },
+  "branding": {
+    "openSource": "CLI · a modification of CloudCLI v1.37.5 - Open Source"
   }
 }

@@ -1,4 +1,10 @@
 {
+  "chatDisplay": {
+    "showRawParameters": "Показывать сырые параметры",
+    "showThinking": "Показывать размышления",
+    "sendByCtrlEnter": "Отправка по Ctrl+Enter",
+    "title": "Chat display and input"
+  },
   "title": "Настройки",
   "tabs": {
     "account": "Аккаунт",
@@ -49,47 +55,6 @@
     "resetToDefaults": "Сбросить к значениям по умолчанию",
     "cancelChanges": "Отменить изменения"
   },
-  "quickSettings": {
-    "title": "Быстрые настройки",
-    "sections": {
-      "appearance": "Внешний вид",
-      "toolDisplay": "Отображение инструментов",
-      "inputSettings": "Настройки ввода"
-    },
-    "darkMode": "Темная тема",
-    "showRawParameters": "Показывать сырые параметры",
-    "showThinking": "Показывать размышления",
-    "sendByCtrlEnter": "Отправка по Ctrl+Enter",
-    "sendByCtrlEnterDescription": "Когда включено, нажатие Ctrl+Enter будет отправлять сообщение вместо просто Enter. Это полезно для пользователей IME, чтобы избежать случайной отправки.",
-    "dragHandle": {
-      "dragging": "Перетаскивание ручки",
-      "closePanel": "Закрыть панель настроек",
-      "openPanel": "Открыть панель настроек",
-      "draggingStatus": "Перетаскивание...",
-      "toggleAndMove": "Нажмите для переключения, перетащите для перемещения"
-    },
-    "tabs": {
-      "settings": "Настройки",
-      "commands": "Команды"
-    },
-    "pin": "Закрепить панель",
-    "unpin": "Открепить панель",
-    "close": "Закрыть панель",
-    "commands": {
-      "searchPlaceholder": "Поиск команд…",
-      "noProject": "Выберите проект, чтобы увидеть его команды.",
-      "loading": "Загрузка команд…",
-      "empty": "Для этого проекта нет доступных команд.",
-      "noMatches": "Нет команд, соответствующих запросу.",
-      "loadError": "Не удалось загрузить команды.",
-      "groups": {
-        "builtIn": "Встроенные",
-        "custom": "Пользовательские",
-        "skills": "Навыки"
-      },
-      "insertTitle": "Вставить {{command}} в чат"
-    }
-  },
   "terminalShortcuts": {
     "title": "Горячие клавиши терминала",
     "sectionKeys": "Клавиши",
@@ -109,7 +74,6 @@
     "label": "Настройки",
     "agents": "Агенты",
     "appearance": "Внешний вид",
-    "git": "Git",
     "apiTokens": "API и токены",
     "tasks": "Задачи",
     "notifications": "Уведомления",
@@ -240,25 +204,6 @@
   "footerActions": {
     "save": "Сохранить настройки",
     "cancel": "Отмена"
-  },
-  "git": {
-    "title": "Конфигурация Git",
-    "description": "Настройте вашу git идентичность для коммитов. Эти настройки будут применены глобально через git config --global",
-    "name": {
-      "label": "Имя Git",
-      "help": "Ваше имя для git коммитов"
-    },
-    "email": {
-      "label": "Email Git",
-      "help": "Ваш email для git коммитов"
-    },
-    "actions": {
-      "save": "Сохранить конфигурацию",
-      "saving": "Сохранение..."
-    },
-    "status": {
-      "success": "Успешно сохранено"
-    }
   },
   "apiKeys": {
     "title": "API ключи",
@@ -513,19 +458,11 @@
     "uninstallFailed": "Ошибка удаления",
     "toggleFailed": "Ошибка переключения",
     "buildYourOwn": "Создайте свой плагин",
-    "starter": "Шаблон",
-    "docs": "Документация",
-    "starterPlugin": {
-      "name": "Статистика проекта",
-      "badge": "шаблон",
-      "description": "Количество файлов, строк кода, разбивка по типам файлов и недавняя активность в вашем проекте.",
-      "install": "Установить"
-    },
-    "morePlugins": "Ещё",
     "enable": "Включить",
     "disable": "Выключить",
-    "installAriaLabel": "URL git-репозитория плагина",
     "tab": "вкладка",
-    "runningStatus": "запущен"
-  }
+    "runningStatus": "запущен",
+    "installAriaLabel": "URL git-репозитория плагина"
+  },
+  "about": {}
 }

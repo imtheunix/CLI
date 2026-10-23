@@ -1,9 +1,11 @@
+import { BackgroundJobs } from '@/modules/background-jobs';
+import { Plans } from '@/modules/plans';
 import { type ReactNode } from 'react';
 import { Activity, Archive, Folder, MessageSquare, RotateCcw, Search, Trash2 } from 'lucide-react';
 import type { TFunction } from 'i18next';
 
 import { LLMProviderLogo, ScrollArea } from '@/shared/ui';
-import type { ArchivedProjectListItem, ArchivedSessionListItem, ConversationSearchResults, Project, RecentConversationListItem, ReleaseInfo, SearchProgress, SidebarProjectListProps, SidebarSearchMode } from '@/shared/types';
+import type { ArchivedProjectListItem, ArchivedSessionListItem, ConversationSearchResults, Project, RecentConversationListItem, SearchProgress, SidebarProjectListProps, SidebarSearchMode } from '@/shared/types';
 import { formatCompactAge, getAllSessions } from '@/modules/sidebar/utils/sidebarProjectFormatting';
 import SidebarFooter from '@/modules/sidebar/SidebarFooter';
 import SidebarHeader from '@/modules/sidebar/SidebarHeader';
@@ -82,6 +84,7 @@ function groupArchivedSessionsByProject(sessions: ArchivedSessionListItem[]): Ar
 }
 
 type SidebarContentProps = {
+  isVisible: boolean;
   isPWA: boolean;
   isMobile: boolean;
   isLoading: boolean;
@@ -118,12 +121,7 @@ type SidebarContentProps = {
   isRefreshing: boolean;
   onCreateProject: () => void;
   onCollapseSidebar: () => void;
-  updateAvailable: boolean;
-  restartRequired: boolean;
-  releaseInfo: ReleaseInfo | null;
-  latestVersion: string | null;
-  currentVersion: string;
-  onShowVersionModal: () => void;
+
   onShowSettings: () => void;
   projectListProps: SidebarProjectListProps;
   t: TFunction;
@@ -131,6 +129,7 @@ type SidebarContentProps = {
 
 /** Rendered by Sidebar as the expanded panel body: header, project list, conversation/archive search results, recent conversations and footer. */
 export default function SidebarContent({
+  isVisible,
   isPWA,
   isMobile,
   isLoading,
@@ -165,12 +164,7 @@ export default function SidebarContent({
   isRefreshing,
   onCreateProject,
   onCollapseSidebar,
-  updateAvailable,
-  restartRequired,
-  releaseInfo,
-  latestVersion,
-  currentVersion,
-  onShowVersionModal,
+
   onShowSettings,
   projectListProps,
   t,
@@ -210,7 +204,7 @@ export default function SidebarContent({
       />
 
       <ScrollArea className="flex-1 overflow-y-auto overscroll-contain md:px-1.5 md:py-2">
-        {showConversationSearch ? (
+        {searchMode === 'plans' ? <Plans isVisible={isVisible} /> : showConversationSearch ? (
           isSearching && !conversationResults ? (
             <div className="px-4 py-12 text-center md:py-8">
               <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-lg bg-muted md:mb-3">
@@ -376,6 +370,22 @@ export default function SidebarContent({
             </div>
           ) : null
         ) : searchMode === 'conversations' ? (
+          <>
+          <label className="block space-y-2 border-b p-3 text-sm">
+            <span>New session in workspace</span>
+            <select
+              className="min-h-11 w-full border bg-background p-2 text-foreground"
+              aria-label="New session in workspace"
+              value=""
+              onChange={(event) => {
+                const workspace = projects.find(project => project.projectId === event.target.value);
+                if (workspace) projectListProps.onNewSession(workspace);
+              }}
+            >
+              <option value="">Choose workspace…</option>
+              {projects.map(project => <option key={project.projectId} value={project.projectId}>{String(project.displayName || project.name || project.projectId)}</option>)}
+            </select>
+          </label>
           <SidebarRecentConversations
             conversations={recentConversations}
             total={recentConversationsTotal}
@@ -391,6 +401,7 @@ export default function SidebarContent({
             onRetry={onRetryRecentConversations}
             t={t}
           />
+          </>
         ) : searchMode === 'running' ? (
           projectListProps.filteredProjects.length === 0 ? (
             <div className="px-4 py-12 text-center md:py-8">
@@ -683,16 +694,12 @@ export default function SidebarContent({
         ) : (
           <SidebarProjectList {...projectListProps} />
         )}
+        {searchMode === 'running' && <BackgroundJobs visible={isVisible} />}
       </ScrollArea>
 
       {!isRenamingOnMobile && (
         <SidebarFooter
-          updateAvailable={updateAvailable}
-          restartRequired={restartRequired}
-          releaseInfo={releaseInfo}
-          latestVersion={latestVersion}
-          currentVersion={currentVersion}
-          onShowVersionModal={onShowVersionModal}
+
           onShowSettings={onShowSettings}
           t={t}
         />

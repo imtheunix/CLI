@@ -1,7 +1,8 @@
-// Service Worker for CloudCLI PWA
+// Modified by CLI: branding and manifest cache.
+// Service Worker for CLI PWA
 // Cache only manifest (needed for PWA install). HTML and JS are never pre-cached
 // so a rebuild + refresh always picks up the latest assets.
-const CACHE_NAME = 'claude-ui-v2';
+const CACHE_NAME = 'cli-v4';
 const urlsToCache = [
   '/manifest.json'
 ];
@@ -79,7 +80,7 @@ self.addEventListener('push', event => {
   try {
     payload = event.data.json();
   } catch {
-    payload = { title: 'CloudCLI', body: event.data.text() };
+    payload = { title: 'CLI', body: event.data.text() };
   }
 
   const options = {
@@ -92,7 +93,7 @@ self.addEventListener('push', event => {
   };
 
   event.waitUntil(
-    self.registration.showNotification(payload.title || 'CloudCLI', options)
+    self.registration.showNotification(payload.title || 'CLI', options)
   );
 });
 

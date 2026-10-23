@@ -10,7 +10,7 @@ import type { ProviderRuntimeGateway } from '@/modules/websocket/index.js';
  * `(status, scheduled_for)`, so the poll is one cheap query. Anything finer
  * would buy precision nobody asked for.
  */
-const POLL_INTERVAL_MS = 30_000;
+const POLL_INTERVAL_MS = 1_000;
 
 let pollTimer: ReturnType<typeof setInterval> | null = null;
 let dispatchInFlight = false;
@@ -56,7 +56,10 @@ async function sendClaimedQueuedMessage(
   candidate: QueuedSessionMessageRecord,
   runtime: ProviderRuntimeGateway,
 ): Promise<void> {
-  const message = readQueuedMessage(candidate.queuedMessage);
+  const queue = candidate.queuedMessage as { items?: unknown[]; forceId?: string };
+  const message = readQueuedMessage(Array.isArray(queue?.items)
+    ? queue.items.find((item, index) => queue.forceId ? (item as { id?: string })?.id === queue.forceId : index === 0)
+    : candidate.queuedMessage);
   if (!message) {
     sessionDraftsDb.deleteEmptyDraft(candidate.userId, candidate.sessionId);
     return;
@@ -66,6 +69,7 @@ async function sendClaimedQueuedMessage(
     {
       sessionId: candidate.sessionId,
       userId: candidate.userId,
+      interruptActiveRun: Boolean(queue?.forceId),
       content: message.content,
       options: { ...message.options, attachments: message.attachments },
     },
@@ -74,9 +78,13 @@ async function sendClaimedQueuedMessage(
 
   // The registry check and run reservation are separate operations. If a run
   // wins that tiny race, put the turn back so the next poll tries again.
-  if (!result.started && result.error === 'A run was already in progress for this session.') {
+  if (!result.started && result.error?.includes('already in progress for this session.')) {
     sessionDraftsDb.restoreQueuedMessage(candidate);
     return;
+  }
+  if (!result.started || result.error) {
+    sessionDraftsDb.restoreQueuedMessage(candidate);
+    sessionDraftsDb.pauseQueue(candidate.sessionId);
   }
   sessionDraftsDb.deleteEmptyDraft(candidate.userId, candidate.sessionId);
 }
@@ -100,14 +108,22 @@ export async function dispatchQueuedMessages(runtime: ProviderRuntimeGateway): P
   let claimed = 0;
 
   await Promise.all(candidates.map(async (candidate) => {
-    if (isSessionBusy(candidate.sessionId, runtime)) {
+    const queue = candidate.queuedMessage as { items?: unknown[]; paused?: boolean; forceId?: string };
+    if (queue?.paused || (Array.isArray(queue?.items) && !queue.items.length)) return;
+    if (!queue?.forceId && isSessionBusy(candidate.sessionId, runtime)) {
       return;
     }
     if (!sessionDraftsDb.claimQueuedMessage(candidate)) {
       return;
     }
     claimed += 1;
-    await sendClaimedQueuedMessage(candidate, runtime);
+    try {
+      await sendClaimedQueuedMessage(candidate, runtime);
+    } catch (error) {
+      sessionDraftsDb.restoreQueuedMessage(candidate);
+      sessionDraftsDb.pauseQueue(candidate.sessionId);
+      console.error('[QueuedMessages] Send failed', error);
+    }
   }));
 
   return claimed;
@@ -183,6 +199,10 @@ export function initializeScheduledMessageDispatcher(runtime: ProviderRuntimeGat
   }
 
   const poll = () => {
+    // Queue claims are atomic and each run reserves its session synchronously.
+    // Poll independently of long turns so Send now can interrupt a queued run.
+    void dispatchQueuedMessages(runtime).catch((error: unknown) => console.error('[QueuedMessages]', error));
+
     // A pass that overruns the interval must not be started again underneath
     // itself; the claim is transactional but the runs are not.
     if (dispatchInFlight) {
@@ -190,7 +210,6 @@ export function initializeScheduledMessageDispatcher(runtime: ProviderRuntimeGat
     }
     dispatchInFlight = true;
     void dispatchDueScheduledMessages(runtime)
-      .then(() => dispatchQueuedMessages(runtime))
       .catch((error: unknown) => {
         const message = error instanceof Error ? error.message : String(error);
         console.error('[ScheduledMessages] Dispatch pass failed', { error: message });

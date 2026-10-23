@@ -1078,26 +1078,15 @@ export function useChatComposerState({
     handleSubmitRef.current = handleSubmit;
   }, [handleSubmit]);
 
-  // The VPS dispatcher owns sending. While the card is visible, periodically
-  // reconcile only its removal so the UI notices when the server claims it.
+  // The server dispatches even while this browser is asleep. Restore its queue
+  // after each refresh and keep the compatibility first-card state in sync.
   useEffect(() => {
-    if (!sessionKey || !queuedDraft) {
-      return;
-    }
-    let cancelled = false;
-    const reconcile = async () => {
-      await hydrateChatDrafts();
-      if (!cancelled && !readQueuedMessage(sessionKey)) {
-        queuedDraftSessionRef.current = sessionKey;
-        setQueuedDraft(null);
-      }
-    };
-    const timer = setInterval(() => void reconcile(), 5_000);
-    return () => {
-      cancelled = true;
-      clearInterval(timer);
-    };
-  }, [queuedDraft, sessionKey]);
+    if (!sessionKey) return;
+    const restore = () => setQueuedDraft(restoreQueuedDraft(sessionKey));
+    const unsubscribe = subscribeToChatDrafts(restore);
+    const timer = setInterval(() => void hydrateChatDrafts(), 2_000);
+    return () => { unsubscribe(); clearInterval(timer); };
+  }, [sessionKey]);
 
   const editQueuedDraft = useCallback(() => {
     if (!queuedDraft) {
@@ -1159,29 +1148,6 @@ export function useChatComposerState({
     }
     writeDraftText(draftScope, inputState.value);
   }, [inputState, draftScope]);
-
-  // Persist the queued draft under its session's key. Must be defined BEFORE
-  // the swap effect below: on a session switch there is one commit where
-  // `sessionKey` already points at the new session while `queuedDraft` (and
-  // the owner ref) still describe the old one — the ref mismatch makes this
-  // effect skip that commit instead of writing/clearing across sessions.
-  useEffect(() => {
-    if (!sessionKey || queuedDraftSessionRef.current !== sessionKey) {
-      return;
-    }
-    if (
-      queuedDraft
-      && (queuedDraft.content.trim() || (queuedDraft.uploadedAttachments?.length ?? 0) > 0)
-    ) {
-      writeQueuedMessage(sessionKey, {
-        content: queuedDraft.content,
-        options: queuedDraft.options,
-        attachments: queuedDraft.uploadedAttachments,
-      });
-    } else {
-      clearQueuedMessage(sessionKey);
-    }
-  }, [queuedDraft, sessionKey]);
 
   // Switching sessions swaps in that session's queued draft. Browser File
   // objects are local to the mounted composer, while their already-uploaded

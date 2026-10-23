@@ -1,4 +1,10 @@
 {
+  "chatDisplay": {
+    "showRawParameters": "הצגת פרמטרים גולמיים",
+    "showThinking": "הצגת חשיבה",
+    "sendByCtrlEnter": "שליחה ב-Ctrl+Enter",
+    "title": "Chat display and input"
+  },
   "title": "הגדרות",
   "tabs": {
     "account": "חשבון",
@@ -65,48 +71,6 @@
     "format": "פורמט אודיו",
     "note": "כתובת בסיס מותאמת אישית נקראת ישירות מהדפדפן וחייבת לאפשר בקשות CORS מהדפדפן. אפשר להשאיר ריק כדי להשתמש בשרת שהוגדר בצד השרת."
   },
-  "quickSettings": {
-    "title": "הגדרות מהירות",
-    "sections": {
-      "appearance": "מראה",
-      "toolDisplay": "תצוגת כלים",
-      "inputSettings": "הגדרות קלט"
-    },
-    "darkMode": "מצב כהה",
-    "showRawParameters": "הצגת פרמטרים גולמיים",
-    "showThinking": "הצגת חשיבה",
-    "sendByCtrlEnter": "שליחה ב-Ctrl+Enter",
-    "voiceEnabled": "קול (מיקרופון + הקראה)",
-    "sendByCtrlEnterDescription": "כשהאפשרות מופעלת, הודעה נשלחת ב-Ctrl+Enter במקום ב-Enter בלבד. שימושי למשתמשי IME כדי למנוע שליחה בטעות.",
-    "dragHandle": {
-      "dragging": "גרירת הידית",
-      "closePanel": "סגירת לוח ההגדרות",
-      "openPanel": "פתיחת לוח ההגדרות",
-      "draggingStatus": "גורר…",
-      "toggleAndMove": "לחיצה לפתיחה/סגירה, גרירה להזזה"
-    },
-    "tabs": {
-      "settings": "הגדרות",
-      "commands": "פקודות"
-    },
-    "pin": "הצמדת הלוח כפתוח",
-    "unpin": "ביטול הצמדת הלוח",
-    "close": "סגירת הלוח",
-    "commands": {
-      "searchPlaceholder": "חיפוש פקודות…",
-      "noProject": "יש לבחור פרויקט כדי לראות את הפקודות שלו.",
-      "loading": "טוען פקודות…",
-      "empty": "אין פקודות זמינות לפרויקט הזה.",
-      "noMatches": "אין פקודות שתואמות לחיפוש.",
-      "loadError": "לא ניתן לטעון את הפקודות.",
-      "groups": {
-        "builtIn": "מובנות",
-        "custom": "מותאמות אישית",
-        "skills": "Skills"
-      },
-      "insertTitle": "הוספת {{command}} לצ'אט"
-    }
-  },
   "terminalShortcuts": {
     "title": "קיצורי טרמינל",
     "sectionKeys": "מקשים",
@@ -127,7 +91,6 @@
     "label": "הגדרות",
     "agents": "סוכנים",
     "appearance": "מראה",
-    "git": "Git",
     "apiTokens": "API וטוקנים",
     "voice": "קול",
     "tasks": "משימות",
@@ -284,25 +247,6 @@
   "footerActions": {
     "save": "שמירת הגדרות",
     "cancel": "ביטול"
-  },
-  "git": {
-    "title": "תצורת Git",
-    "description": "הגדרת זהות ה-git עבור commits. ההגדרות יחולו גלובלית דרך git config --global",
-    "name": {
-      "label": "שם ב-Git",
-      "help": "השם שיופיע ב-commits"
-    },
-    "email": {
-      "label": "אימייל ב-Git",
-      "help": "האימייל שיופיע ב-commits"
-    },
-    "actions": {
-      "save": "שמירת תצורה",
-      "saving": "שומר…"
-    },
-    "status": {
-      "success": "נשמר בהצלחה"
-    }
   },
   "apiKeys": {
     "title": "מפתחות API",
@@ -535,7 +479,7 @@
     },
     "managed": {
       "badge": "מנוהל",
-      "hint": "מנוהל על ידי CloudCLI."
+      "hint": "מנוהל על ידי CLI."
     },
     "help": {
       "title": "על Codex MCP",
@@ -562,87 +506,11 @@
     "installFailed": "ההתקנה נכשלה",
     "uninstallFailed": "ההסרה נכשלה",
     "toggleFailed": "השינוי נכשל",
-    "starterPluginLabel": "תוסף התחלתי",
-    "starter": "התחלתי",
-    "docs": "תיעוד",
-    "sections": {
-      "officialTitle": "תוספים רשמיים",
-      "officialDescription": "מתוחזקים על ידי צוות CloudCLI ומוכנים להתקנה ישירה.",
-      "unofficialTitle": "תוספים נוספים",
-      "unofficialDescription": "תוספים ושילובים לא רשמיים ממשתמשים אחרים. כדאי לבדוק את קוד המקור לפני ההתקנה."
-    },
-    "starterPlugin": {
-      "name": "סטטיסטיקות פרויקט",
-      "badge": "התחלתי",
-      "description": "מספר קבצים, שורות קוד, פילוח לפי סוג קובץ ופעילות אחרונה בפרויקט.",
-      "install": "התקנה"
-    },
-    "terminalPlugin": {
-      "name": "טרמינל",
-      "badge": "רשמי",
-      "description": "טרמינל מובנה עם גישת shell מלאה ישירות מתוך הממשק.",
-      "install": "התקנה"
-    },
-    "scheduledPromptPlugin": {
-      "name": "פרומפטים מתוזמנים",
-      "badge": "לא רשמי",
-      "description": "תזמון פרומפטים לסביבת העבודה, צפייה בהיסטוריית ריצות וניהול משימות מקומיות חוזרות.",
-      "install": "התקנה"
-    },
-    "prismCloudCLI": {
-      "name": "PRISM CloudCLI",
-      "badge": "לא רשמי",
-      "description": "ניתוח סשנים של Claude Code בתוך CloudCLI. אפשר לראות למה הסשנים צורכים טוקנים בלי לצאת מהדפדפן.",
-      "install": "התקנה"
-    },
-    "sessionManagerPlugin": {
-      "name": "סשנים",
-      "badge": "לא רשמי",
-      "description": "צפייה, ניהול וסגירה של סשנים פעילים של Claude Code.",
-      "install": "התקנה"
-    },
-    "tokenCostCalculatorPlugin": {
-      "name": "מחשבון עלות טוקנים",
-      "badge": "לא רשמי",
-      "description": "חישוב עלויות API לפי מחירי מודלים ושימוש בטוקנים, עם תמחור מוגדר מראש למודלים.",
-      "install": "התקנה"
-    },
-    "taskQueuePlugin": {
-      "name": "תור משימות",
-      "badge": "לא רשמי",
-      "description": "לוח בקרה לתור משימות: צפייה, סינון והפעלה של משימות סוכן.",
-      "install": "התקנה"
-    },
-    "githubIssuesBoardPlugin": {
-      "name": "לוח GitHub Issues",
-      "badge": "לא רשמי",
-      "description": "לוח קנבן ל-GitHub Issues עם סנכרון דו-כיווני ל-TaskMaster והתקנה אוטומטית של CLI skill בשם /github-task",
-      "install": "התקנה"
-    },
-    "claudeUsagePlugin": {
-      "name": "שימוש ב-Claude",
-      "badge": "לא רשמי",
-      "description": "מעקב חי אחרי מגבלות התוכנית של Claude Code והיסטוריית טוקנים ועלויות של 30 יום.",
-      "install": "התקנה"
-    },
-    "codexUsagePlugin": {
-      "name": "שימוש ב-Codex",
-      "badge": "לא רשמי",
-      "description": "מעקב חי אחרי מגבלות התוכנית של Codex, זמני איפוס ופעילות טוקנים בחשבון ב-30 הימים האחרונים.",
-      "install": "התקנה"
-    },
-    "glmUsagePlugin": {
-      "name": "שימוש ב-GLM",
-      "badge": "לא רשמי",
-      "description": "מעקב חי אחרי מכסות תוכנית הקוד של GLM/Zhipu והיסטוריית טוקנים של 30 יום.",
-      "install": "התקנה"
-    },
-    "morePlugins": "עוד",
     "enable": "הפעלה",
     "disable": "השבתה",
-    "installAriaLabel": "כתובת מאגר ה-git של התוסף",
     "tab": "לשונית",
-    "runningStatus": "פועל"
+    "runningStatus": "פועל",
+    "installAriaLabel": "כתובת מאגר ה-git של התוסף"
   },
   "skillsPage": {
     "description": "ניהול skills של {{provider}} מקבצים מקומיים, תיקיות שלמות ומיקומים לפי פרויקט.",
@@ -803,7 +671,7 @@
   "mcpTeamCard": {
     "title": "תצורות MCP לצוות",
     "description": "שיתוף תצורות שרתי MCP עם כל הצוות. כולם נשארים מסונכרנים אוטומטית.",
-    "proLink": "זמין ב-CloudCLI Pro"
+    "proLink": "זמין ב-CLI Pro"
   },
   "mcpServersAddErrors": {
     "loadFailedProvider": "טעינת שרתי ה-MCP של {{provider}} נכשלה",
@@ -817,18 +685,6 @@
     "unknownError": "שגיאה לא ידועה"
   },
   "about": {
-    "tagline": "ממשק קוד פתוח לעוזר תכנות מבוסס AI",
-    "starOnGitHub": "כוכב ב-GitHub",
-    "docs": "תיעוד",
-    "hostedTitle": "לנסות את CloudCLI Hosted",
-    "hostedDescription": "שיתוף פעולה בצוות, תצורות MCP משותפות, סנכרון הגדרות בין סביבות ותשתית מנוהלת.",
-    "learnMore": "מידע נוסף",
-    "proFeaturesTitle": "יכולות CloudCLI Pro",
-    "syncSettingsTitle": "סנכרון הגדרות",
-    "syncSettingsDescription": "ההעדפות, תצורות ה-MCP וערכת הנושא נשארים מסונכרנים בכל הסביבות.",
-    "teamManagementTitle": "ניהול צוות",
-    "teamManagementDescription": "משתמשים מרובים, גישה מבוססת תפקידים ופרויקטים משותפים לצוות.",
-    "licensed": "ברישיון AGPL-3.0",
-    "proCta": "זמין ב-CloudCLI Pro"
+    "licensed": "ברישיון AGPL-3.0"
   }
 }

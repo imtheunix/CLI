@@ -1,4 +1,4 @@
-import { sessionsDb } from '@/modules/database/index.js';
+import { sessionsDb, sessionDraftsDb } from '@/modules/database/index.js';
 import { ChatSessionWriter } from '@/modules/websocket/services/chat-session-writer.service.js';
 import { broadcastSessionUpserted } from '@/modules/websocket/services/session-upsert-broadcast.service.js';
 import type {
@@ -116,6 +116,10 @@ function decorateAndRecordEvent(run: ChatRun, message: NormalizedMessage): Norma
     sessionId: run.appSessionId,
     seq: run.lastSeq,
   };
+
+  if (message.kind === 'error' || (message.kind === 'complete' && Number(message.exitCode ?? 0) !== 0)) {
+    sessionDraftsDb.pauseQueue(run.appSessionId);
+  }
 
   if (message.kind === 'complete') {
     // The provider may report its own id here; the frontend only ever knows
