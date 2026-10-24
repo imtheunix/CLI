@@ -1,4 +1,5 @@
-import { memo, useMemo, useRef } from 'react';
+import { memo, useMemo, useRef, useState } from 'react';
+import type { MouseEvent } from 'react';
 import { useTranslation } from 'react-i18next';
 import { GitBranchIcon, PencilIcon } from 'lucide-react';
 
@@ -16,6 +17,7 @@ import MessageModelLabel from '@/modules/chat/transcript/MessageModelLabel';
 import MessageSpeakControl from '@/modules/chat/transcript/MessageSpeakControl';
 import { useIsExportingTranscript } from '@/modules/chat/context/TranscriptRenderContext';
 import { MemoryCitations } from '@/modules/chat/transcript/MemoryCitations';
+import { isPlainTextClick } from '@/modules/chat/utils/textClick';
 
 type MessageComponentProps = {
   message: ChatMessage;
@@ -85,6 +87,19 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
 
 
   const formattedTime = useMemo(() => new Date(message.timestamp).toLocaleTimeString(), [message.timestamp]);
+  // A reply grouped under the previous one shows no time; tapping its text
+  // shows when it was written (date and time), tapping again hides it.
+  const [isTimeRevealed, setIsTimeRevealed] = useState(false);
+  const hasTimestamp = Boolean(message.timestamp) && !Number.isNaN(new Date(message.timestamp).getTime());
+  const fullTime = useMemo(
+    () => (hasTimestamp ? new Date(message.timestamp).toLocaleString() : ''),
+    [hasTimestamp, message.timestamp]
+  );
+  const toggleTime = (event: MouseEvent<HTMLDivElement>) => {
+    if (hasTimestamp && !isExporting && isPlainTextClick(event)) {
+      setIsTimeRevealed((revealed) => !revealed);
+    }
+  };
   const shouldHideThinkingMessage = Boolean(message.isThinking && !showThinking);
 
   if (shouldHideThinkingMessage) {
@@ -201,8 +216,8 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
           </div>
         </div>
       ) : (
-        /* Claude/Error/Tool messages on the left */
-        <div className="w-full">
+        /* Claude/Error/Tool messages on the left; a tap on the text shows its time */
+        <div className="w-full" onClick={toggleTime}>
           {!isGrouped && (
             <div className="mb-2 flex items-center space-x-3">
               {message.type === 'error' ? (
@@ -409,7 +424,7 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
               <MemoryCitations citations={message.memoryCitations} />
             )}
 
-            {(shouldShowAssistantCopyControl || !isGrouped) && (
+            {(shouldShowAssistantCopyControl || !isGrouped || isTimeRevealed) && (
               <div className="mt-1 flex w-full items-center gap-2 text-[11px] text-muted-foreground">
                 {shouldShowAssistantCopyControl && (
                   <MessageCopyControl content={assistantCopyContent} messageType="assistant" />
@@ -422,7 +437,11 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
                     copy and speak it is not gated on the copy control, and an
                     exported transcript keeps it wherever the footer renders. */}
                 <MessageModelLabel model={message.model} />
-                {!isGrouped && <span>{formattedTime}</span>}
+                {isTimeRevealed ? (
+                  <time dateTime={String(message.timestamp)} data-testid="message-time-revealed">{fullTime}</time>
+                ) : (
+                  !isGrouped && <span title={fullTime || undefined}>{formattedTime}</span>
+                )}
               </div>
             )}
           </div>
