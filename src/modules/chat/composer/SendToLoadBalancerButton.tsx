@@ -1,15 +1,30 @@
 import { useEffect, useState } from 'react';
 import { Loader2, Shuffle } from 'lucide-react';
 
+import LoadBalancerRepoPickerDialog from '@/modules/chat/composer/LoadBalancerRepoPickerDialog';
+import { inferLoadBalancerRepo } from '@/modules/chat/utils/loadBalancerRepo';
 import { api } from '@/shared/api';
+import type { LoadBalancerContext } from '@/shared/types';
 
 type SentJob = { id: string; backend: string | null; state: string };
 
 const BACKEND_LABELS: Record<string, string> = { claude: 'Claude', codex: 'GPT', glm: 'GLM' };
 
+/** What the server knows about the session's repository and the picker's list; a failed lookup throws with the reason. */
+async function loadContext(sessionId: string): Promise<LoadBalancerContext> {
+  const response = await api.orchestrator.fromSessionContext(sessionId);
+  const body = await response.json().catch(() => null) as
+    | { success?: boolean; data?: LoadBalancerContext; error?: { message?: string } }
+    | null;
+  if (!response.ok || !body?.success || !body.data) {
+    throw new Error(body?.error?.message || `The load balancer answered ${response.status}`);
+  }
+  return body.data;
+}
+
 /** Sends a message to the load balancer; resolves with the job it became, or throws with the server's reason. */
-async function sendToLoadBalancer(sessionId: string, content: string): Promise<SentJob> {
-  const response = await api.orchestrator.sendFromSession(sessionId, content);
+async function sendToLoadBalancer(sessionId: string, content: string, repo: string | null): Promise<SentJob> {
+  const response = await api.orchestrator.sendFromSession(sessionId, content, repo);
   const body = await response.json().catch(() => null) as
     | { success?: boolean; data?: { job?: SentJob }; error?: { message?: string } }
     | null;
@@ -29,7 +44,9 @@ function describe(job: SentJob): string {
  * Used by ChatComposer (the message being written) and QueuedMessageList (a
  * message waiting for this session): instead of waiting for this session,
  * the message becomes a new session on whichever of Claude, GPT and GLM is
- * least busy.
+ * least busy. When the session's folder is in no git repository, the job
+ * needs one: the message names exactly one of the workspace's repositories,
+ * it is inferred; otherwise a picker asks.
  */
 export default function SendToLoadBalancerButton({
   sessionId,
@@ -52,6 +69,9 @@ export default function SendToLoadBalancerButton({
 }) {
   const [sending, setSending] = useState(false);
   const [status, setStatus] = useState<{ text: string; error: boolean } | null>(null);
+  // The open picker, from the context answered when this session's folder is
+  // in no git repository; held so the picked repository can join the send.
+  const [picker, setPicker] = useState<LoadBalancerContext | null>(null);
 
   useEffect(() => {
     if (!status) return undefined;
@@ -65,10 +85,25 @@ export default function SendToLoadBalancerButton({
 
   const report = (result: { text: string; error: boolean }) => (onResult ? onResult(result) : setStatus(result));
 
-  const send = async () => {
+  const send = async (pickedRepo?: string) => {
     setSending(true);
     try {
-      const job = await sendToLoadBalancer(sessionId, content);
+      let repo: string | null = pickedRepo ?? null;
+      if (!pickedRepo) {
+        const context = await loadContext(sessionId);
+        // The session's own repository wins (the server resolves it, as it
+        // always has); otherwise the message may name exactly one of the
+        // workspace's repositories. Anything else asks.
+        if (!context.sessionRepoPath) {
+          repo = inferLoadBalancerRepo(content, context.repos);
+          if (!repo) {
+            setSending(false);
+            setPicker(context);
+            return;
+          }
+        }
+      }
+      const job = await sendToLoadBalancer(sessionId, content, repo);
       setSending(false);
       report({ text: describe(job), error: false });
       onSent();
@@ -102,6 +137,16 @@ export default function SendToLoadBalancerButton({
       >
         {status?.text}
       </span>}
+      {picker && (
+        <LoadBalancerRepoPickerDialog
+          repos={picker.repos}
+          onPick={(repoPath) => {
+            setPicker(null);
+            void send(repoPath);
+          }}
+          onCancel={() => setPicker(null)}
+        />
+      )}
     </span>
   );
 }

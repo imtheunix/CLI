@@ -78,8 +78,17 @@ export function createOrchestratorRouter(services: {
       sessionId: readString(body.sessionId, 'sessionId', true),
       content: readString(body.content, 'content', true),
       backend: readBackend(body.backend),
+      repo: readString(body.repo, 'repo', false),
     });
     res.status(201).json(createApiSuccessResponse({ job }));
+  }));
+
+  // Before `/:id`, which would otherwise read "from-session" as a job id.
+  router.get('/from-session/context', asyncHandler(async (req, res) => {
+    const context = await services.jobs.fromSessionContext({
+      sessionId: readString(req.query.sessionId, 'sessionId', true),
+    });
+    res.set('Cache-Control', 'no-store').json(createApiSuccessResponse(context));
   }));
 
   router.get('/:id', asyncHandler(async (req, res) => {

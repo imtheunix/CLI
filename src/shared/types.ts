@@ -805,6 +805,22 @@ export type BackgroundSendPrompt = {
   work: string[];
 };
 
+/** One git repository the load balancer's picker offers a message with no repository of its own. */
+export type LoadBalancerRepo = {
+  /** The repository folder's name, as the picker labels it (`tripam-api`). */
+  name: string;
+  /** The repository's absolute path, sent with the job (`tjob new --repo`). */
+  path: string;
+};
+
+/** What the server answers when "To load balancer" asks about a session: whether its folder is already in a repository, and the picker's repositories, ordered (the session's own first, then recently used ones). */
+export type LoadBalancerContext = {
+  /** The main checkout the session's folder works in; null when it is in no repository, which is when the picker is needed. */
+  sessionRepoPath: string | null;
+  workspaceRoot: string;
+  repos: LoadBalancerRepo[];
+};
+
 /** Viewport-relative placement box (right/bottom offsets plus max height and width) computed for a composer popover so the model and permission menus stay inside the window. */
 export type ComposerMenuAnchor = {
   right: number;

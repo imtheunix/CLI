@@ -203,10 +203,15 @@ export const api = {
   },
   orchestrator: {
     // A session's message becomes a job on the least busy of Claude, GPT and GLM.
-    sendFromSession: (sessionId: string, content: string) => authenticatedFetch('/api/orchestrator/from-session', {
+    // `repo` is the one picked in the picker when the session's folder is not
+    // in a git repository (`tjob new --repo`).
+    sendFromSession: (sessionId: string, content: string, repo?: string | null) => authenticatedFetch('/api/orchestrator/from-session', {
       method: 'POST',
-      body: JSON.stringify({ sessionId, content }),
+      body: JSON.stringify({ sessionId, content, ...(repo ? { repo } : {}) }),
     }),
+    // What the button needs when the session's folder is not a git repository:
+    // whether it is in one at all, and the repositories the picker offers.
+    fromSessionContext: (sessionId: string) => get(`/api/orchestrator/from-session/context${query({ sessionId })}`),
   },
   // Auth endpoints (no token required)
   auth: {

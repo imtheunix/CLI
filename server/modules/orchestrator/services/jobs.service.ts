@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { existsSync } from 'node:fs';
 import path from 'node:path';
 
 import {
@@ -19,6 +20,8 @@ import type { OrchestratorConfig } from './orchestrator-config.service.js';
 import {
   hasCommitsAhead,
   isDirty,
+  isGitRepository,
+  listGitRepositories,
   prepareWorktree,
   resolveBaseBranch,
   resolveMainCheckout,
@@ -197,6 +200,14 @@ export function createJobsService(deps: {
       if (!repoPath.startsWith(path.resolve(config.workspacesRoot) + path.sep)) {
         throw new AppError(`repo must be inside ${config.workspacesRoot}`, { code: 'REPO_OUTSIDE_WORKSPACES', statusCode: 400 });
       }
+      // An unusable repository is refused here with a reason, not discovered
+      // later as a failed `git fetch` in an already recorded job.
+      if (!existsSync(repoPath)) {
+        throw new AppError(`repo ${repoPath} does not exist`, { code: 'REPO_NOT_FOUND', statusCode: 400 });
+      }
+      if (!await isGitRepository(repoPath)) {
+        throw new AppError(`${repoPath} is not a git repository`, { code: 'NOT_A_REPOSITORY', statusCode: 400 });
+      }
       const repoName = path.basename(repoPath);
       const baseBranch = input.baseBranch ?? await resolveBaseBranch(repoPath, config.baseBranches[repoName]);
       const id = randomUUID().slice(0, 8);
@@ -216,18 +227,66 @@ export function createJobsService(deps: {
     },
 
     /**
+     * "To load balancer" from a session whose folder is not itself in a git
+     * repository (a workspace holding many repositories): what the picker
+     * needs. The session's own repository — null here — would go first, then
+     * the repositories of recent jobs, then the rest as `listGitRepositories`
+     * sorted them.
+     */
+    async fromSessionContext(input: { sessionId: string }): Promise<{
+      /** The main checkout the session's folder works in; null when it is in no repository. */
+      sessionRepoPath: string | null;
+      workspaceRoot: string;
+      repos: Array<{ name: string; path: string }>;
+    }> {
+      const session = sessionsDb.getSessionById(input.sessionId) as { project_path?: string | null } | null;
+      if (!session?.project_path) {
+        throw new AppError(`Session ${input.sessionId} was not found`, { code: 'SESSION_NOT_FOUND', statusCode: 404 });
+      }
+      const config = deps.config();
+      const sessionRepoPath = await resolveMainCheckout(session.project_path);
+      const recents = this.recentRepoPaths();
+      const rank = (repo: { path: string }): number =>
+        repo.path === sessionRepoPath ? -1 : recents.indexOf(repo.path) === -1 ? recents.length : recents.indexOf(repo.path);
+      const repos = (await listGitRepositories(config.workspacesRoot))
+        .sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name));
+      return { sessionRepoPath, workspaceRoot: config.workspacesRoot, repos };
+    },
+
+    /** Repositories of recorded jobs, most recently used first; the picker lists them ahead of the others. */
+    recentRepoPaths(): string[] {
+      const seen: string[] = [];
+      for (const job of [...orchestratorJobsDb.list()].reverse()) {
+        if (!seen.includes(job.repo_path)) seen.push(job.repo_path);
+      }
+      return seen;
+    },
+
+    /**
      * "Send to load balancer" from a session's composer or queue: the message
      * becomes a job in the repository the session works in (its main
-     * checkout), instead of waiting for that session.
+     * checkout), instead of waiting for that session. When the session's
+     * folder is in no repository, the client picks one (`repo`, as
+     * `tjob new --repo`); with neither, a clear refusal.
      */
-    async createFromSession(input: { sessionId: string; content: string; backend: OrchestratorBackend | null }): Promise<OrchestratorJobView> {
+    async createFromSession(input: {
+      sessionId: string;
+      content: string;
+      backend: OrchestratorBackend | null;
+      /** The repository picked in the client when the session's folder is not in one. */
+      repo?: string | null;
+    }): Promise<OrchestratorJobView> {
       const session = sessionsDb.getSessionById(input.sessionId) as { project_path?: string | null; custom_name?: string | null } | null;
       if (!session?.project_path) {
         throw new AppError(`Session ${input.sessionId} was not found`, { code: 'SESSION_NOT_FOUND', statusCode: 404 });
       }
-      const repoPath = await resolveMainCheckout(session.project_path);
+      const repoPath = await resolveMainCheckout(session.project_path)
+        ?? (input.repo?.trim() ? path.resolve(input.repo.trim()) : null);
       if (!repoPath) {
-        throw new AppError(`${session.project_path} is not a git repository`, { code: 'NOT_A_REPOSITORY', statusCode: 400 });
+        throw new AppError(
+          `${session.project_path} is not inside a git repository: pick the repository this job is for`,
+          { code: 'PICK_A_REPOSITORY', statusCode: 400 },
+        );
       }
       const firstLine = input.content.trim().split('\n').find((line) => line.trim())?.trim() ?? 'Job';
       const title = firstLine.length > 60 ? `${firstLine.slice(0, 57)}…` : firstLine;

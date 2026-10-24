@@ -534,3 +534,86 @@ test('a message from a session goes to the load balancer as a job in that sessio
     await assert.rejects(jobs.createFromSession({ sessionId: 'missing', content: 'x', backend: null }), /not found/);
   });
 });
+
+test('a session in no repository is offered the workspace\'s repositories, recently used first', async () => {
+  await withWorkspace(async ({ root, repo, jobs }) => {
+    const workspaces = path.join(root, 'ws');
+    const spare = path.join(workspaces, 'spare');
+    git(root, 'clone', '-q', path.join(root, 'origin.git'), spare);
+    await mkdir(path.join(workspaces, 'notes'), { recursive: true }); // not a repository
+    await mkdir(path.join(workspaces, '.secrets'), { recursive: true }); // hidden
+
+    const loose = path.join(workspaces, 'loose');
+    await mkdir(loose, { recursive: true });
+    sessionsDb.createAppSession('loose-session', 'claude', loose, 'Loose');
+    sessionsDb.createAppSession('repo-session', 'claude', repo, 'In a repo');
+
+    // The workspace's only recent job was for `spare`, so the picker lists it first.
+    orchestratorJobsDb.create({
+      id: 'oldjob', title: 'old', prompt: 'p', repoPath: spare, baseBranch: 'main',
+      requestedBackend: 'glm', branch: 'job/old-oldjob', worktreePath: path.join(root, 'wt-old'),
+    });
+
+    const inRepo = await jobs.fromSessionContext({ sessionId: 'repo-session' });
+    assert.equal(inRepo.sessionRepoPath, repo);
+    assert.deepEqual(inRepo.repos, [
+      { name: 'demo', path: repo },
+      { name: 'spare', path: spare },
+    ]);
+
+    const context = await jobs.fromSessionContext({ sessionId: 'loose-session' });
+    assert.equal(context.sessionRepoPath, null);
+    assert.equal(context.workspaceRoot, workspaces);
+    assert.deepEqual(context.repos.map((entry) => entry.name), ['spare', 'demo']);
+
+    // A newer job for `demo` moves it to the front.
+    orchestratorJobsDb.create({
+      id: 'newjob', title: 'new', prompt: 'p', repoPath: repo, baseBranch: 'main',
+      requestedBackend: 'glm', branch: 'job/new-newjob', worktreePath: path.join(root, 'wt-new'),
+    });
+    assert.deepEqual((await jobs.fromSessionContext({ sessionId: 'loose-session' })).repos.map((entry) => entry.name), ['demo', 'spare']);
+  });
+});
+
+test('from a session in no repository, the picked repository takes the job and an unusable one is refused clearly', async () => {
+  await withWorkspace(async ({ root, repo, jobs, job }) => {
+    const workspaces = path.join(root, 'ws');
+    const notes = path.join(workspaces, 'notes');
+    const loose = path.join(workspaces, 'loose');
+    await mkdir(loose, { recursive: true });
+    await mkdir(notes, { recursive: true });
+    sessionsDb.createAppSession('loose-session', 'claude', loose, 'Loose');
+
+    const sent = await jobs.createFromSession({ sessionId: 'loose-session', content: 'Tidy the imports', backend: 'glm', repo });
+    await eventually(() => job(sent.id).state === 'active', 'sent job');
+    assert.equal(job(sent.id).repo_path, repo);
+    assert.match(job(sent.id).prompt, /Sent to the load balancer from the session "Loose"/);
+
+    await assert.rejects(
+      jobs.createFromSession({ sessionId: 'loose-session', content: 'x', backend: null }),
+      (error: Error) => error.message.includes('pick the repository this job is for'),
+    );
+    await assert.rejects(
+      jobs.createFromSession({ sessionId: 'loose-session', content: 'x', backend: null, repo: notes }),
+      /notes is not a git repository/,
+    );
+    await assert.rejects(
+      jobs.createFromSession({ sessionId: 'loose-session', content: 'x', backend: null, repo: path.join(workspaces, 'nope') }),
+      /nope does not exist/,
+    );
+    await assert.rejects(
+      jobs.createFromSession({ sessionId: 'loose-session', content: 'x', backend: null, repo: root }),
+      /repo must be inside/,
+    );
+  });
+});
+
+test('a job whose repository is unusable is refused with a reason, not recorded for a failing fetch', async () => {
+  await withWorkspace(async ({ root, jobs }) => {
+    const workspaces = path.join(root, 'ws');
+    await mkdir(path.join(workspaces, 'plain'), { recursive: true });
+    await assert.rejects(jobs.create({ title: 'x', prompt: 'p', repoPath: path.join(workspaces, 'plain'), backend: null, baseBranch: null }), /plain is not a git repository/);
+    await assert.rejects(jobs.create({ title: 'x', prompt: 'p', repoPath: path.join(workspaces, 'gone'), backend: null, baseBranch: null }), /gone does not exist/);
+    assert.equal(jobs.list().length, 0);
+  });
+});

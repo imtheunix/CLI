@@ -146,6 +146,30 @@ export async function resolveMainCheckout(folder: string): Promise<string | null
   return result.code === 0 ? path.dirname(result.stdout.trim()) : null;
 }
 
+/**
+ * Used by the jobs service when a job names its repository (`tjob new
+ * --repo`, a picked one from the load balancer): whether a folder is inside
+ * a git repository at all, so an unusable path is refused with a clear
+ * message instead of a failing `git fetch` later.
+ */
+export async function isGitRepository(folder: string): Promise<boolean> {
+  return (await git(folder, 'rev-parse', '--git-dir')).code === 0;
+}
+
+/**
+ * Used by the jobs service's repository picker: the git repositories directly
+ * under a folder (the workspace), sorted by name. Hidden folders (`.jobs`)
+ * and non-repositories are skipped; a `.git` file counts as much as a `.git`
+ * folder, so a worktree is listed like a checkout.
+ */
+export async function listGitRepositories(root: string): Promise<Array<{ name: string; path: string }>> {
+  const entries = await fs.readdir(root, { withFileTypes: true }).catch(() => []);
+  return entries
+    .filter((entry) => entry.isDirectory() && !entry.name.startsWith('.') && existsSync(path.join(root, entry.name, '.git')))
+    .map((entry) => ({ name: entry.name, path: path.join(root, entry.name) }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
+
 /** Used by the jobs and CI/CD queue services: the commit a ref points at, or null. */
 export async function revParse(cwd: string, ref: string): Promise<string | null> {
   const result = await git(cwd, 'rev-parse', '--verify', '--quiet', ref);
