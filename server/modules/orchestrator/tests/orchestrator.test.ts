@@ -435,6 +435,68 @@ test('the deploy is watched on Forgejo: running waits, a failure blocks and tell
   });
 });
 
+for (const ownStatus of ['cancelled', 'failure', 'missing']) {
+  test(`a ${ownStatus} deploy is merged when a successful base-branch descendant deployed it`, async () => {
+    await withWorkspace(async (ctx) => {
+      writeFileSync(ctx.config.forgejo.tokenFile, 'test-token\n');
+      const id = await finishedJob(ctx, (worktree) => commitFile(worktree, 'feature.txt', 'f\n', 'feature'));
+      let descendant = '';
+      const queue = createMergeQueueService({
+        jobs: ctx.jobs, config: () => ctx.config,
+        fetchJson: async () => ({ workflow_runs: [
+          { id: 11, workflow_id: 'ci.yml', commit_sha: descendant, status: 'success' },
+          ...(ownStatus === 'missing' ? [] : [{ id: 10, workflow_id: 'ci.yml', commit_sha: ctx.job(id).pushed_sha, status: ownStatus }]),
+        ] }),
+      });
+      await drain(queue, () => ctx.job(id), ['deploy']);
+      const pushed = ctx.job(id).pushed_sha;
+      git(ctx.upstream, 'pull', '-q', 'origin', 'main');
+      commitFile(ctx.upstream, 'newer.txt', 'new\n', 'supersede');
+      descendant = git(ctx.upstream, 'rev-parse', 'HEAD');
+      git(ctx.upstream, 'push', '-q', 'origin', 'HEAD:main');
+      // The deployed descendant need not be the current tip.
+      commitFile(ctx.upstream, 'latest.txt', 'latest\n', 'newest push');
+      git(ctx.upstream, 'push', '-q', 'origin', 'HEAD:main');
+
+      await queue.tick();
+      assert.equal(ctx.job(id).merge_step, 'merged');
+      assert.equal(ctx.job(id).pushed_sha, pushed);
+      assert.ok(ctx.job(id).last_error?.includes(descendant));
+      assert.match(ctx.job(id).last_error!, /ci\.yml#11: success/);
+    });
+  });
+}
+
+for (const scenario of ['failing descendant', 'unrelated success', 'success off base', 'partly green descendant']) {
+  test(`a cancelled deploy still blocks with a ${scenario}`, async () => {
+    await withWorkspace(async (ctx) => {
+      writeFileSync(ctx.config.forgejo.tokenFile, 'test-token\n');
+      const id = await finishedJob(ctx, (worktree) => commitFile(worktree, 'feature.txt', 'f\n', 'feature'));
+      let candidate = '';
+      const queue = createMergeQueueService({
+        jobs: ctx.jobs, config: () => ctx.config,
+        fetchJson: async () => ({ workflow_runs: [
+          { id: 11, workflow_id: 'ci.yml', commit_sha: candidate, status: scenario === 'failing descendant' ? 'failure' : 'success' },
+          ...(scenario === 'partly green descendant' ? [{ id: 12, workflow_id: 'deploy.yml', commit_sha: candidate, status: 'failure' }] : []),
+          { id: 10, workflow_id: 'ci.yml', commit_sha: ctx.job(id).pushed_sha, status: 'cancelled' },
+        ] }),
+      });
+      await drain(queue, () => ctx.job(id), ['deploy']);
+      if (scenario === 'unrelated success') {
+        candidate = git(ctx.upstream, 'rev-parse', 'HEAD');
+      } else {
+        git(ctx.upstream, 'pull', '-q', 'origin', 'main');
+        commitFile(ctx.upstream, 'newer.txt', 'new\n', 'supersede');
+        candidate = git(ctx.upstream, 'rev-parse', 'HEAD');
+        git(ctx.upstream, 'push', '-q', 'origin', scenario === 'success off base' ? 'HEAD:other' : 'HEAD:main');
+      }
+      await queue.tick();
+      assert.equal(ctx.job(id).merge_step, 'blocked');
+      assert.match(ctx.job(id).last_error!, /ci\.yml#10: cancelled/);
+    });
+  });
+}
+
 test('one job at a time per repository goes from rebase to push', async () => {
   await withWorkspace(async (ctx) => {
     const first = await finishedJob(ctx, (worktree) => commitFile(worktree, 'a.txt', 'a\n', 'a'));

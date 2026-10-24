@@ -28,6 +28,7 @@ const MAX_RESOLVE_ROUNDS = 8;
 const LANE_STEPS: OrchestratorMergeStep[] = ['rebase', 'check', 'push'];
 
 type GitRunner = (cwd: string, ...args: string[]) => Promise<CommandResult>;
+type DeployRun = { commit_sha?: string; status?: string; workflow_id?: string; id?: number };
 
 /** Forgejo run statuses that are final. */
 const FINISHED_RUN_STATUSES = new Set(['success', 'failure', 'cancelled', 'skipped']);
@@ -204,6 +205,29 @@ export function createMergeQueueService(deps: {
     setStep(job, 'deploy', { pushed_sha: head, deploy_waiting_since: new Date(now()).toISOString(), last_error: null });
   }
 
+  /** A green descendant on the base branch deployed this job's changes too. */
+  async function supersedingDeploy(job: OrchestratorJobRow, runs: DeployRun[]): Promise<boolean> {
+    const candidates = [...new Set(runs.map((record) => record.commit_sha))]
+      .filter((sha): sha is string => Boolean(sha && sha !== job.pushed_sha));
+    if (candidates.length === 0) return false;
+    const cwd = job.worktree_path;
+    const fetched = await git(cwd, 'fetch', '--quiet', 'origin', job.base_branch);
+    if (fetched.code !== 0) throw new Error(`git fetch failed: ${tail(fetched.stderr, 10)}`);
+    for (const sha of candidates) {
+      const commitRuns = runs.filter((record) => record.commit_sha === sha);
+      // A successful workflow alone is insufficient if another workflow is failing or still running.
+      if (!commitRuns.some((record) => record.status === 'success')
+        || commitRuns.some((record) => record.status !== 'success' && record.status !== 'skipped')) continue;
+      if ((await git(cwd, 'merge-base', '--is-ancestor', job.pushed_sha!, sha)).code !== 0
+        || (await git(cwd, 'merge-base', '--is-ancestor', sha, `origin/${job.base_branch}`)).code !== 0) continue;
+      const note = `Deployed by superseding commit ${sha} on origin/${job.base_branch}: ${commitRuns.map((record) => `${record.workflow_id}#${record.id}: ${record.status}`).join(', ')}.`;
+      setStep(job, 'merged', { last_error: note });
+      console.info(`[Orchestrator] Job ${job.id}: ${note}`);
+      return true;
+    }
+    return false;
+  }
+
   async function stepDeploy(job: OrchestratorJobRow): Promise<void> {
     const since = Date.parse(job.deploy_waiting_since ?? '') || now();
     const origin = await readOriginRepository(job.repo_path);
@@ -214,9 +238,11 @@ export function createMergeQueueService(deps: {
       return;
     }
     const body = await fetchJson(`${apiUrl}/repos/${origin.owner}/${origin.repo}/actions/runs?limit=30`, token) as {
-      workflow_runs?: Array<{ commit_sha?: string; status?: string; workflow_id?: string; id?: number }>;
+      workflow_runs?: DeployRun[];
     };
     const runs = (body.workflow_runs ?? []).filter((runRecord) => runRecord.commit_sha === job.pushed_sha);
+    if ((runs.length === 0 || runs.some((record) => record.status === 'failure' || record.status === 'cancelled'))
+      && await supersedingDeploy(job, body.workflow_runs ?? [])) return;
     if (runs.length === 0) {
       if (now() - since > NO_CI_GRACE_MS) setStep(job, 'merged');
       return;

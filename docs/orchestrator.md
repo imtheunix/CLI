@@ -44,9 +44,9 @@ A backend's `models` maps the models a job may ask for to the label of its sessi
 1. **rebase** onto the latest `origin/<base>`. Conflicts are resolved by Gemini 3.8 Flash (`agy`); what it cannot settle goes back to the job's agent.
 2. **check**: the repository's checks (config, `scripts/check.sh`, `npm run check`, `npm test`, Maven, Cargo, pytest).
 3. **push** to `<base>`. It waits while the previous push of the same repository is still deploying; if `<base>` moved, or the push is rejected, the job goes back to rebase (5 times at most).
-4. **deploy**: Forgejo's runs for the pushed commit. No run within 3 minutes means no CI: merged.
+4. **deploy**: Forgejo's runs for the pushed commit. If its run failed, was cancelled, or is missing, the queue also checks for a successful deploy of a later commit. Git must confirm that the later commit contains the pushed commit and is on the fetched base branch; its observed workflows must all have succeeded or been skipped, with at least one success. That marks the job merged, recording the superseding commit and runs in the job's `last_error` field as a completion note. No run within 3 minutes means no CI: merged.
 
-A failing check, conflicts the resolver left, or a refused push go back to the agent as a message in its session; it fixes, commits and runs `tjob done` again. A failed deploy **blocks** the job (`tjob retry <id>` after rerunning it in Forgejo). Every step is recorded before it runs, so a restart of the CLI server, or another job's deploy, resumes each job at its step. A job that was mid-turn when the server restarted is told to continue.
+A failing check, conflicts the resolver left, or a refused push go back to the agent as a message in its session; it fixes, commits and runs `tjob done` again. A failed deploy without a successful descendant **blocks** the job (`tjob retry <id>` after rerunning it in Forgejo). Every step is recorded before it runs, so a restart of the CLI server, or another job's deploy, resumes each job at its step. A job that was mid-turn when the server restarted is told to continue.
 
 ## From a session: wait, or send to the load balancer
 
