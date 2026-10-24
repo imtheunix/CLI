@@ -79,6 +79,16 @@ export type ProviderRuntimeGateway = {
   hasBackgroundWork(sessionId: string): boolean;
   resolveToolApproval(requestId: string, payload: ProviderPermissionDecision): void;
   getPendingApprovalsForSession(sessionId: string): unknown[];
+  /**
+   * Feeds one more user message into a session's live process without
+   * interrupting it; false when the provider cannot take mid-turn input.
+   */
+  pushUserMessage(
+    provider: LLMProvider,
+    sessionId: string,
+    content: string,
+    options?: AnyRecord,
+  ): Promise<boolean>;
 };
 
 type ChatWebSocketDependencies = {
@@ -121,18 +131,23 @@ function sendJson(ws: WebSocket, payload: unknown): void {
  * Protocol errors deliberately use their own `kind` (instead of the provider
  * `error` message kind) so the frontend can distinguish "your request was
  * invalid" from "the model run produced an error" without inspecting text.
+ * `clientId` echoes the client-generated id of the rejected `chat.send` so a
+ * client can recover that message (e.g. re-queue it behind the running turn
+ * for `RUN_IN_PROGRESS`) instead of losing it.
  */
 function sendProtocolError(
   ws: WebSocket,
   code: string,
   error: string,
-  sessionId?: string
+  sessionId?: string,
+  clientId?: string,
 ): void {
   sendJson(ws, {
     kind: 'protocol_error',
     code,
     error,
     sessionId: sessionId ?? null,
+    ...(clientId ? { clientId } : {}),
     timestamp: new Date().toISOString(),
   });
 }
@@ -235,7 +250,8 @@ async function dispatchRun(
         ws,
         'RUN_IN_PROGRESS',
         `Session "${sessionId}" already has a run in progress.`,
-        sessionId
+        sessionId,
+        typeof data.clientId === 'string' && data.clientId.length > 0 ? data.clientId : undefined,
       );
     }
     return { started: false, error: 'A run is already in progress for this session.' };
@@ -658,6 +674,73 @@ export async function runDetachedChatTurn(
     {},
     input.onReserved,
   );
+}
+
+/** What became of an attempt to hand a message to a session that is already busy. */
+export type BusySessionDelivery =
+  /** The message reached the running turn (or the process held open for its background work). */
+  | 'injected'
+  /** The provider cannot take mid-turn input; the message must wait for the turn to end. */
+  | 'unsupported'
+  /** Nothing was running after all — an ordinary run can start right away. */
+  | 'idle';
+
+/**
+ * Delivers a "Send now" message to a busy session WITHOUT interrupting it.
+ *
+ * When the provider's live process can take another user message mid-turn
+ * (Claude's SDK streaming input can), the message is handed straight to the
+ * running agent, the way Claude Code treats input typed during a turn. Every
+ * other outcome keeps the turn going too: `unsupported` tells the caller to
+ * send the message right after the current turn instead, and `idle` that the
+ * busy state was stale and a normal dispatch applies. Only the Stop button
+ * ever aborts a run.
+ */
+export async function injectIntoActiveRun(
+  input: {
+    sessionId: string;
+    content: string;
+    options?: AnyRecord;
+  },
+  dependencies: ChatWebSocketDependencies,
+): Promise<BusySessionDelivery> {
+  const session = sessionsDb.getSessionById(input.sessionId);
+  if (!session) {
+    return 'idle';
+  }
+
+  const provider = session.provider as LLMProvider;
+  if (!dependencies.runtime.hasRuntime(provider)) {
+    return 'unsupported';
+  }
+
+  const busy =
+    chatRunRegistry.isProcessing(input.sessionId) ||
+    dependencies.runtime.hasBackgroundWork(input.sessionId);
+  if (!busy) {
+    return 'idle';
+  }
+
+  const clientOptions = (input.options ?? {}) as AnyRecord;
+  const attachmentCandidates = [
+    ...normalizeAttachmentDescriptors(clientOptions.images),
+    ...normalizeAttachmentDescriptors(clientOptions.files),
+    ...normalizeAttachmentDescriptors(clientOptions.attachments),
+  ];
+  const verifiedAttachments = filterAttachmentsToUploadStore(attachmentCandidates);
+  const uniqueAttachments = verifiedAttachments.filter(
+    (descriptor, index, all) => all.findIndex((candidate) => candidate.path === descriptor.path) === index,
+  );
+
+  const injected = await dependencies.runtime.pushUserMessage(provider, input.sessionId, input.content, {
+    ...clientOptions,
+    attachments: uniqueAttachments,
+    images: uniqueAttachments.filter(isImageAttachmentDescriptor),
+    files: uniqueAttachments.filter((descriptor) => !isImageAttachmentDescriptor(descriptor)),
+    sessionId: input.sessionId,
+    cwd: clientOptions.cwd ?? session.project_path ?? undefined,
+  });
+  return injected ? 'injected' : 'unsupported';
 }
 
 export function handleChatConnection(

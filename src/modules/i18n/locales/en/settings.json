@@ -84,7 +84,12 @@
     "handle": {
       "closePanel": "Close shortcuts panel",
       "openPanel": "Open shortcuts panel"
-    }
+    },
+    "ctrl": "Ctrl — tap, then a key; double-tap to lock",
+    "ctrlLocked": "Ctrl locked — tap to turn off",
+    "alt": "Alt — tap, then a key",
+    "arrowLeft": "Arrow Left",
+    "arrowRight": "Arrow Right"
   },
   "mainTabs": {
     "label": "Settings",

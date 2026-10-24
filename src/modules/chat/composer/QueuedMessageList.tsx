@@ -25,10 +25,16 @@ export default function QueuedMessageList({ scope, busy }: { scope: string; busy
             </label>
             {!!item.attachments?.length && <p>{item.attachments.length} files attached</p>}
             <div className="flex flex-wrap gap-2">
-              <button type="button" className={buttonClass} onClick={() => {
-                if (busy && !window.confirm('Interrupt the running turn and send this message now? Unfinished work may be lost.')) return;
-                replaceQueuedMessages(scope, items, false, item.id);
-              }}>Send now</button>
+              <button
+                type="button"
+                className={buttonClass}
+                title={busy
+                  ? 'Hands this message to the running turn without stopping it; if the provider cannot take it mid-turn, it goes out the moment the turn ends.'
+                  : 'Sends this message now, ahead of the rest of the queue.'}
+                onClick={() => {
+                  replaceQueuedMessages(scope, items, false, item.id);
+                }}
+              >Send now</button>
               <button type="button" className={buttonClass} onClick={() => replaceQueuedMessages(scope, items.filter((entry) => entry.id !== item.id))}>Remove</button>
               {index > 0 && <button type="button" className={buttonClass} aria-label={`Move queued message ${index + 1} up`} onClick={() => {
                 const reordered = [...items];

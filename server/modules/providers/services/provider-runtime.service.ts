@@ -97,6 +97,21 @@ export function createProviderRuntimeService(
       return Boolean(await runtime.stopBackgroundTask?.(sessionId, taskId));
     },
 
+    /**
+     * Hands one more user message to a session's live process without
+     * interrupting it. False when this provider cannot take mid-turn input
+     * (the caller must queue behind the running turn instead).
+     */
+    async pushUserMessage(
+      providerName: LLMProvider,
+      sessionId: string,
+      content: string,
+      options?: AnyRecord,
+    ): Promise<boolean> {
+      const { runtime } = dependencies.resolveProvider(providerName);
+      return Boolean(await runtime.pushUserMessage?.(sessionId, content, options));
+    },
+
     hasBackgroundWork(sessionId: string): boolean {
       return dependencies.listProviders().some((provider) =>
         (provider.runtime.listBackgroundWork?.() ?? []).some((entry) => entry.sessionId === sessionId));

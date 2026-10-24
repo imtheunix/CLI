@@ -20,7 +20,8 @@ type WorkspaceMainProps = {
   activeTab: AppTab;
   setActiveTab: Dispatch<SetStateAction<AppTab>>;
   ws: WebSocket | null;
-  sendMessage: (message: unknown) => void;
+  /** Sends one frame over the chat socket; false means the frame was not written (socket down). */
+  sendMessage: (message: unknown) => boolean;
   isMobile: boolean;
   onMenuClick: () => void;
   isLoading: boolean;

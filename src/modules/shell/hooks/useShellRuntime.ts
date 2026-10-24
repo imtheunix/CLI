@@ -20,6 +20,8 @@ type UseShellRuntimeOptions = {
   isRestarting: boolean;
   onProcessComplete?: ((exitCode: number) => void) | null;
   onOutputRef?: MutableRefObject<(() => void) | null>;
+  /** Keyboard-input transform (sticky extra-key modifiers); see useShellTerminal. */
+  inputTransformRef?: MutableRefObject<((data: string) => string) | null>;
 };
 
 type UseShellRuntimeResult = {
@@ -48,6 +50,7 @@ export function useShellRuntime({
   isRestarting,
   onProcessComplete,
   onOutputRef,
+  inputTransformRef,
 }: UseShellRuntimeOptions): UseShellRuntimeResult {
   const { isDarkMode } = useTheme();
   const terminalContainerRef = useRef<HTMLDivElement>(null);
@@ -102,6 +105,7 @@ export function useShellRuntime({
     minimal,
     isRestarting,
     closeSocket,
+    inputTransformRef,
   });
 
   const {

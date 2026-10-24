@@ -55,8 +55,8 @@ export function BackgroundJobs({ visible }: { visible: boolean }) {
           <button type="button" className="min-h-11 w-full rounded border p-2 text-left hover:bg-accent" onClick={() => {
             setDetail(null); setSelectedId(job.id);
           }}>
-            <span className="block break-words">{job.title}</span>
-            <span className="text-muted-foreground">{job.tool} · {job.machine} · {job.status}</span>
+            <span className="block break-words text-base">{job.title}</span>
+            <span className="text-sm text-muted-foreground">{job.tool} · {job.machine} · {job.status}</span>
             {job.inferred && <span className="block text-xs text-muted-foreground">Activity in the last 2 minutes</span>}
           </button>
         </li>)}

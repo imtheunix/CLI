@@ -10,7 +10,7 @@ import type {
   RefObject,
   TouchEvent,
 } from 'react';
-import { PaperclipIcon, MessageSquareIcon, XIcon, Loader2, ArrowUpIcon, PencilIcon } from 'lucide-react';
+import { PaperclipIcon, MessageSquareIcon, XIcon, Loader2, ArrowUpIcon, PencilIcon, TriangleAlert, RotateCw } from 'lucide-react';
 
 import { useVoiceInput } from '@/modules/chat/hooks/useVoiceInput';
 import { useVoiceAvailable } from '@/modules/chat/hooks/useVoiceAvailable';
@@ -71,6 +71,10 @@ type ChatComposerProps = {
   hasInput: boolean;
   onClearInput: () => void;
   onSubmit: (event: FormEvent<HTMLFormElement> | MouseEvent<HTMLButtonElement> | TouchEvent<HTMLButtonElement>) => void;
+  /** Whether a send never left the browser (socket down); rendered as a retry banner. */
+  failedSend: boolean;
+  onRetryFailedSend: () => void;
+  onDismissFailedSend: () => void;
   isDragActive: boolean;
   queuedDraft: QueuedDraft | null;
   queueScope?: string | null;
@@ -149,6 +153,9 @@ export default function ChatComposer({
   hasInput,
   onClearInput,
   onSubmit,
+  failedSend,
+  onRetryFailedSend,
+  onDismissFailedSend,
   isDragActive,
   queuedDraft,
   queueScope,
@@ -276,7 +283,7 @@ export default function ChatComposer({
       : t('input.send');
 
   return (
-    <div className="chat-composer-shell relative flex-shrink-0 px-2 pb-2 pt-0 sm:px-4 sm:pb-4 md:px-4 md:pb-6">
+    <div className="chat-composer-shell relative flex-shrink-0 px-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] pt-0 sm:px-4 sm:pb-4 md:px-4 md:pb-6">
       {!hasPendingPermissions && (
         <div className="pointer-events-none absolute bottom-full left-1/2 z-10 w-[calc(100%-1rem)] max-w-[54.25rem] -translate-x-1/2 translate-y-px bg-transparent sm:w-[calc(100%-2rem)]">
           <ActivityIndicator activity={activity} onAbort={onAbortSession} isInputFocused={isInputFocused} />
@@ -313,6 +320,39 @@ export default function ChatComposer({
           >
             {t('composer.editing.cancel')}
           </button>
+        </div>
+      )}
+
+      {failedSend && (
+        <div
+          role="alert"
+          className="mx-auto mb-2 flex max-w-[54.25rem] items-start gap-2 rounded-xl border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-foreground"
+        >
+          <TriangleAlert className="mt-0.5 h-4 w-4 shrink-0 text-destructive" />
+          <div className="min-w-0 flex-1">
+            <p className="font-medium">{t('input.sendFailed.title', { defaultValue: 'Message not sent — connection lost' })}</p>
+            <p className="mt-0.5 text-xs text-muted-foreground">
+              {t('input.sendFailed.body', { defaultValue: 'Kept in the composer. It will retry automatically when the connection returns.' })}
+            </p>
+          </div>
+          <div className="flex shrink-0 items-center gap-1">
+            <button
+              type="button"
+              onClick={onRetryFailedSend}
+              className="inline-flex min-h-11 items-center gap-1.5 rounded-md border border-border bg-background px-3 text-sm font-medium text-foreground transition-colors hover:bg-accent"
+            >
+              <RotateCw className="h-3.5 w-3.5" />
+              {t('input.sendFailed.retry', { defaultValue: 'Retry' })}
+            </button>
+            <button
+              type="button"
+              onClick={onDismissFailedSend}
+              aria-label={t('input.sendFailed.dismiss', { defaultValue: 'Dismiss' })}
+              className="inline-flex min-h-11 min-w-11 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+            >
+              <XIcon className="h-4 w-4" />
+            </button>
+          </div>
         </div>
       )}
 

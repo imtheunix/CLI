@@ -59,7 +59,7 @@ const renderComposer = () => {
       isLoading: false,
       canAbortSession: false,
       tokenBudget: null,
-      sendMessage: (message) => { sent.push(message as { type: string; content?: string }); },
+      sendMessage: (message) => { sent.push(message as { type: string; content?: string }); return true; },
       onSessionEstablished: () => undefined,
       scrollToBottom: () => undefined,
       addMessage: () => undefined,

@@ -69,7 +69,7 @@ const render = (processingSessions: SessionActivityMap) => {
       processingSessions,
       canAbortSession: false,
       tokenBudget: null,
-      sendMessage: (message) => { sent.push(message as { type: string }); },
+      sendMessage: (message) => { sent.push(message as { type: string }); return true; },
       scrollToBottom: () => undefined,
       addMessage: () => undefined,
       setIsUserScrolledUp: () => undefined,

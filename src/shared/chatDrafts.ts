@@ -42,10 +42,18 @@ const MIRROR_STORAGE_KEY = 'chat-drafts';
 
 /**
  * Longer than the preference debounce: this fires on every keystroke, and a
- * draft is only ever read back on a reload or a device switch, so trading a
+ * draft is only ever read back on a reload or on a device switch, so trading a
  * little latency for far fewer requests is the right side of the trade.
  */
 const SERVER_WRITE_DEBOUNCE_MS = 1_000;
+
+/**
+ * Backoff for a draft write that failed (network down, server restarting).
+ * The scope stays pending while it waits, which also keeps it protected from
+ * being wiped by a successful hydrate — otherwise a queued message that never
+ * reached the server would be deleted by the next sync instead of retried.
+ */
+const SERVER_WRITE_RETRY_MS = 3_000;
 
 const EMPTY_DRAFT: DraftRecord = { text: '', queuedMessage: null };
 
@@ -60,6 +68,29 @@ let storeGeneration = 0;
 let hydrationRevision = 0;
 let lastHydratedRevision = 0;
 let serverWriteTimer: ReturnType<typeof setTimeout> | null = null;
+let serverWriteRetryTimer: ReturnType<typeof setTimeout> | null = null;
+// The queue the server last confirmed per scope (a write it accepted, or a
+// hydrate). A retry whose queue is still exactly that one may be stale: the
+// server dispatches queued items on its own, so it re-reads the server's queue
+// rather than writing back an item that was already sent.
+const confirmedQueues = new Map<string, string>();
+const queueKey = (queued: unknown): string => JSON.stringify(queued ?? null);
+
+/** The server's current queue for a scope; undefined when it cannot be read. */
+async function readServerQueue(scope: string): Promise<DraftRecord['queuedMessage'] | undefined> {
+  try {
+    const response = await api.user.drafts();
+    if (!response.ok) return undefined;
+    const payload = (await response.json()) as { drafts?: Array<{ scope?: unknown; queuedMessage?: unknown }> };
+    const found = (payload.drafts ?? []).find((draft) => draft.scope === scope);
+    return found && isRecord(found.queuedMessage) ? (found.queuedMessage as DraftRecord['queuedMessage']) : null;
+  } catch {
+    return undefined;
+  }
+}
+
+/** A refusal retrying cannot fix (bad request, auth): kept locally, not resent forever. */
+const isPermanentFailure = (status: number): boolean => status >= 400 && status < 500 && status !== 408 && status !== 429;
 
 const isRecord = (value: unknown): value is Record<string, unknown> => (
   Boolean(value) && typeof value === 'object' && !Array.isArray(value)
@@ -117,23 +148,51 @@ function notifyListeners(): void {
   }
 }
 
-function flushServerWrites(): void {
+function flushServerWrites(retrying = false): void {
   serverWriteTimer = null;
   const scopes = [...pendingScopes];
   pendingScopes.clear();
 
   for (const scope of scopes) {
-    const draft = drafts.get(scope);
     const generation = storeGeneration;
     const persist = async () => {
       if (generation !== storeGeneration) return;
+      let draft = drafts.get(scope);
       try {
+        if (retrying && draft?.queuedMessage && queueKey(draft.queuedMessage) === confirmedQueues.get(scope)) {
+          // Only the text changed since the server confirmed this queue, and
+          // it may have sent items from it meanwhile: keep the server's queue.
+          const serverQueue = await readServerQueue(scope);
+          if (serverQueue === undefined) throw new Error('Draft queue could not be re-read');
+          if (generation !== storeGeneration) return;
+          draft = { ...(drafts.get(scope) ?? EMPTY_DRAFT), queuedMessage: serverQueue };
+          drafts.set(scope, draft);
+          writeMirror();
+          notifyListeners();
+        }
         const response = !draft || isEmptyDraft(draft)
           ? await api.user.deleteDraft(scope)
           : await api.user.saveDraft(scope, { text: draft.text, queuedMessage: draft.queuedMessage });
+        if (!response.ok && isPermanentFailure(response.status)) {
+          console.error(`Chat draft refused (${response.status}); kept on this device only`);
+          return;
+        }
         if (!response.ok) throw new Error(`Draft save failed (${response.status})`);
+        confirmedQueues.set(scope, queueKey(draft?.queuedMessage));
       } catch (error) {
         console.error('Failed to save chat draft:', error);
+        // An undelivered draft (a queued message above all) must never be
+        // dropped: keep the scope pending so the next hydrate cannot replace
+        // it with the server's staler copy, and schedule another attempt.
+        if (generation === storeGeneration) {
+          pendingScopes.add(scope);
+          if (serverWriteRetryTimer === null) {
+            serverWriteRetryTimer = setTimeout(() => {
+              serverWriteRetryTimer = null;
+              flushServerWrites(true);
+            }, SERVER_WRITE_RETRY_MS);
+          }
+        }
       }
     };
 
@@ -286,12 +345,14 @@ export async function hydrateChatDrafts(): Promise<void> {
       continue;
     }
 
+    const queuedMessage = isRecord(draft.queuedMessage)
+      ? (draft.queuedMessage as DraftRecord['queuedMessage'])
+      : null;
     merged.set(scope, {
       text: typeof draft.text === 'string' ? draft.text : '',
-      queuedMessage: isRecord(draft.queuedMessage)
-        ? (draft.queuedMessage as DraftRecord['queuedMessage'])
-        : null,
+      queuedMessage,
     });
+    confirmedQueues.set(scope, queueKey(queuedMessage));
   }
 
   // Keep edits made during this fetch or still being saved. Other missing
@@ -316,9 +377,14 @@ export function resetChatDrafts(): void {
   pendingScopes.clear();
   serverWrites.clear();
   localRevisions.clear();
+  confirmedQueues.clear();
   if (serverWriteTimer !== null) {
     clearTimeout(serverWriteTimer);
     serverWriteTimer = null;
+  }
+  if (serverWriteRetryTimer !== null) {
+    clearTimeout(serverWriteRetryTimer);
+    serverWriteRetryTimer = null;
   }
   try {
     localStorage.removeItem(MIRROR_STORAGE_KEY);

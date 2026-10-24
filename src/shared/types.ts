@@ -1309,10 +1309,10 @@ export type WizardFormState = {
 
 //----------------- PROJECT WORKSPACE ------------
 
-/** The shared WebSocket connection and its send function, threaded through the workspace tree so descendants can exchange live session messages. */
+/** The shared WebSocket connection and its send function, threaded through the workspace tree so descendants can exchange live session messages. `sendMessage` returns false when the frame could not be written (socket down), so callers can keep and retry their data. */
 export type RealtimeProps = {
   ws: WebSocket | null;
-  sendMessage: (message: unknown) => void;
+  sendMessage: (message: unknown) => boolean;
 };
 
 /** Everything the project workspace shell and its regions need from the route: the realtime connection plus the current viewport mode and the router's navigate function. */

@@ -19,7 +19,11 @@ test('proxy caches tokens, allowlists readings, and never logs or returns secret
       return Response.json({ access_token: 'private-token', expires_in: 3600 });
     }
     assert.equal((init?.headers as Record<string, string>).Authorization, 'Bearer private-token');
-    return Response.json([{ plan: 'claude', token: 'private-token', note: 'private-token service-secret', at: '2026-10-23T12:00:00Z', windows: [{ id: 'weekly', label: 'Weekly', usedPercent: 30, resetsAt: null, secret: 'private-token' }] }]);
+    return Response.json([
+      { plan: 'claude', token: 'private-token', note: 'private-token service-secret', at: '2026-10-23T12:00:00Z', windows: [{ id: 'weekly', label: 'Weekly', usedPercent: 30, resetsAt: null, secret: 'private-token' }] },
+      { plan: 'zai', at: '2026-10-23T12:00:00Z', windows: [{ id: 'zai-5h', label: '5 hours', usedPercent: 64, resetsAt: '2026-10-24T10:00:00Z' }, { id: 'zai-week', label: 'Week', usedPercent: 12, resetsAt: '2026-10-26T00:00:00Z' }] },
+      { plan: 'other', at: '2026-10-23T12:00:00Z', windows: [] },
+    ]);
   });
   const app = express();
   // Same mount order as the real server: authentication precedes all plans routes.
@@ -28,7 +32,19 @@ test('proxy caches tokens, allowlists readings, and never logs or returns secret
   const base = `http://127.0.0.1:${(server.address() as { port: number }).port}/api/plans`;
   try {
     assert.equal((await fetch(`${base}/usage`)).status, 401);
-    for (const suffix of ['/usage', '/usage/history?plan=claude&days=7']) {
+    {
+      const response = await fetch(`${base}/usage`, { headers: { Authorization: 'Bearer local-session' } });
+      assert.equal(response.status, 200);
+      const readings = await response.json() as Array<{ plan: string; windows: Array<{ id: string | null; label: string | null; usedPercent: number | null; resetsAt: string | null }> }>;
+      assert.deepEqual(readings.map((reading) => reading.plan), ['claude', 'zai']);
+      const zai = readings[1];
+      assert.deepEqual(zai.windows, [
+        { id: 'zai-5h', label: '5 hours', usedPercent: 64, resetsAt: '2026-10-24T10:00:00Z' },
+        { id: 'zai-week', label: 'Week', usedPercent: 12, resetsAt: '2026-10-26T00:00:00Z' },
+      ]);
+      assert.equal(response.headers.get('cache-control'), 'no-store');
+    }
+    for (const suffix of ['/usage', '/usage/history?plan=zai&days=7']) {
       const response = await fetch(base + suffix, { headers: { Authorization: 'Bearer local-session' } });
       assert.equal(response.status, 200);
       const body = await response.text();

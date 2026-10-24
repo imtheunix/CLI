@@ -4,6 +4,8 @@ import type { Dispatch, MutableRefObject, SetStateAction } from 'react';
 import type { ServerEvent,MarkSessionIdle,MarkSessionProcessing,PendingPermissionRequest,ProjectSession,LLMProvider,NormalizedMessage,GetSessionActivity,MarkSessionBackground } from '@/shared/types';
 import { showCompletionTitleIndicator } from '@/modules/chat/utils/pageTitleNotification';
 import { playChatCompletionSound, playNotificationSound } from '@/shared/utils';
+import { writeQueuedMessage } from '@/shared/chatDrafts';
+import { takePendingSend } from '@/modules/chat/utils/pendingSends';
 import type { SessionStore } from '@/modules/chat/hooks/useSessionStore';
 import { normalizedToChatMessages } from '@/modules/chat/hooks/useChatMessages';
 import { collectRunningBackgroundTasks } from '@/modules/chat/utils/backgroundTasks';
@@ -171,6 +173,22 @@ export function useChatRealtimeHandlers({
 
         case 'protocol_error': {
           console.error('[Chat] Protocol error:', msg.code, msg.error);
+          // The send raced a run the client did not know about. The message
+          // itself is still wanted: recover it from the pending-send registry
+          // into the session's durable queue (the dispatcher sends it when the
+          // running turn ends) instead of showing a dead-end error. The
+          // optimistic echo stays until the live run's transcript sync.
+          if (msg.code === 'RUN_IN_PROGRESS' && typeof msg.clientId === 'string') {
+            const pending = takePendingSend(msg.clientId);
+            if (pending) {
+              writeQueuedMessage(pending.sessionKey, {
+                content: pending.content,
+                options: pending.options,
+                attachments: pending.attachments ?? [],
+              });
+              return;
+            }
+          }
           if (sid) {
             // Surface the failure in the conversation and stop the spinner —
             // the run never started (or was rejected), so no `complete` follows.

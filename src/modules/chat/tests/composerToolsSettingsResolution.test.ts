@@ -54,6 +54,7 @@ const submit = async (provider: LLMProvider) => {
       tokenBudget: null,
       sendMessage: (message) => {
         sent.push(message as SentMessage);
+        return true;
       },
       scrollToBottom: () => undefined,
       addMessage: () => undefined,

@@ -1,4 +1,5 @@
-const PLAN_IDS = new Set(['claude', 'chatgpt', 'google']);
+/** Plan ids TRIPAM may report that this app displays; everything else is dropped. */
+export const PLAN_IDS = new Set(['claude', 'chatgpt', 'google', 'zai']);
 
 /** Used by the plans router and tests; keeps service credentials exclusively on the server. */
 export function createPlansService(env: NodeJS.ProcessEnv = process.env, request: typeof fetch = fetch) {

@@ -78,6 +78,11 @@ const TOOL_APPROVAL_TIMEOUT_MS = parseInt(process.env.CLAUDE_TOOL_APPROVAL_TIMEO
 // that never reports at all, so an abandoned session cannot leak a CLI process
 // forever. The timer resets on every message, so it measures silence, not total time.
 const BG_WAIT_CEILING_MS = 30 * 60 * 1000;
+// A "Send now" message pushed late in a turn may land after the agent's last
+// step, and the CLI then answers it in a turn of its own. The `result` of a
+// turn that took one waits this long for that turn to start before it reports
+// the run complete and closes stdin (which would drop the message).
+const INJECTED_TURN_GRACE_MS = 3000;
 
 const TOOLS_REQUIRING_INTERACTION = new Set(['AskUserQuestion', 'ExitPlanMode']);
 
@@ -320,8 +325,9 @@ function mapCliOptionsToSDK(options = {}) {
  * @param {Object} queryInstance - SDK query instance
  * @param {Object} writer - WebSocket writer for reconnect support
  * @param {Function} releaseInput - Closes the held stdin stream so the CLI can exit
+ * @param {Function} pushInput - Feeds one more user message into the held stdin stream
  */
-function addSession(sessionId, queryInstance, writer = null, releaseInput = null) {
+function addSession(sessionId, queryInstance, writer = null, releaseInput = null, pushInput = null) {
   const existing = activeSessions.get(sessionId);
   // A different live instance under the same key means an earlier run was
   // superseded without being stopped (e.g. an abort that raced run setup and
@@ -351,8 +357,9 @@ function addSession(sessionId, queryInstance, writer = null, releaseInput = null
     startTime: carried?.startTime || Date.now(),
     status: 'active',
     writer,
-    // Re-registered mid-run once the provider session id lands; keep the closer.
-    releaseInput: releaseInput || carried?.releaseInput || null
+    // Re-registered mid-run once the provider session id lands; keep the closers.
+    releaseInput: releaseInput || carried?.releaseInput || null,
+    pushInput: pushInput || carried?.pushInput || null
   });
   // The history reader reports a background agent as running or stopped by
   // whether this entry exists, and the cached history does not see this map.
@@ -864,29 +871,79 @@ async function buildPromptMessages(command, images, files, cwd) {
 }
 
 /**
- * Wraps prompt messages in an async iterable that yields them and then parks.
+ * Wraps prompt messages in an async iterable that can also hand the CLI more
+ * user messages later.
  *
  * The SDK closes the CLI's stdin as soon as its input iterable is exhausted (and
  * immediately on `result` for string prompts). The CLI reads that EOF as the end
  * of the run and kills anything still going in the background, so the iterable
  * has to stay pending until we actually want the process gone.
  *
+ * `push` is the other direction: it feeds one more SDKUserMessage into the
+ * same stream, which is how a "Send now" queue item reaches a turn that is
+ * still running — the CLI treats it exactly like input typed during a turn in
+ * its own terminal, handing it to the agent at its next step instead of
+ * interrupting anything. It returns false once the stream has ended, so a
+ * caller can tell "delivered" from "nothing is listening anymore".
+ *
  * @param {Array<Object>} messages - SDKUserMessage records to send
- * @returns {{ stream: AsyncIterable, release: () => void }} Stream plus its closer
+ * @returns {{ stream: AsyncIterable, release: () => void, push: (message: Object) => boolean }} Stream, its closer and its mid-run feeder
  */
 function createHeldPromptStream(messages) {
-  let release;
-  const held = new Promise((resolve) => { release = resolve; });
+  let resolveHeld;
+  const held = new Promise((resolve) => { resolveHeld = resolve; });
+  const queue = [...messages];
+  const waiters = [];
+  let released = false;
+  let closed = false;
+
+  const wake = () => {
+    const waiter = waiters.shift();
+    if (waiter) {
+      waiter();
+    }
+  };
+
+  const release = () => {
+    if (released) {
+      return;
+    }
+    released = true;
+    resolveHeld();
+    // A parked generator returns on its own; drain the waiters so it cannot
+    // miss the release between its queue check and its park.
+    while (waiters.length > 0) {
+      wake();
+    }
+  };
+
+  const push = (message) => {
+    if (released || closed) {
+      return false;
+    }
+    queue.push(message);
+    wake();
+    return true;
+  };
 
   const stream = (async function* () {
-    for (const message of messages) {
-      yield message;
+    try {
+      while (true) {
+        if (queue.length > 0) {
+          yield queue.shift();
+          continue;
+        }
+        if (released) {
+          return;
+        }
+        await new Promise((resolve) => { waiters.push(resolve); });
+      }
+    } finally {
+      closed = true;
     }
-    // Keeps stdin open — the CLI stays alive until release() is called.
-    await held;
   })();
 
-  return { stream, release };
+  return { stream, release, push };
 }
 
 /**
@@ -994,6 +1051,11 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
   // True while the process is being held open for background work, so a later
   // `result` can be recognised as that work reporting back.
   let heldForBackgroundWork = false;
+  // "Send now" messages pushed into this turn, and the grace a `result` waits
+  // when there were any (INJECTED_TURN_GRACE_MS): the CLI may start a turn for
+  // the last of them, whose own `result` then completes the run.
+  let injectedThisTurn = 0;
+  let injectedGraceTimer = null;
   // Set once a turn publishes a budget read from an assistant message, so the
   // turn-ending `result` is only mined for usage when nothing better arrived.
   let assistantBudgetSent = false;
@@ -1188,19 +1250,97 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
       });
     }
 
+    // "Send now": only into a turn the client still sees running. After the
+    // turn reported complete (a process held for background work, or one about
+    // to close) there is no run to carry an answer, so it is refused and the
+    // dispatcher keeps the item first in line instead.
+    const pushIntoTurn = (promptMessage) => {
+      if (turnCompleteSent || abortedSessionIds.has(sessionKey())) {
+        return false;
+      }
+      const pushed = heldPrompt.push({ ...promptMessage, priority: 'next' });
+      if (pushed) {
+        injectedThisTurn += 1;
+      }
+      return pushed;
+    };
+
     // Track the query instance for abort capability
     if (sessionKey()) {
-      addSession(sessionKey(), queryInstance, ws, releasePromptStream);
+      addSession(sessionKey(), queryInstance, ws, releasePromptStream, pushIntoTurn);
     }
+
+    // What a turn's `result` does: report the turn complete, and hold the
+    // process open for background work or let it exit.
+    const completeTurn = () => {
+      // The turn is done as far as the client is concerned.
+      const abortPending = sessionKey() ? abortedSessionIds.has(sessionKey()) : false;
+      const stillOutstanding = backgroundWork.hasOutstanding(sessionKey());
+      if (!turnCompleteSent && !abortPending) {
+        turnCompleteSent = true;
+        ws.send(createCompleteMessage({ provider: 'claude', sessionId: capturedSessionId || sessionId || null, exitCode: 0 }));
+        notifyRunStopped({
+          userId: ws?.userId || null,
+          provider: 'claude',
+          sessionId: sessionId || capturedSessionId || null,
+          sessionName: sessionSummary,
+          stopReason: 'completed'
+        });
+      } else if (heldForBackgroundWork && !abortPending && !stillOutstanding) {
+        // A result after the turn already reported complete means the work we
+        // held the process open for has finished and pushed a follow-up turn
+        // — the last of it, when nothing else is still running.
+        notifyBackgroundWorkCompleted({
+          userId: ws?.userId || null,
+          provider: 'claude',
+          sessionId: sessionId || capturedSessionId || null,
+          sessionName: sessionSummary
+        });
+      }
+      // Work started during this turn, or work from an earlier turn that
+      // has not settled yet (a follow-up turn reports one task in while
+      // another is still going), is still running. Hold the process open
+      // so it can finish and report back in a follow-up turn; the ceiling
+      // is only a backstop for work that never reports.
+      //
+      // The release when the last task settles is this same branch on the
+      // follow-up turn the CLI pushes for it, not the settling event
+      // itself: closing stdin at that moment would cut the turn that
+      // relays the task's result.
+      //
+      // When the turn reported its tasks, the tracker is the whole truth: an
+      // Agent call without `run_in_background` is scored as background by
+      // `startsBackgroundWork`, but the CLI runs it in the foreground and
+      // it has settled before this `result` — holding for it kept a process
+      // alive for the full ceiling with nothing outstanding.
+      const holdForTurn = sawTaskEventThisTurn ? stillOutstanding : backgroundWorkPending || stillOutstanding;
+      backgroundWorkPending = false;
+      sawTaskEventThisTurn = false;
+      if (holdForTurn) {
+        heldForBackgroundWork = true;
+        scheduleRelease();
+      } else {
+        // Either nothing was backgrounded, or the background work just
+        // reported in — let the CLI exit now, as it always has.
+        heldForBackgroundWork = false;
+        releasePromptStream();
+      }
+    };
 
     // Process streaming messages
     console.log('Starting async generator loop for session:', capturedSessionId || 'NEW');
     for await (const message of queryInstance) {
+      if (injectedGraceTimer) {
+        // The CLI started the turn for a message pushed after the last step;
+        // that turn's `result` completes the run.
+        clearTimeout(injectedGraceTimer);
+        injectedGraceTimer = null;
+      }
       // Capture session ID from first message
       if (message.session_id && !capturedSessionId) {
 
         capturedSessionId = message.session_id;
-        addSession(sessionKey(), queryInstance, ws, releasePromptStream);
+        addSession(sessionKey(), queryInstance, ws, releasePromptStream, pushIntoTurn);
 
         // Set session ID on writer
         if (ws.setSessionId && typeof ws.setSessionId === 'function') {
@@ -1302,57 +1442,27 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
       }
 
       if (message.type === 'result') {
-        // The turn is done as far as the client is concerned.
-        const abortPending = sessionKey() ? abortedSessionIds.has(sessionKey()) : false;
-        const stillOutstanding = backgroundWork.hasOutstanding(sessionKey());
-        if (!turnCompleteSent && !abortPending) {
-          turnCompleteSent = true;
-          ws.send(createCompleteMessage({ provider: 'claude', sessionId: capturedSessionId || sessionId || null, exitCode: 0 }));
-          notifyRunStopped({
-            userId: ws?.userId || null,
-            provider: 'claude',
-            sessionId: sessionId || capturedSessionId || null,
-            sessionName: sessionSummary,
-            stopReason: 'completed'
-          });
-        } else if (heldForBackgroundWork && !abortPending && !stillOutstanding) {
-          // A result after the turn already reported complete means the work we
-          // held the process open for has finished and pushed a follow-up turn
-          // — the last of it, when nothing else is still running.
-          notifyBackgroundWorkCompleted({
-            userId: ws?.userId || null,
-            provider: 'claude',
-            sessionId: sessionId || capturedSessionId || null,
-            sessionName: sessionSummary
-          });
-        }
-        // Work started during this turn, or work from an earlier turn that
-        // has not settled yet (a follow-up turn reports one task in while
-        // another is still going), is still running. Hold the process open
-        // so it can finish and report back in a follow-up turn; the ceiling
-        // is only a backstop for work that never reports.
-        //
-        // The release when the last task settles is this same branch on the
-        // follow-up turn the CLI pushes for it, not the settling event
-        // itself: closing stdin at that moment would cut the turn that
-        // relays the task's result.
-        //
-        // When the turn reported its tasks, the tracker is the whole truth: an
-        // Agent call without `run_in_background` is scored as background by
-        // `startsBackgroundWork`, but the CLI runs it in the foreground and
-        // it has settled before this `result` — holding for it kept a process
-        // alive for the full ceiling with nothing outstanding.
-        const holdForTurn = sawTaskEventThisTurn ? stillOutstanding : backgroundWorkPending || stillOutstanding;
-        backgroundWorkPending = false;
-        sawTaskEventThisTurn = false;
-        if (holdForTurn) {
-          heldForBackgroundWork = true;
-          scheduleRelease();
+        if (injectedThisTurn > 0 && !turnCompleteSent && !(sessionKey() && abortedSessionIds.has(sessionKey()))) {
+          // A message was pushed into this turn: wait briefly for the turn the
+          // CLI may start for it before reporting the run done (the loop head
+          // cancels this when that turn begins).
+          const awaitInjectedTurn = () => {
+            injectedThisTurn = 0;
+            injectedGraceTimer = setTimeout(() => {
+              injectedGraceTimer = null;
+              // Another message pushed during the grace gets a grace of its own.
+              if (injectedThisTurn > 0) {
+                awaitInjectedTurn();
+              } else {
+                completeTurn();
+              }
+            }, context.injectedTurnGraceMs ?? INJECTED_TURN_GRACE_MS);
+            injectedGraceTimer.unref?.();
+          };
+          awaitInjectedTurn();
         } else {
-          // Either nothing was backgrounded, or the background work just
-          // reported in — let the CLI exit now, as it always has.
-          heldForBackgroundWork = false;
-          releasePromptStream();
+          injectedThisTurn = 0;
+          completeTurn();
         }
       } else if (idleReleaseTimer) {
         // Background activity after the turn — push the countdown back out.
@@ -1365,6 +1475,12 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
     // strand that run.
     if (sessionKey() && getSession(sessionKey())?.instance === queryInstance) {
       removeSession(sessionKey());
+    }
+
+    if (injectedGraceTimer) {
+      // The process ended inside the grace: the completion below reports it.
+      clearTimeout(injectedGraceTimer);
+      injectedGraceTimer = null;
     }
 
     // A superseded run winds down silently: the map entry, the abort flag,
@@ -1439,6 +1555,10 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
       clearTimeout(idleReleaseTimer);
       idleReleaseTimer = null;
     }
+    if (injectedGraceTimer) {
+      clearTimeout(injectedGraceTimer);
+      injectedGraceTimer = null;
+    }
     releasePromptStream();
   }
 }
@@ -1496,6 +1616,35 @@ async function abortClaudeSDKSession(sessionId) {
  */
 function listClaudeSDKBackgroundWork() {
   return backgroundWork.list();
+}
+
+/**
+ * Feeds one more user message into a session's live CLI process.
+ *
+ * The SDK's streaming input accepts further messages while a turn is running
+ * or while the process is held open for background work: the CLI queues them
+ * like terminal input typed mid-turn and hands them to the agent at its next
+ * step, without interrupting anything. This is what "Send now" uses so only
+ * the Stop button ever interrupts a run.
+ *
+ * @param {string} sessionId - App session id the run is keyed under
+ * @param {string} content - The user message to hand to the running agent
+ * @param {Object} options - Run-shaped options (images/files attachments, cwd)
+ * @returns {Promise<boolean>} False when no live process can take the message
+ */
+async function pushClaudeUserMessage(sessionId, content, options = {}) {
+  const session = getSession(sessionId);
+  if (!session || session.status !== 'active' || typeof session.pushInput !== 'function') {
+    return false;
+  }
+
+  const messages = await buildPromptMessages(
+    content,
+    options.images,
+    options.files,
+    options.cwd
+  );
+  return messages.every((message) => session.pushInput(message));
 }
 
 /**
@@ -1588,6 +1737,7 @@ function reconnectSessionWriter(sessionId, newRawWs) {
 export const claudeRuntime = {
   run: queryClaudeSDK,
   abort: abortClaudeSDKSession,
+  pushUserMessage: pushClaudeUserMessage,
   permissions: {
     resolve: resolveToolApproval,
     listPending: getPendingApprovalsForSession,
@@ -1600,6 +1750,7 @@ export const claudeRuntime = {
 export {
   queryClaudeSDK,
   abortClaudeSDKSession,
+  pushClaudeUserMessage,
   listClaudeSDKBackgroundWork,
   stopClaudeSDKTask,
   isClaudeSDKSessionActive,

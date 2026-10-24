@@ -64,7 +64,7 @@ const renderComposer = (initialSession: ProjectSession | null) => {
       isLoading: false,
       canAbortSession: false,
       tokenBudget: null,
-      sendMessage: (message) => { sent.push(message as { type: string }); },
+      sendMessage: (message) => { sent.push(message as { type: string }); return true; },
       onSessionEstablished: (sessionId) => { established.push(sessionId); },
       scrollToBottom: () => undefined,
       addMessage: () => undefined,

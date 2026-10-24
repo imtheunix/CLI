@@ -266,6 +266,47 @@ test('a refused send never rewinds the conversation', async () => {
   }, CODEX_TRANSCRIPT_ROWS);
 });
 
+test('a rejected duplicate send echoes the client id so the composer can recover its message', async () => {
+  await withGateway('claude', async ({ socket, runs }) => {
+    holdTheNextRun();
+
+    socket.emit('message', JSON.stringify({
+      type: 'chat.send',
+      sessionId: SESSION_ID,
+      content: 'a turn that is already running',
+      clientId: 'client-first',
+    }));
+    await settle();
+    assert.equal(runs.length, 1);
+
+    socket.emit('message', JSON.stringify({
+      type: 'chat.send',
+      sessionId: SESSION_ID,
+      content: 'a send that arrives while it runs',
+      clientId: 'client-second',
+    }));
+    await settle();
+
+    // The refusal names the exact send it refused: that id is what lets the
+    // client re-queue this message behind the running turn instead of losing
+    // it to the race. A send without one behaves as before.
+    assert.equal(runs.length, 1);
+    const rejection = socket.frames.at(-1);
+    assert.equal(rejection?.code, 'RUN_IN_PROGRESS');
+    assert.equal(rejection?.clientId, 'client-second');
+
+    socket.emit('message', JSON.stringify({
+      type: 'chat.send',
+      sessionId: SESSION_ID,
+      content: 'a send that carries no client id',
+    }));
+    await settle();
+    const legacyRejection = socket.frames.at(-1);
+    assert.equal(legacyRejection?.code, 'RUN_IN_PROGRESS');
+    assert.ok(!('clientId' in (legacyRejection ?? {})), 'no id was sent, so none is echoed');
+  });
+});
+
 test('a provider that has to branch to rewind is rewound before the run, not during it', async () => {
   await withGateway('codex', async ({ socket, runs }) => {
     // The rewind itself belongs to the provider and is covered there; what

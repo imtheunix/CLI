@@ -166,6 +166,14 @@ type UseShellTerminalOptions = {
   minimal: boolean;
   isRestarting: boolean;
   closeSocket: () => void;
+  /**
+   * Optional transform applied to every keyboard input xterm reports, before
+   * it reaches the session. The extra-keys row installs its sticky Ctrl/Alt
+   * modifiers here, so a phone keyboard letter typed right after tapping Ctrl
+   * sends that letter's control code. Reads through a ref so the terminal is
+   * never re-created when the transform changes.
+   */
+  inputTransformRef?: MutableRefObject<((data: string) => string) | null>;
 };
 
 type UseShellTerminalResult = {
@@ -183,6 +191,7 @@ export function useShellTerminal({
   minimal,
   isRestarting,
   closeSocket,
+  inputTransformRef,
 }: UseShellTerminalOptions): UseShellTerminalResult {
   const { isDarkMode } = useTheme();
   const [isInitialized, setIsInitialized] = useState(false);
@@ -364,9 +373,14 @@ export function useShellTerminal({
     setIsInitialized(true);
 
     const dataSubscription = nextTerminal.onData((data) => {
+      const transform = inputTransformRef?.current;
+      const sendData = transform ? transform(data) : data;
+      if (sendData.length === 0) {
+        return;
+      }
       sendSocketMessage(wsRef.current, {
         type: 'input',
-        data,
+        data: sendData,
       });
     });
 
@@ -408,6 +422,7 @@ export function useShellTerminal({
     closeSocket,
     disposeTerminal,
     fitAddonRef,
+    inputTransformRef,
     isRestarting,
     hasSelectedProject,
     minimal,

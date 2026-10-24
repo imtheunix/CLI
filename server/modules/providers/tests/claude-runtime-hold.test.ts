@@ -8,6 +8,7 @@ import { ClaudeSessionsProvider } from '@/modules/providers/list/claude/claude-s
 import { CLAUDE_PREDEFINED_MODELS } from '@/modules/providers/list/claude/claude-models.provider.js';
 import {
   listClaudeSDKBackgroundWork,
+  pushClaudeUserMessage,
   queryClaudeSDK,
   stopClaudeSDKTask,
 } from '@/modules/providers/list/claude/claude-runtime.provider.js';
@@ -29,6 +30,8 @@ type Scripted = {
   end: () => void;
   released: () => boolean;
   stopped: string[];
+  /** Every SDKUserMessage the CLI read off its stdin, prompt and mid-run pushes alike. */
+  stdin: Array<Record<string, unknown>>;
 };
 
 /** A stand-in for the SDK query: yields what the test emits, and reads the held prompt to notice its release. */
@@ -37,17 +40,21 @@ function createScriptedQuery(): { createQuery: NonNullable<ProviderRuntimeContex
   let wake: (() => void) | null = null;
   let released = false;
   const stopped: string[] = [];
+  const stdin: Array<Record<string, unknown>> = [];
 
   const script: Scripted = {
     emit: (message) => { queue.push(message); wake?.(); },
     end: () => { queue.push(null); wake?.(); },
     released: () => released,
     stopped,
+    stdin,
   };
 
   const createQuery: NonNullable<ProviderRuntimeContext['createQuery']> = ({ prompt }) => {
     void (async () => {
-      for await (const _message of prompt) { /* the CLI reads its stdin */ }
+      for await (const message of prompt) { /* the CLI reads its stdin */
+        stdin.push(message as Record<string, unknown>);
+      }
       released = true;
     })();
 
@@ -77,6 +84,7 @@ function createScriptedQuery(): { createQuery: NonNullable<ProviderRuntimeContex
 
 async function withRun(
   runTest: (context: { script: Scripted; sent: NormalizedMessage[]; done: Promise<unknown> }) => Promise<void>,
+  options: { injectedTurnGraceMs?: number } = {},
 ): Promise<void> {
   const cwd = await mkdtemp(path.join(os.tmpdir(), 'claude-runtime-hold-'));
   const { createQuery, script } = createScriptedQuery();
@@ -90,6 +98,7 @@ async function withRun(
     normalizeMessage: (raw, sessionId) => sessions.normalizeMessage(raw, sessionId),
     isProviderInstalled: async () => true,
     createQuery,
+    injectedTurnGraceMs: options.injectedTurnGraceMs ?? 150,
   };
 
   try {
@@ -305,5 +314,95 @@ test('a turn whose tool emits no task events still holds on the static rule', as
     await settle();
 
     assert.equal(script.released(), false, 'Monitor reports no task, so the launch rule decides');
+  });
+});
+
+test('a Send now message reaches the running turn through the held stdin stream', async () => {
+  await withRun(async ({ script }) => {
+    script.emit(init());
+    await settle();
+
+    // The turn is still running (no `result` yet). The pushed message joins
+    // the same stdin stream the original prompt went out on, so the CLI hands
+    // it to the agent at its next step — nothing is interrupted.
+    assert.equal(await pushClaudeUserMessage(SESSION_ID, 'and one more thing'), true);
+    await waitFor(() => script.stdin.some((message) => {
+      const content = (message as { message?: { content?: unknown } }).message?.content;
+      return content === 'and one more thing';
+    }));
+    assert.equal(script.released(), false, 'the process is neither interrupted nor released');
+    assert.equal(script.stopped.length, 0, 'nothing is stopped');
+  });
+});
+
+test('a Send now push into a process held for background work is refused, so the item waits its turn', async () => {
+  await withRun(async ({ script }) => {
+    script.emit(init());
+    script.emit(toolUse('toolu_wf', 'Workflow', { script: 'export const meta = {}' }));
+    script.emit(taskStarted('wf1', 'toolu_wf', 'local_workflow'));
+    script.emit(ack('toolu_wf', 'Workflow launched in background. Task ID: wf1', { status: 'async_launched', taskId: 'wf1', taskType: 'local_workflow' }));
+    script.emit(result());
+    await waitFor(() => script.released() === false && script.stdin.length > 0);
+
+    // The turn reported complete: no run would carry the answer the CLI gives
+    // in a turn of its own, so the dispatcher must keep the item first in line.
+    assert.equal(await pushClaudeUserMessage(SESSION_ID, 'while the workflow runs'), false);
+    assert.equal(script.stdin.length, 1, 'nothing reached the held process');
+    assert.equal(script.released(), false, 'the held process stays up for its background work');
+  });
+});
+
+const contents = (script: Scripted) => script.stdin.map((message) => (message as { message?: { content?: unknown } }).message?.content);
+const completes = (sent: NormalizedMessage[]) => sent.filter((message) => message.kind === 'complete').length;
+
+test('a push that lands after the last step waits for the turn the CLI starts for it', async () => {
+  await withRun(async ({ script, sent }) => {
+    script.emit(init());
+    await settle();
+    assert.equal(await pushClaudeUserMessage(SESSION_ID, 'one more thing'), true);
+    await waitFor(() => contents(script).includes('one more thing'));
+    const pushed = script.stdin.at(-1) as { priority?: string };
+    assert.equal(pushed.priority, 'next', 'queued for the next step, never an interrupt');
+
+    // The turn ends; the CLI then answers the pushed message in a turn of its own.
+    script.emit(result());
+    await settle();
+    assert.equal(completes(sent), 0, 'the run is not reported done while the pushed message may start a turn');
+    assert.equal(script.released(), false, 'stdin stays open so the pushed message is not dropped');
+
+    script.emit(toolUse('toolu_x', 'Read', { file_path: 'a' }));
+    script.emit(result());
+    await waitFor(() => completes(sent) === 1);
+    await waitFor(() => script.released());
+  }, { injectedTurnGraceMs: 400 });
+});
+
+test('a push answered inside the turn completes the run once the grace passes', async () => {
+  await withRun(async ({ script, sent }) => {
+    script.emit(init());
+    await settle();
+    assert.equal(await pushClaudeUserMessage(SESSION_ID, 'and this'), true);
+    script.emit(result());
+    await settle();
+    assert.equal(completes(sent), 0);
+    // A second push during the grace gets its own grace instead of being cut off.
+    assert.equal(await pushClaudeUserMessage(SESSION_ID, 'and that'), true);
+    await waitFor(() => contents(script).includes('and that'));
+    await waitFor(() => completes(sent) === 1);
+    await waitFor(() => script.released());
+    assert.equal(completes(sent), 1, 'reported done exactly once');
+  });
+});
+
+test('a push after the process has ended is refused, not lost in the stream', async () => {
+  await withRun(async ({ script }) => {
+    script.emit(init());
+    script.emit(result());
+    await waitFor(() => script.released());
+
+    // Nothing is listening anymore: the caller must be told, so it can send
+    // the message as the next turn instead of believing it was delivered.
+    assert.equal(await pushClaudeUserMessage(SESSION_ID, 'too late'), false);
+    assert.deepEqual(script.stdin.map((message) => (message as { message?: { content?: unknown } }).message?.content), ['hello']);
   });
 });

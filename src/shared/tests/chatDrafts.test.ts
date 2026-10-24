@@ -19,6 +19,8 @@ let serverDrafts: unknown[] = [];
 let draftsRequestFailed = false;
 let pendingSave: Promise<void> | null = null;
 let pendingHydrate: Promise<Response> | null = null;
+// Statuses the next saves answer with, in order; 200 once empty.
+let saveStatuses: number[] = [];
 
 vi.mock('@/shared/api', () => ({
   api: {
@@ -36,7 +38,7 @@ vi.mock('@/shared/api', () => ({
       saveDraft: async (scope: string, draft: { text: string; queuedMessage?: unknown }) => {
         savedDrafts.push({ scope, ...draft });
         if (pendingSave) await pendingSave;
-        return new Response('{}', { status: 200 });
+        return new Response('{}', { status: saveStatuses.shift() ?? 200 });
       },
       deleteDraft: async (scope: string) => {
         deletedScopes.push(scope);
@@ -59,6 +61,7 @@ beforeEach(() => {
   draftsRequestFailed = false;
   pendingSave = null;
   pendingHydrate = null;
+  saveStatuses = [];
   vi.useFakeTimers();
 });
 
@@ -299,4 +302,45 @@ test('overlapping polls make progress on slow connections and discard older snap
   finishSecond(snapshot('second'));
   await second;
   assert.equal(store.readDraftText('session-a'), 'third', 'an older late response cannot undo a newer snapshot');
+});
+
+
+test('a retried save never writes back a queued item the server already sent', async () => {
+  const store = await loadStore();
+  store.writeQueuedMessage('session-a', { content: 'send this next', attachments: [] });
+  await vi.advanceTimersByTimeAsync(0);
+  assert.equal(savedDrafts.length, 1, 'the server confirmed the queue');
+
+  // While this device is offline the server dispatches the item...
+  serverDrafts = [{ scope: 'session-a', text: '', queuedMessage: null }];
+  // ...and an edit to the draft text fails to save.
+  saveStatuses = [503];
+  store.writeDraftText('session-a', 'next thought');
+  await vi.advanceTimersByTimeAsync(1_500);
+  assert.equal(savedDrafts.length, 2);
+
+  await vi.advanceTimersByTimeAsync(3_500);
+  const retry = savedDrafts.at(-1);
+  assert.deepEqual(retry, { scope: 'session-a', text: 'next thought', queuedMessage: null },
+    'the retry keeps the server queue, so the sent item is not queued again');
+  assert.equal(store.readQueuedMessage('session-a'), null);
+});
+
+test('a queue changed on this device while offline is still retried as it stands', async () => {
+  const store = await loadStore();
+  saveStatuses = [503];
+  store.writeQueuedMessage('session-a', { content: 'written offline', attachments: [] });
+  await vi.advanceTimersByTimeAsync(3_500);
+  assert.equal(savedDrafts.length, 2);
+  assert.equal((savedDrafts[1].queuedMessage as { items: Array<{ content: string }> }).items[0].content, 'written offline');
+});
+
+test('a save the server refuses outright is not resent forever', async () => {
+  const store = await loadStore();
+  saveStatuses = [400];
+  store.writeDraftText('session-a', 'refused');
+  await vi.advanceTimersByTimeAsync(1_500);
+  await vi.advanceTimersByTimeAsync(20_000);
+  assert.equal(savedDrafts.length, 1);
+  assert.equal(store.readDraftText('session-a'), 'refused', 'kept on this device');
 });

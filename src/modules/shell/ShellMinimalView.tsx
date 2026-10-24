@@ -4,12 +4,12 @@ type ShellMinimalViewProps = {
   terminalContainerRef: RefObject<HTMLDivElement>;
 };
 
-/** Rendered by Shell in minimal mode to show the bare terminal container without the header or overlays. */
+/** Rendered by Shell in minimal mode to show the bare terminal container (flex column, so the touch extra-keys row can sit below it). */
 export default function ShellMinimalView({
   terminalContainerRef,
 }: ShellMinimalViewProps) {
   return (
-    <div className="relative h-full w-full bg-card">
+    <div className="relative min-h-0 w-full flex-1 bg-card">
       <div
         ref={terminalContainerRef}
         className="h-full w-full focus:outline-none"

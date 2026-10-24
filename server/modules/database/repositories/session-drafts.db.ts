@@ -127,6 +127,38 @@ export const sessionDraftsDb = {
     ).run(candidate.claimToken, candidate.userId, candidate.sessionId, expected);
   },
 
+  /**
+   * Puts a claimed "Send now" item back at the front of the queue, without its
+   * force flag: the provider could not take the message mid-turn, so it goes
+   * out as the very next turn the moment the current one ends. Guarded by the
+   * post-claim value like `restoreQueuedMessage`, so a queue edited meanwhile
+   * is never overwritten.
+   */
+  deferQueuedMessage(candidate: QueuedSessionMessageRecord): void {
+    const stored = candidate.queuedMessage as { items?: unknown[]; forceId?: string } | null;
+    let expected: string | null = null;
+    let deferred: string | null = null;
+    if (Array.isArray(stored?.items)) {
+      const index = stored.forceId ? stored.items.findIndex((item) => (item as { id?: string })?.id === stored.forceId) : 0;
+      const items = stored.items.filter((_, position) => position !== index);
+      expected = items.length ? JSON.stringify({ items, paused: false }) : null;
+      if (index >= 0 && stored.items[index] !== undefined) {
+        const promoted = [stored.items[index], ...items];
+        deferred = JSON.stringify({ items: promoted, paused: false });
+      }
+    }
+    if (deferred === null) {
+      // The forced item vanished from the stored queue (edited away between
+      // listing and claiming): fall back to a plain restore.
+      this.restoreQueuedMessage(candidate);
+      return;
+    }
+    getConnection().prepare(
+      `UPDATE session_drafts SET queued_message = ?, updated_at = CURRENT_TIMESTAMP
+       WHERE user_id = ? AND draft_scope = ? AND queued_message IS ?`
+    ).run(deferred, candidate.userId, candidate.sessionId, expected);
+  },
+
   /** Stops automatic consumption while retaining every pending item, including across restarts. */
   pauseQueue(scope: string): void {
     const db = getConnection();

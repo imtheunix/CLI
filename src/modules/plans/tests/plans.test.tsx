@@ -15,7 +15,10 @@ test('missing configuration is clear and needs no history calls', async () => {
 });
 
 test('shows quota, reset time, stale readings and history for each own-account plan', async () => {
-  usage.mockResolvedValue(Response.json([{ plan: 'claude', at: '2020-01-01T00:00:00Z', note: 'Own subscription', windows: [{ id: 'week', label: 'Weekly', usedPercent: 42, resetsAt: '2030-01-01T00:00:00Z' }] }]));
+  usage.mockResolvedValue(Response.json([
+    { plan: 'claude', at: '2020-01-01T00:00:00Z', note: 'Own subscription', windows: [{ id: 'week', label: 'Weekly', usedPercent: 42, resetsAt: '2030-01-01T00:00:00Z' }] },
+    { plan: 'zai', at: new Date(Date.now() - 60_000).toISOString(), windows: [{ id: 'zai-5h', label: '5 hours', usedPercent: 7, resetsAt: '2030-01-01T00:00:00Z' }, { id: 'zai-week', label: 'Week', usedPercent: 0, resetsAt: null }] },
+  ]));
   history.mockImplementation(async () => Response.json([]));
   render(<Plans />);
   expect(await screen.findByText('Weekly: 42% used')).toBeTruthy();
@@ -23,7 +26,12 @@ test('shows quota, reset time, stale readings and history for each own-account p
   expect(screen.getByText(/Stale/)).toBeTruthy();
   expect(screen.getByRole('article', { name: 'ChatGPT' })).toBeTruthy();
   expect(screen.getByRole('article', { name: 'Google' })).toBeTruthy();
-  await waitFor(() => expect(history).toHaveBeenCalledTimes(3));
+  expect(screen.getByRole('article', { name: 'Z.ai GLM' })).toBeTruthy();
+  expect(screen.getByText('5 hours: 7% used')).toBeTruthy();
+  expect(screen.getByText('Week: 0% used')).toBeTruthy();
+  expect(screen.getByRole('progressbar', { name: 'Z.ai GLM 5 hours used' })).toBeTruthy();
+  await waitFor(() => expect(history).toHaveBeenCalledTimes(4));
+  expect(history).toHaveBeenCalledWith('zai');
 });
 
 test('refreshes each minute only while visible and stops after leaving Plans', async () => {

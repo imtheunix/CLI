@@ -1,6 +1,6 @@
 import { scheduledMessagesDb, sessionDraftsDb } from '@/modules/database/index.js';
 import type { QueuedSessionMessageRecord, ScheduledMessageRow } from '@/modules/database/index.js';
-import { chatRunRegistry, runDetachedChatTurn } from '@/modules/websocket/index.js';
+import { chatRunRegistry, injectIntoActiveRun, runDetachedChatTurn } from '@/modules/websocket/index.js';
 import type { ProviderRuntimeGateway } from '@/modules/websocket/index.js';
 
 /**
@@ -69,11 +69,36 @@ async function sendClaimedQueuedMessage(
     return;
   }
 
+  // "Send now" never interrupts: while the session is busy the message is
+  // handed to the running turn when the provider can take it, and otherwise
+  // put first in line for the moment the turn ends. Only the Stop button
+  // aborts a run.
+  if (queue?.forceId && isSessionBusy(candidate.sessionId, runtime)) {
+    const delivery = await injectIntoActiveRun(
+      {
+        sessionId: candidate.sessionId,
+        content: message.content,
+        options: { ...message.options, attachments: message.attachments },
+      },
+      { runtime },
+    );
+    if (delivery === 'injected') {
+      sessionDraftsDb.deleteEmptyDraft(candidate.userId, candidate.sessionId);
+      return;
+    }
+    if (delivery === 'unsupported') {
+      sessionDraftsDb.deferQueuedMessage(candidate);
+      return;
+    }
+    // 'idle': the run ended between the busy check and the injection attempt
+    // — fall through and start the turn now (still interrupting nothing).
+  }
+
   const result = await runDetachedChatTurn(
     {
       sessionId: candidate.sessionId,
       userId: candidate.userId,
-      interruptActiveRun: Boolean(queue?.forceId),
+      interruptActiveRun: false,
       onReserved,
       content: message.content,
       options: { ...message.options, attachments: message.attachments },

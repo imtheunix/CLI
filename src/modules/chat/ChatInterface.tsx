@@ -35,7 +35,8 @@ type ChatInterfaceProps = {
   selectedProject: Project | null;
   selectedSession: ProjectSession | null;
   ws: WebSocket | null;
-  sendMessage: (message: unknown) => void;
+  /** Sends one frame over the chat socket; false means the frame was not written (socket down). */
+  sendMessage: (message: unknown) => boolean;
   onFileOpen?: (filePath: string, diffInfo?: any) => void;
   onNavigateToSession?: (targetSessionId: string, options?: SessionNavigationOptions) => void;
   onSessionEstablished?: (sessionId: string, context: SessionEstablishedContext) => void;
@@ -72,7 +73,7 @@ function ChatInterface({
   onShowAllTasks,
 }: ChatInterfaceProps) {
   const { tasksEnabled, isTaskMasterInstalled } = useTasksSettings();
-  const { subscribe } = useWebSocket();
+  const { subscribe, connectionStatus } = useWebSocket();
   const { t } = useTranslation('chat');
   const processingSessions = useProcessingSessions();
   const {
@@ -214,6 +215,9 @@ function ChatInterface({
     isDragActive,
     openAttachmentPicker,
     handleSubmit,
+    failedSend,
+    retryFailedSend,
+    dismissFailedSend,
     backgroundSendPrompt,
     resolveBackgroundSendPrompt,
     queuedDraft,
@@ -252,6 +256,8 @@ function ChatInterface({
     canAbortSession,
     tokenBudget,
     sendMessage,
+    ws,
+    connectionStatus,
     sendByCtrlEnter,
     onSessionProcessing,
     onSessionEstablished: handleSessionEstablished,
@@ -562,8 +568,11 @@ function ChatInterface({
           onToggleCommandMenu={handleToggleCommandMenu}
           hasInput={Boolean(input.trim())}
           onClearInput={handleClearInput}
-          onSubmit={handleSubmit}
-          isDragActive={isDragActive}
+           onSubmit={handleSubmit}
+           failedSend={failedSend !== null}
+           onRetryFailedSend={retryFailedSend}
+           onDismissFailedSend={dismissFailedSend}
+           isDragActive={isDragActive}
           queuedDraft={queuedDraft}
           queueScope={selectedSession?.id || currentSessionId}
           backgroundSendPrompt={backgroundSendPrompt}

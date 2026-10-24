@@ -31,18 +31,18 @@ test('queue items edit in place, reorder and remove without losing attachments o
   expect(readQueuedMessages('b')[0].content).toBe('Other session');
 });
 
-test('Send now confirms interruption, targets the chosen item and retains the queue order', () => {
+test('Send now targets the chosen item without asking to interrupt anything', () => {
   seed();
+  // The running turn is never interrupted anymore (the server hands the
+  // message over or queues it first in line), so a busy session must not
+  // stand between the tap and the force flag.
   const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
   render(<QueuedMessageList scope="a" busy />);
-  fireEvent.click(screen.getAllByText('Send now')[1]);
-  expect(JSON.parse(localStorage.getItem('chat-drafts')!).a.queuedMessage.forceId).toBeUndefined();
-  confirm.mockReturnValue(true);
   fireEvent.click(screen.getAllByText('Send now')[1]);
   const queue = JSON.parse(localStorage.getItem('chat-drafts')!).a.queuedMessage;
   expect(queue.forceId).toBe('second');
   expect(queue.items.map((item: { id: string }) => item.id)).toEqual(['first', 'second']);
-  expect(confirm).toHaveBeenCalledTimes(2);
+  expect(confirm).not.toHaveBeenCalled();
 });
 
 test('a paused queue remains editable and can be explicitly resumed', () => {

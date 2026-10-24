@@ -17,6 +17,7 @@ import { PROVIDER_PERMISSION_PREFERENCE_KEYS } from '@/shared/constants';
 import { readUserPreference } from '@/shared/userSettings';
 import type { BackgroundSendChoice, BackgroundSendPrompt, CommandModalPayload, CostCommandData, HelpCommandData, MarkSessionProcessing, ModelCommandData, QueuedDraft, SessionActivityMap, StatusCommandData,QueuedSendOptions,ChatAttachment,ChatMessage,PendingPermissionRequest,PermissionMode,SessionEstablishedContext,Project,ProjectSession,LLMProvider,SlashCommand } from '@/shared/types';
 import { grantClaudeToolPermission } from '@/modules/chat/utils/chatPermissions';
+import { registerPendingSend, takePendingSend } from '@/modules/chat/utils/pendingSends';
 import {
   clearQueuedMessage,
   hydrateChatDrafts,
@@ -50,7 +51,15 @@ type UseChatComposerStateArgs = {
   processingSessions?: SessionActivityMap;
   canAbortSession: boolean;
   tokenBudget: Record<string, unknown> | null;
-  sendMessage: (message: unknown) => void;
+  /**
+   * Sends one frame over the chat socket; false means nothing was written
+   * (socket down), which the composer treats as a failed send to retry.
+   */
+  sendMessage: (message: unknown) => boolean;
+  /** The live chat socket; a failed send retries automatically when it changes to an open socket. */
+  ws?: WebSocket | null;
+  /** The socket's status; reaching 'connected' retries a send the connection dropped. */
+  connectionStatus?: string;
   sendByCtrlEnter?: boolean;
   onSessionProcessing?: MarkSessionProcessing;
   /**
@@ -93,9 +102,24 @@ type SubmitOptions = {
    * "help"). Set only for the re-submit of a custom command's expanded body:
    * like the Claude Code CLI, that body is never read as a command again, so a
    * body that opens with its own or another command's name cannot loop or
-   * run that command instead of being sent.
+   * run that command instead of being sent. A retry of a failed socket send
+   * also sets it: the first attempt already passed command interception.
    */
   skipCommandInterception?: boolean;
+};
+
+/**
+ * A send that could not leave the browser. A composer send leaves its text
+ * and attachments in the composer, so Retry sends what the composer holds then
+ * (edits included) and clears it only once delivered; a queued draft has no
+ * composer copy and is kept whole (`draft`). Both belong to the conversation
+ * they were sent from: another session's composer never receives them.
+ */
+type FailedSend = {
+  draft: QueuedDraft | null;
+  targetSessionId: string;
+  /** The composer's session key when it failed (null for a new chat before its id). */
+  scope: string | null;
 };
 
 const createFakeSubmitEvent = () => {
@@ -192,6 +216,8 @@ export function useChatComposerState({
   canAbortSession,
   tokenBudget,
   sendMessage,
+  ws,
+  connectionStatus,
   sendByCtrlEnter,
   onSessionProcessing,
   onSessionEstablished,
@@ -688,6 +714,11 @@ export function useChatComposerState({
   const [backgroundSendPrompt, setBackgroundSendPrompt] = useState<BackgroundSendPrompt | null>(null);
   const backgroundSendResolverRef = useRef<((choice: BackgroundSendChoice) => void) | null>(null);
 
+  // A send that never left the browser because the socket was down. The text
+  // stays in the composer and the banner offers retry, so nothing is lost to a
+  // dropped connection.
+  const [failedSend, setFailedSend] = useState<FailedSend | null>(null);
+
   const askBeforeSendingOverBackgroundWork = useCallback(
     (work: string[]) => new Promise<BackgroundSendChoice>((resolve) => {
       // Only one prompt at a time: a stale one is answered "cancel".
@@ -957,6 +988,56 @@ export function useChatComposerState({
       }
 
       const attachmentRecords = uploadedAttachments as ChatAttachment[];
+
+      // The frame carries a client-generated id: a server that cannot start
+      // the run echoes it back on its protocol error, which is how the
+      // composer recovers the message instead of losing it.
+      const clientId = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+        ? crypto.randomUUID()
+        : `send-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
+      // An edit is not recoverable as a queued message: queued, it would run
+      // as an appended turn without its anchor. A refused edit keeps its error.
+      if (!editingAnchorId) {
+        registerPendingSend({
+          clientId,
+          sessionKey: targetSessionId,
+          content: messageContent,
+          options: (queuedSubmission?.options ?? buildSendOptions(messageContent)) as QueuedSendOptions,
+          attachments: uploadedAttachments,
+        });
+      }
+
+      const frame = {
+        // Replacing an already-sent message is its own frame: it changes the
+        // shape of the conversation, so it gets validated separately and can
+        // report why it was refused.
+        type: editingAnchorId ? 'chat.edit-send' : 'chat.send',
+        sessionId: targetSessionId,
+        ...(editingAnchorId ? { anchorId: editingAnchorId } : {}),
+        clientId,
+        content: messageContent,
+        options: {
+          ...(queuedSubmission?.options ?? buildSendOptions(messageContent)),
+          attachments: uploadedAttachments,
+        },
+      };
+
+      // Nothing is shown, cleared or marked processing until the frame is
+      // actually on the wire — a socket that is down must leave the composer
+      // exactly as it was, with a visible failure to retry.
+      if (!sendMessage(frame)) {
+        takePendingSend(clientId);
+        setFailedSend({
+          draft: queuedSubmission
+            ? { ...queuedSubmission, uploadedAttachments }
+            : null,
+          targetSessionId,
+          scope: sessionKey,
+        });
+        return;
+      }
+
       const userMessage: ChatMessage = {
         type: 'user',
         content: currentInput,
@@ -969,6 +1050,10 @@ export function useChatComposerState({
         ...(editingAnchorId ? { replacesAnchorId: editingAnchorId } : {}),
       };
 
+      // A successful send supersedes any failure banner: the composer text it
+      // was holding has been delivered (possibly edited and re-typed).
+      setFailedSend(null);
+
       addMessage(userMessage);
       // Mark this request as processing in the per-session activity map (the
       // single source of truth the indicator derives from). The id is always
@@ -980,23 +1065,6 @@ export function useChatComposerState({
 
       setIsUserScrolledUp(false);
       setTimeout(() => scrollToBottom(), 100);
-
-      // One message shape for every provider. The backend resolves the
-      // provider, project path, and provider-native resume id from the
-      // session row; `options` only carries composer-level preferences.
-      sendMessage({
-        // Replacing an already-sent message is its own frame: it changes the
-        // shape of the conversation, so it gets validated separately and can
-        // report why it was refused.
-        type: editingAnchorId ? 'chat.edit-send' : 'chat.send',
-        sessionId: targetSessionId,
-        ...(editingAnchorId ? { anchorId: editingAnchorId } : {}),
-        content: messageContent,
-        options: {
-          ...(queuedSubmission?.options ?? buildSendOptions(messageContent)),
-          attachments: uploadedAttachments,
-        },
-      });
       setEditingAnchorId(null);
 
       // Recorded under the (possibly just-allocated) session id, so the first
@@ -1077,6 +1145,62 @@ export function useChatComposerState({
   useEffect(() => {
     handleSubmitRef.current = handleSubmit;
   }, [handleSubmit]);
+
+  // The held failure, mirrored into a ref so retry can read it synchronously
+  // (and so the reconnect effect below never depends on the state value).
+  const failedSendRef = useRef(failedSend);
+  failedSendRef.current = failedSend;
+
+  // Resends the message a dropped connection held back. It runs the whole
+  // submit path again (busy session, background work, upload steps), so a
+  // retry can never bypass a guard the first attempt went through.
+  const retryFailedSend = useCallback(() => {
+    const failed = failedSendRef.current;
+    if (!failed) {
+      return;
+    }
+    failedSendRef.current = null;
+    setFailedSend(null);
+    const current = sessionKeyRef.current;
+    if (current !== failed.scope && current !== failed.targetSessionId) {
+      // Sent from another conversation: its text is still in that session's
+      // composer draft, never sent into this one.
+      return;
+    }
+    if (failed.draft) {
+      void handleSubmitRef.current?.(createFakeSubmitEvent(), failed.draft, {
+        skipCommandInterception: true,
+      });
+      return;
+    }
+    // The composer still holds the message (and whatever was edited into it).
+    void handleSubmitRef.current?.(createFakeSubmitEvent());
+  }, []);
+
+  const dismissFailedSend = useCallback(() => {
+    failedSendRef.current = null;
+    setFailedSend(null);
+  }, []);
+
+  // The socket coming back retries the held message by itself: the user asked
+  // for it to be sent, and the reconnect is what blocked it. Keyed on the
+  // status reaching connected — the socket object exists while it is still
+  // connecting, and a retry then would fail and never fire again.
+  useEffect(() => {
+    if (connectionStatus === 'connected' && failedSendRef.current) {
+      retryFailedSend();
+    }
+  }, [connectionStatus, retryFailedSend]);
+
+  // Leaving the conversation drops its failure banner: the text stays in that
+  // session's composer draft, and the banner must not offer to send it here.
+  useEffect(() => {
+    const failed = failedSendRef.current;
+    if (failed && sessionKey !== failed.scope && sessionKey !== failed.targetSessionId) {
+      failedSendRef.current = null;
+      setFailedSend(null);
+    }
+  }, [sessionKey]);
 
   // The server dispatches even while this browser is asleep. Restore its queue
   // after each refresh and keep the compatibility first-card state in sync.
@@ -1391,6 +1515,9 @@ export function useChatComposerState({
     isDragActive,
     openAttachmentPicker: open,
     handleSubmit,
+    failedSend,
+    retryFailedSend,
+    dismissFailedSend,
     backgroundSendPrompt,
     resolveBackgroundSendPrompt,
     queuedDraft,

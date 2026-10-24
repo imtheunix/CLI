@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { plansApi } from '@/shared/api';
 import type { PlanReading } from '@/shared/types';
 
-const PLAN_NAMES = { claude: 'Claude', chatgpt: 'ChatGPT', google: 'Google' } as const;
+const PLAN_NAMES = { claude: 'Claude', chatgpt: 'ChatGPT', google: 'Google', zai: 'Z.ai GLM' } as const;
 
 /** Used by the sidebar as its Plans view, alongside session navigation. */
 export function Plans({ isVisible = true }: { isVisible?: boolean }) {
@@ -49,10 +49,10 @@ export function Plans({ isVisible = true }: { isVisible?: boolean }) {
         <h3 className="font-semibold">{name}</h3>
         {!reading ? <p className="text-sm text-muted-foreground">No reading yet</p> : <>
           <p className="text-xs text-muted-foreground">Read {reading.at ? new Date(reading.at).toLocaleString() : 'unknown'}{stale ? ' · Stale (over 15 minutes)' : ''}</p>
-          {reading.note && <p className="text-sm">{reading.note}</p>}
+          {reading.note && <p className="text-base">{reading.note}</p>}
           {reading.windows.length === 0 && <p>Usage unavailable</p>}
           {reading.windows.map(window => <div key={window.id} className="space-y-1">
-            <p className="text-sm">{window.label}: {window.usedPercent === null ? 'Unavailable' : `${Math.round(window.usedPercent)}% used`}</p>
+            <p className="text-base">{window.label}: {window.usedPercent === null ? 'Unavailable' : `${Math.round(window.usedPercent)}% used`}</p>
             {window.usedPercent !== null && <progress className="w-full accent-primary" aria-label={`${name} ${window.label} used`} max={100} value={window.usedPercent} />}
             <p className="text-xs text-muted-foreground">{window.resetsAt ? `Resets ${new Date(window.resetsAt).toLocaleString()}` : 'Reset time unavailable'}</p>
           </div>)}

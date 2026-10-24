@@ -3,6 +3,8 @@ import { useTranslation } from 'react-i18next';
 
 import '@xterm/xterm/css/xterm.css';
 import type { Project, ProjectSession, ShellTarget } from '@/shared/types';
+import { useExtraKeys } from '@/modules/shell/hooks/useExtraKeys';
+import { useIsTouchDevice } from '@/modules/shell/hooks/useIsTouchDevice';
 import { useShellRuntime } from '@/modules/shell/hooks/useShellRuntime';
 import { sendSocketMessage } from '@/modules/shell/utils/socket';
 import { getSessionTitle } from '@/shared/utils';
@@ -61,6 +63,11 @@ export default function Shell({
   const restartTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const restartAfterInitRef = useRef(false);
   const onOutputRef = useRef<(() => void) | null>(null);
+  // The extra-keys row only exists for touch input; desktop pointers never see it.
+  const isTouchDevice = useIsTouchDevice();
+  // Keyboard-input transform installed by useExtraKeys below; read by the
+  // terminal's data path through this ref so the terminal is never re-created.
+  const extraKeysTransformRef = useRef<((data: string) => string) | null>(null);
 
   const {
     terminalContainerRef,
@@ -84,6 +91,7 @@ export default function Shell({
     isRestarting,
     onProcessComplete,
     onOutputRef,
+    inputTransformRef: isTouchDevice ? extraKeysTransformRef : undefined,
   });
 
   // Check xterm.js buffer for CLI prompt patterns (❯ N. label)
@@ -193,6 +201,19 @@ export default function Shell({
     [wsRef],
   );
 
+  // Sticky Ctrl/Alt modifiers for the extra-keys row; the transform is what
+  // the terminal's own keyboard input passes through.
+  const { ctrlMode, altActive, toggleCtrl, toggleAlt, sendKey, transformKeyboardInput } = useExtraKeys({
+    sendInput,
+  });
+
+  useEffect(() => {
+    extraKeysTransformRef.current = transformKeyboardInput;
+    return () => {
+      extraKeysTransformRef.current = null;
+    };
+  }, [transformKeyboardInput]);
+
   // Null (not a label) when nothing is selected, which is what the header renders against.
   const sessionDisplayName = useMemo(
     () => (selectedSession ? getSessionTitle(selectedSession) : null),
@@ -267,15 +288,21 @@ export default function Shell({
 
   if (minimal) {
     return (
-      <>
+      <div className="flex h-full min-h-0 w-full flex-col bg-card">
         <ShellMinimalView terminalContainerRef={terminalContainerRef} />
-        <TerminalShortcutsPanel
-          wsRef={wsRef}
-          terminalRef={terminalRef}
-          isConnected={isConnected}
-          bottomOffset="bottom-0"
-        />
-      </>
+        {isTouchDevice && (
+          <TerminalShortcutsPanel
+            wsRef={wsRef}
+            terminalRef={terminalRef}
+            isConnected={isConnected}
+            ctrlMode={ctrlMode}
+            altActive={altActive}
+            onToggleCtrl={toggleCtrl}
+            onToggleAlt={toggleAlt}
+            onKey={sendKey}
+          />
+        )}
+      </div>
     );
   }
 
@@ -349,7 +376,7 @@ export default function Shell({
         {cliPromptOptions && isConnected && (
           <div
             className="absolute inset-x-0 bottom-0 z-10 border-t border-border bg-card/95 px-3 py-2 backdrop-blur-sm md:hidden"
-            onMouseDown={(e) => e.preventDefault()}
+            onPointerDown={(e) => e.preventDefault()}
           >
             <div className="flex flex-wrap items-center gap-2">
               {cliPromptOptions.map((opt) => (
@@ -360,7 +387,7 @@ export default function Shell({
                     sendInput(opt.number);
                     setCliPromptOptions(null);
                   }}
-                  className="max-w-36 truncate rounded bg-blue-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-blue-700"
+                  className="min-h-11 max-w-36 truncate rounded bg-blue-600 px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-blue-700"
                   title={`${opt.number}. ${opt.label}`}
                 >
                   {opt.number}. {opt.label}
@@ -372,7 +399,7 @@ export default function Shell({
                   sendInput('\x1b');
                   setCliPromptOptions(null);
                 }}
-                className="rounded border border-border bg-muted px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-muted/70"
+                className="min-h-11 rounded border border-border bg-muted px-3 py-1.5 text-sm font-medium text-foreground transition-colors hover:bg-muted/70"
               >
                 Esc
               </button>
@@ -381,12 +408,18 @@ export default function Shell({
         )}
       </div>
 
-      <TerminalShortcutsPanel
-        wsRef={wsRef}
-        terminalRef={terminalRef}
-        isConnected={isConnected}
-      />
-
+      {isTouchDevice && (
+        <TerminalShortcutsPanel
+          wsRef={wsRef}
+          terminalRef={terminalRef}
+          isConnected={isConnected}
+          ctrlMode={ctrlMode}
+          altActive={altActive}
+          onToggleCtrl={toggleCtrl}
+          onToggleAlt={toggleAlt}
+          onKey={sendKey}
+        />
+      )}
     </div>
   );
 }
