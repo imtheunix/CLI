@@ -47,6 +47,9 @@ function createRuntime(
   return {
     hasRuntime: () => true,
     hasBackgroundWork,
+    stopBackgroundTask: async () => false,
+    resolveToolApproval: () => undefined,
+    getPendingApprovalsForSession: () => [],
     run: async (provider: string, command: string, options: Record<string, unknown>) => {
       if (behaviour === 'throw') {
         throw new Error('provider exploded');
@@ -60,7 +63,7 @@ function createRuntime(
       aborts.push(sessionId);
       return true;
     },
-  } as never;
+  };
 }
 
 test('a message due in the past is sent on the next pass, not skipped', async () => {
@@ -407,5 +410,107 @@ test('Send now interrupts the active turn, consumes the selected item and leaves
     assert.equal(runs[0].command, 'b');
     const remaining = sessionDraftsDb.getDrafts(userId)[0].queuedMessage as { items: { id: string }[] };
     assert.deepEqual(remaining.items.map((item) => item.id), ['a', 'c']);
+  });
+});
+
+
+test('Send now reserves dispatch through async interruption so another poll cannot overtake it', async () => {
+  await withIsolatedDatabase(async (userId) => {
+    const items = ['a', 'b', 'c'].map((id) => ({ id, content: id }));
+    sessionDraftsDb.saveDraft(userId, SESSION_ID, { text: '', queuedMessage: { items, forceId: 'b' } });
+    const oldRun = chatRunRegistry.startRun({ appSessionId: SESSION_ID, provider: 'claude', providerSessionId: null, connection: null, userId })!;
+    let finishAbort!: () => void;
+    const abortPending = new Promise<void>((resolve) => { finishAbort = resolve; });
+    const runs: RunCall[] = [];
+    const runtime = {
+      ...createRuntime(runs),
+      abort: async () => {
+        // Providers can finish the old stream before interrupt() has returned.
+        oldRun.writer.sendComplete({ exitCode: 0 });
+        await abortPending;
+        return true;
+      },
+    };
+    const sending = dispatchQueuedMessages(runtime);
+    try {
+      assert.equal(await dispatchQueuedMessages(runtime), 0);
+      assert.equal(runs.length, 0);
+    } finally {
+      finishAbort();
+      await sending;
+    }
+    assert.deepEqual(runs.map((run) => run.command), ['b']);
+    const remaining = sessionDraftsDb.getDrafts(userId)[0].queuedMessage as { items: { id: string }[] };
+    assert.deepEqual(remaining.items.map((item) => item.id), ['a', 'c']);
+  });
+});
+
+test('Send now dispatches the chosen item from an idle queue without aborting', async () => {
+  await withIsolatedDatabase(async (userId) => {
+    const items = ['a', 'b', 'c'].map((id) => ({ id, content: id }));
+    sessionDraftsDb.saveDraft(userId, SESSION_ID, { text: 'draft', queuedMessage: { items, paused: false, forceId: 'b' } });
+    const runs: RunCall[] = [];
+    const aborts: string[] = [];
+    await dispatchQueuedMessages(createRuntime(runs, 'ok', aborts));
+    assert.deepEqual(runs.map((run) => run.command), ['b']);
+    assert.deepEqual(aborts, []);
+    const remaining = sessionDraftsDb.getDrafts(userId)[0];
+    assert.equal(remaining.text, 'draft');
+    assert.deepEqual((remaining.queuedMessage as { items: { id: string }[] }).items.map((item) => item.id), ['a', 'c']);
+  });
+});
+
+test('a competing interactive turn during interruption stays running and the selected item is restored', async () => {
+  await withIsolatedDatabase(async (userId) => {
+    const items = ['a', 'b', 'c'].map((id) => ({ id, content: id }));
+    sessionDraftsDb.saveDraft(userId, SESSION_ID, { text: '', queuedMessage: { items, forceId: 'b' } });
+    chatRunRegistry.startRun({ appSessionId: SESSION_ID, provider: 'claude', providerSessionId: null, connection: null, userId });
+    const runs: RunCall[] = [];
+    let competingRun: ReturnType<typeof chatRunRegistry.startRun>;
+    const runtime = {
+      ...createRuntime(runs),
+      abort: async () => {
+        chatRunRegistry.completeRun(SESSION_ID, { exitCode: 0 });
+        competingRun = chatRunRegistry.startRun({ appSessionId: SESSION_ID, provider: 'claude', providerSessionId: null, connection: null, userId });
+        return true;
+      },
+    };
+    await dispatchQueuedMessages(runtime);
+    assert.deepEqual(runs, []);
+    assert.equal(chatRunRegistry.getRun(SESSION_ID), competingRun!);
+    assert.equal(chatRunRegistry.isProcessing(SESSION_ID), true);
+    assert.deepEqual(sessionDraftsDb.getDrafts(userId)[0].queuedMessage, { items, forceId: 'b' });
+  });
+});
+
+test('Send now can interrupt a queued turn that is still running after its reservation', async () => {
+  await withIsolatedDatabase(async (userId) => {
+    const items = ['a', 'b', 'c'].map((id) => ({ id, content: id }));
+    sessionDraftsDb.saveDraft(userId, SESSION_ID, { text: '', queuedMessage: { items, forceId: 'b' } });
+    const runs: RunCall[] = [];
+    const aborts: string[] = [];
+    let finishFirst!: () => void;
+    const firstPending = new Promise<void>((resolve) => { finishFirst = resolve; });
+    const runtime = {
+      ...createRuntime(runs, 'ok', aborts),
+      run: async (provider: string, command: string, options: Record<string, unknown>) => {
+        runs.push({ provider, command, options });
+        if (command === 'b') await firstPending;
+        else chatRunRegistry.completeRun(SESSION_ID, { exitCode: 0 });
+      },
+    };
+    const firstSend = dispatchQueuedMessages(runtime);
+    // The gateway yields before entering the provider, after reserving the run.
+    await Promise.resolve();
+    try {
+      sessionDraftsDb.saveDraft(userId, SESSION_ID, { text: '', queuedMessage: { items: [items[0], items[2]], forceId: 'c' } });
+      await dispatchQueuedMessages(runtime);
+      assert.deepEqual(runs.map((run) => run.command), ['b', 'c']);
+      assert.deepEqual(aborts, [SESSION_ID]);
+      assert.deepEqual((sessionDraftsDb.getDrafts(userId)[0].queuedMessage as { items: unknown[] }).items, [items[0]]);
+    } finally {
+      finishFirst();
+      await firstSend;
+    }
   });
 });

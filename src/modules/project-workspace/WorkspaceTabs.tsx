@@ -121,7 +121,7 @@ export default function WorkspaceTabs({
                 isActive={isActive}
                 onClick={() => setActiveTab(tab.id)}
                 onKeyDown={handleTabKeyDown}
-                className="h-8 max-w-44 px-2.5 py-[5px]"
+                className="h-11 min-w-11 max-w-44 justify-center px-2.5 py-[5px] md:h-8 md:min-w-0"
               >
                 {tab.kind === 'builtin' ? (
                   <tab.icon className="h-3.5 w-3.5 shrink-0" strokeWidth={isActive ? 2.2 : 1.8} />
@@ -132,7 +132,7 @@ export default function WorkspaceTabs({
                     className="flex h-3.5 w-3.5 shrink-0 items-center justify-center [&>svg]:h-full [&>svg]:w-full"
                   />
                 )}
-                <span className={`${isActive ? 'inline max-w-28' : 'hidden'} truncate sm:max-w-36 lg:inline`}>
+                <span className={`${tab.id === 'chat' ? 'inline' : 'hidden'} max-w-28 truncate ${isActive ? 'sm:inline' : 'sm:hidden'} sm:max-w-36 lg:inline`}>
                   {displayLabel}
                 </span>
               </Pill>

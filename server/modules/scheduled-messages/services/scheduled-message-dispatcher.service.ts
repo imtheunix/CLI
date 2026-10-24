@@ -14,6 +14,9 @@ const POLL_INTERVAL_MS = 1_000;
 
 let pollTimer: ReturnType<typeof setInterval> | null = null;
 let dispatchInFlight = false;
+// Claims remove the selected item before abort() settles. Hold this session
+// until its replacement run is reserved, so another poll cannot overtake it.
+const preparingQueuedSessions = new Set<string>();
 
 type StoredQueuedMessage = {
   content: string;
@@ -55,6 +58,7 @@ function readQueuedMessage(value: unknown): StoredQueuedMessage | null {
 async function sendClaimedQueuedMessage(
   candidate: QueuedSessionMessageRecord,
   runtime: ProviderRuntimeGateway,
+  onReserved: () => void,
 ): Promise<void> {
   const queue = candidate.queuedMessage as { items?: unknown[]; forceId?: string };
   const message = readQueuedMessage(Array.isArray(queue?.items)
@@ -70,6 +74,7 @@ async function sendClaimedQueuedMessage(
       sessionId: candidate.sessionId,
       userId: candidate.userId,
       interruptActiveRun: Boolean(queue?.forceId),
+      onReserved,
       content: message.content,
       options: { ...message.options, attachments: message.attachments },
     },
@@ -108,6 +113,7 @@ export async function dispatchQueuedMessages(runtime: ProviderRuntimeGateway): P
   let claimed = 0;
 
   await Promise.all(candidates.map(async (candidate) => {
+    if (preparingQueuedSessions.has(candidate.sessionId)) return;
     const queue = candidate.queuedMessage as { items?: unknown[]; paused?: boolean; forceId?: string };
     if (queue?.paused || (Array.isArray(queue?.items) && !queue.items.length)) return;
     if (!queue?.forceId && isSessionBusy(candidate.sessionId, runtime)) {
@@ -117,12 +123,21 @@ export async function dispatchQueuedMessages(runtime: ProviderRuntimeGateway): P
       return;
     }
     claimed += 1;
+    preparingQueuedSessions.add(candidate.sessionId);
+    let released = false;
+    const release = () => {
+      if (released) return;
+      released = true;
+      preparingQueuedSessions.delete(candidate.sessionId);
+    };
     try {
-      await sendClaimedQueuedMessage(candidate, runtime);
+      await sendClaimedQueuedMessage(candidate, runtime, release);
     } catch (error) {
       sessionDraftsDb.restoreQueuedMessage(candidate);
       sessionDraftsDb.pauseQueue(candidate.sessionId);
       console.error('[QueuedMessages] Send failed', error);
+    } finally {
+      release();
     }
   }));
 

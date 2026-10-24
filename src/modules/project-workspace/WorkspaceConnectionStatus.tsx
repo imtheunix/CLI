@@ -26,15 +26,15 @@ export default function WorkspaceConnectionStatus() {
       </div>
       {isDisconnected && (
         // Hidden from screen readers, which get the live region above instead.
-        // Between sm and xl the title box is capped at a third of a narrow
-        // header, so the pill drops its label there and keeps the tooltip.
+        // Keep narrow headers compact; the live region and tooltip retain
+        // the connection description when only the icon fits.
         <span
           aria-hidden="true"
           title={description}
           className="inline-flex flex-shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-xs font-medium text-amber-800 dark:text-amber-300"
         >
           <WifiOff className="h-3.5 w-3.5 flex-shrink-0" />
-          <span className="sm:hidden xl:inline">{t('status.reconnecting')}</span>
+          <span className="hidden xl:inline">{t('status.reconnecting')}</span>
         </span>
       )}
     </>
