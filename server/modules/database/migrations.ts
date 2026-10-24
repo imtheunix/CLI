@@ -4,6 +4,7 @@ import {
   APP_CONFIG_TABLE_SCHEMA_SQL,
   LAST_SCANNED_AT_SQL,
   NOTIFICATION_CHANNEL_ENDPOINTS_TABLE_SCHEMA_SQL,
+  ORCHESTRATOR_JOBS_TABLE_SCHEMA_SQL,
   PROJECTS_TABLE_SCHEMA_SQL,
   PROVIDER_MODELS_TABLE_SCHEMA_SQL,
   PUSH_SUBSCRIPTIONS_TABLE_SCHEMA_SQL,
@@ -535,6 +536,7 @@ export const runMigrations = (db: Database) => {
     addForkedFromSessionIdColumn(db);
     ensureProjectsForSessionPaths(db);
     db.exec(SCHEDULED_MESSAGES_TABLE_SCHEMA_SQL);
+    db.exec(ORCHESTRATOR_JOBS_TABLE_SCHEMA_SQL);
 
     db.exec('CREATE INDEX IF NOT EXISTS idx_session_ids_lookup ON sessions(session_id)');
     db.exec('CREATE INDEX IF NOT EXISTS idx_sessions_provider_session_id ON sessions(provider_session_id)');
@@ -543,6 +545,8 @@ export const runMigrations = (db: Database) => {
     // The due-message poll runs on a timer; without this it table-scans.
     db.exec('CREATE INDEX IF NOT EXISTS idx_scheduled_messages_due ON scheduled_messages(status, scheduled_for)');
     db.exec('CREATE INDEX IF NOT EXISTS idx_scheduled_messages_session ON scheduled_messages(session_id)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_orchestrator_jobs_state ON orchestrator_jobs(state)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_orchestrator_jobs_session ON orchestrator_jobs(session_id)');
     db.exec('CREATE INDEX IF NOT EXISTS idx_sessions_is_archived ON sessions(isArchived)');
     db.exec('CREATE INDEX IF NOT EXISTS idx_projects_is_starred ON projects(isStarred)');
     db.exec('CREATE INDEX IF NOT EXISTS idx_projects_is_archived ON projects(isArchived)');

@@ -120,6 +120,42 @@ CREATE TABLE IF NOT EXISTS scheduled_messages (
 );
 `;
 
+/**
+ * Coding jobs the orchestrator spreads over Claude, GPT and GLM. Each job is a
+ * real chat session in its own git worktree; this row is what survives a
+ * server restart, so the balancer and the CI/CD queue resume where they were.
+ */
+export const ORCHESTRATOR_JOBS_TABLE_SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS orchestrator_jobs (
+    id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    prompt TEXT NOT NULL,
+    -- The main checkout the worktree is made from, and the branch merged into.
+    repo_path TEXT NOT NULL,
+    base_branch TEXT NOT NULL,
+    -- claude | codex | glm. requested_backend is what the caller asked for,
+    -- backend what the balancer gave it (NULL while queued).
+    requested_backend TEXT,
+    backend TEXT,
+    branch TEXT NOT NULL,
+    worktree_path TEXT NOT NULL,
+    session_id TEXT,
+    -- queued | preparing | active | done | interrupted | failed
+    state TEXT NOT NULL DEFAULT 'queued',
+    -- 1 while the session has a turn going; a restart finds it set and sends
+    -- the session a "continue" turn instead of losing it.
+    in_turn INTEGER NOT NULL DEFAULT 0,
+    -- none | queued | rebase | check | push | deploy | merged | blocked
+    merge_step TEXT NOT NULL DEFAULT 'none',
+    merge_attempts INTEGER NOT NULL DEFAULT 0,
+    pushed_sha TEXT,
+    deploy_waiting_since DATETIME,
+    last_error TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+`;
+
 export const SESSIONS_TABLE_SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS sessions (
     session_id TEXT NOT NULL,

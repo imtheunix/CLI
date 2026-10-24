@@ -33,6 +33,7 @@ import { commandsRoutes } from './modules/commands/index.js';
 import { settingsRoutes } from './modules/settings/index.js';
 
 import { createAgentModule } from './modules/agent/index.js';
+import { createOrchestratorModule } from './modules/orchestrator/index.js';
 import projectModuleRoutes from './modules/projects/projects.routes.js';
 import notificationRoutes from './modules/notifications/notifications.routes.js';
 import { userRoutes } from './modules/user/index.js';
@@ -90,6 +91,10 @@ const agentRoutes = createAgentModule({
     queryCodex,
     queryOpenCode,
 });
+
+// Coding jobs balanced over Claude, GPT and GLM, each a chat session, and the
+// CI/CD queue their finished branches go through.
+const orchestrator = createOrchestratorModule({ runtime: providerRuntimeService, authenticate: authenticateToken });
 
 // Single WebSocket server that handles chat, shell, and plugin proxy paths.
 // A completed run stays subscribable while its session's background work
@@ -195,6 +200,7 @@ app.use('/api/browser-use', authenticateToken, browserUseRoutes);
 app.use('/api/providers', authenticateToken, providerRoutes);
 app.use('/api/background-jobs', authenticateToken, createBackgroundJobsRoutes());
 app.use('/api/scheduled-messages', authenticateToken, scheduledMessagesRoutes);
+app.use('/api/orchestrator', orchestrator.router);
 
 // Agent API Routes (uses API key authentication)
 app.use('/api/agent', agentRoutes);
@@ -370,6 +376,8 @@ async function startServer() {
             // Sends anything that came due while the server was not running,
             // then keeps polling.
             initializeScheduledMessageDispatcher(providerRuntimeService);
+            // Resumes jobs and merges a restart cut short, then keeps balancing.
+            await orchestrator.start();
 
             // Start server-side plugin processes for enabled plugins
             startEnabledPluginServers().catch(err => {
@@ -381,6 +389,7 @@ async function startServer() {
         closeScheduledMessageDispatcher();
         // Clean up plugin processes on shutdown
         const shutdownRuntimeServices = async () => {
+            orchestrator.stop();
             try {
                 await browserUseService.stopAllSessions();
             } catch (err) {

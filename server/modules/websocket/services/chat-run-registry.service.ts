@@ -68,6 +68,15 @@ const runs = new Map<string, ChatRun>();
  */
 let retainCompletedRun: (appSessionId: string) => boolean = () => false;
 
+/** How a run ended, as reported to `onRunCompleted` listeners. */
+type RunCompletion = { appSessionId: string; provider: LLMProvider; exitCode: number; aborted: boolean };
+
+/**
+ * Who hears that a run ended. The Orchestrator tells a turn that finished on
+ * its own (the agent stopped to ask, or completed) from one the user stopped.
+ */
+const completionListeners = new Set<(completion: RunCompletion) => void>();
+
 /**
  * Schedules one run's eviction. The timer is bound to the run it was armed
  * for: a later run can take the session's slot while this one's retention —
@@ -128,6 +137,19 @@ function decorateAndRecordEvent(run: ChatRun, message: NormalizedMessage): Norma
     run.status = 'completed';
     run.completedAt = Date.now();
     evictRunLater(run);
+    const completion: RunCompletion = {
+      appSessionId: run.appSessionId,
+      provider: run.provider,
+      exitCode: Number(message.exitCode ?? 0),
+      aborted: message.aborted === true,
+    };
+    for (const listener of completionListeners) {
+      try {
+        listener(completion);
+      } catch (error) {
+        console.error('[ChatRunRegistry] A run completion listener failed', error);
+      }
+    }
   }
 
   run.events.push(outbound);
@@ -186,6 +208,16 @@ export const chatRunRegistry = {
   /** Installs the check that keeps a completed run registered while its session still has background work. */
   setRetentionGuard(guard: (appSessionId: string) => boolean): void {
     retainCompletedRun = guard;
+  },
+
+  /**
+   * Calls `listener` every time a run ends, with whether it was aborted.
+   * Used by the Orchestrator to free a job's slot when the user stops it.
+   * Returns the unsubscribe function.
+   */
+  onRunCompleted(listener: (completion: RunCompletion) => void): () => void {
+    completionListeners.add(listener);
+    return () => completionListeners.delete(listener);
   },
 
   /**

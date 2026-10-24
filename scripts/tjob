@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+# tjob: the CLI orchestrator's jobs, from a shell (the orchestrating session and each job's agent).
+#   tjob new "<title>" [--repo PATH] [--backend auto|claude|codex|glm] [--base BRANCH] [--prompt TEXT]   (else the prompt is read from stdin)
+#   tjob ls                 every job: backend, state, what its session is doing, where it is in the CI/CD queue
+#   tjob show <id>
+#   tjob done <id>          the agent's code is complete and committed: hand it to the CI/CD queue
+#   tjob retry <id>         a blocked merge goes on from where it stopped
+#   tjob resume <id>        an interrupted or failed job takes a slot again
+set -euo pipefail
+
+marker="$HOME/.cloudcli/local-server.json"
+url="${CLI_URL:-$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["url"])' "$marker" 2>/dev/null || echo http://127.0.0.1:8197)}"
+token_file="${CLI_ORCHESTRATOR_TOKEN_FILE:-$HOME/.cloudcli/orchestrator.token}"
+[ -r "$token_file" ] || { echo "tjob: no token at $token_file (is the CLI server running?)" >&2; exit 1; }
+
+# The token goes to curl on stdin, never on the command line.
+api() {
+  local method=$1 path=$2 body=${3:-}
+  { printf 'header = "Authorization: Bearer %s"\n' "$(tr -d '\n' <"$token_file")"
+    [ -n "$body" ] && printf 'header = "Content-Type: application/json"\n'
+  } | curl -sS -X "$method" --config - ${body:+--data-binary "$body"} "$url/api/orchestrator$path"
+}
+
+render() {
+  python3 -c '
+import json, sys
+body = json.load(sys.stdin)
+if not body.get("success", False):
+    sys.exit("tjob: " + str((body.get("error") or {}).get("message") if isinstance(body.get("error"), dict) else body.get("error") or body))
+data = body["data"]
+mode = sys.argv[1]
+def line(j):
+    doing = j.get("activity") or j["state"]
+    merge = "" if j["merge_step"] == "none" else "  ci:" + j["merge_step"]
+    err = ("  ! " + j["last_error"].splitlines()[0][:100]) if j.get("last_error") else ""
+    return "%s  %-6s %-11s%-13s %s%s" % (j["id"], j.get("backend") or "-", doing, merge, j["title"][:60], err)
+if mode == "ls":
+    loads, caps = data["loads"], data["caps"]
+    print("  ".join("%s: %s/%s" % (b, loads[b], caps[b]) for b in ("claude", "codex", "glm")))
+    for j in data["jobs"]: print(line(j))
+else:
+    j = data["job"]
+    print(line(j))
+    if mode == "show":
+        for k in ("repo_path", "base_branch", "branch", "worktree_path", "session_id", "model", "pushed_sha", "last_error"):
+            if j.get(k): print("  %s: %s" % (k, j[k]))
+' "$1"
+}
+
+json_body() { python3 -c 'import json,sys; print(json.dumps(dict(zip(sys.argv[1::2], sys.argv[2::2]))))' "$@"; }
+
+cmd=${1:-ls}; shift || true
+case "$cmd" in
+  new)
+    title=${1:?usage: tjob new "<title>" [--repo PATH] [--backend B] [--base BRANCH] [--prompt TEXT]}; shift
+    repo="" backend=auto base="" prompt=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --repo) repo=$2; shift 2 ;;
+        --backend) backend=$2; shift 2 ;;
+        --base) base=$2; shift 2 ;;
+        --prompt) prompt=$2; shift 2 ;;
+        *) echo "tjob: unknown option $1" >&2; exit 2 ;;
+      esac
+    done
+    # The main checkout, also when run from inside a job's worktree.
+    [ -n "$repo" ] || repo=$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")
+    [ -n "$prompt" ] || prompt=$(cat)
+    args=(title "$title" prompt "$prompt" repo "$(realpath "$repo")" backend "$backend")
+    [ -n "$base" ] && args+=(base "$base")
+    api POST "" "$(json_body "${args[@]}")" | render new ;;
+  ls) api GET "" | render ls ;;
+  show) api GET "/${1:?id}" | render show ;;
+  done|retry|resume) api POST "/${1:?id}/$cmd" '{}' | render "$cmd" ;;
+  *) sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+esac
