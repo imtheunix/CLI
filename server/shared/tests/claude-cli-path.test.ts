@@ -6,6 +6,18 @@ import {
   type ResolveClaudeCodeExecutablePathDependencies,
 } from '@/shared/claude-cli-path.js';
 
+// Passing `undefined` falls back to CLAUDE_CLI_PATH, which a Claude session
+// running the tests has set, so the defaults are tested without it.
+const savedClaudeCliPath = process.env.CLAUDE_CLI_PATH;
+test.before(() => {
+  delete process.env.CLAUDE_CLI_PATH;
+});
+test.after(() => {
+  if (savedClaudeCliPath !== undefined) {
+    process.env.CLAUDE_CLI_PATH = savedClaudeCliPath;
+  }
+});
+
 test('resolveClaudeCodeExecutablePath resolves the npm Claude wrapper to its native exe on Windows', () => {
   const wrapperDir = 'C:\\nvm4w\\nodejs';
   const nativePath = `${wrapperDir}\\node_modules\\@anthropic-ai\\claude-code\\bin\\claude.exe`;
