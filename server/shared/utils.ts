@@ -779,14 +779,21 @@ async function hasGitMarker(dirPath: string): Promise<boolean> {
  * folders when resolving repository/project skills. Use this helper when a
  * provider needs the topmost `.git` marker instead of only the nearest one, so
  * monorepos and nested package folders discover shared root-level skills once.
+ * Discovery stops at the user's home when the workspace is inside it: markers
+ * above that boundary must not turn user skills into repository skills.
  */
 export async function findTopmostGitRoot(startPath: string): Promise<string | null> {
   let currentPath = path.resolve(startPath);
   let topmostGitRoot: string | null = null;
+  const homePath = path.resolve(os.homedir());
 
   while (true) {
     if (await hasGitMarker(currentPath)) {
       topmostGitRoot = currentPath;
+    }
+
+    if (currentPath === homePath) {
+      break;
     }
 
     const parentPath = path.dirname(currentPath);

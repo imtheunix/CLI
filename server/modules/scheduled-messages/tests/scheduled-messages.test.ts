@@ -8,6 +8,7 @@ import { closeConnection, initializeDatabase, scheduledMessagesDb, sessionDrafts
 import { dispatchDueScheduledMessages, dispatchQueuedMessages } from '@/modules/scheduled-messages/services/scheduled-message-dispatcher.service.js';
 import { scheduledMessagesService } from '@/modules/scheduled-messages/services/scheduled-messages.service.js';
 import { chatRunRegistry } from '@/modules/websocket/index.js';
+import { getGlobalImageAssetsDir } from '@/shared/image-attachments.js';
 
 const SESSION_ID = 'scheduled-session';
 
@@ -51,6 +52,9 @@ function createRuntime(
         throw new Error('provider exploded');
       }
       runs.push({ provider, command, options });
+      // A successful provider emits its terminal event before resolving. A
+      // silent return triggers the gateway's failure safety net and pauses queues.
+      chatRunRegistry.completeRun(String(options.sessionId), { exitCode: 0 });
     },
     abort: async (_provider: string, sessionId: string) => {
       aborts.push(sessionId);
@@ -355,14 +359,16 @@ test('scheduling validates its input', async () => {
 
 test('a persistent queue consumes one item per pass, in order, keeping each attachment and session isolated', async () => {
   await withIsolatedDatabase(async (userId) => {
-    const items = [1, 2, 3].map((index) => ({ id: String(index), content: `prompt ${index}`, attachments: [{ name: `${index}.png` }] }));
+    // Use the durable descriptors returned by the upload endpoint. Name-only
+    // fixtures are correctly rejected by the websocket attachment boundary.
+    const items = [1, 2, 3].map((index) => ({ id: String(index), content: `prompt ${index}`, attachments: [{ path: path.join(getGlobalImageAssetsDir(), `${index}.png`), name: `${index}.png` }] }));
     sessionDraftsDb.saveDraft(userId, SESSION_ID, { text: 'unsent', queuedMessage: { items } });
     sessionDraftsDb.saveDraft(userId, 'other-session', { text: '', queuedMessage: { items: [{ content: 'other' }] } });
     const runs: RunCall[] = [];
     for (let index = 0; index < 3; index++) {
       assert.equal(await dispatchQueuedMessages(createRuntime(runs)), 1);
       assert.equal(runs[index].command, `prompt ${index + 1}`);
-      assert.deepEqual(runs[index].options.attachments, [{ name: `${index + 1}.png` }]);
+      assert.deepEqual(runs[index].options.attachments, items[index].attachments);
     }
     assert.equal(sessionDraftsDb.getDrafts(userId).find((draft) => draft.scope === SESSION_ID)?.text, 'unsent');
     assert.ok(sessionDraftsDb.getDrafts(userId).find((draft) => draft.scope === 'other-session')?.queuedMessage);

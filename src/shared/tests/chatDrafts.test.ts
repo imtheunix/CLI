@@ -17,11 +17,14 @@ const savedDrafts: SavedDraft[] = [];
 const deletedScopes: string[] = [];
 let serverDrafts: unknown[] = [];
 let draftsRequestFailed = false;
+let pendingSave: Promise<void> | null = null;
+let pendingHydrate: Promise<Response> | null = null;
 
 vi.mock('@/shared/api', () => ({
   api: {
     user: {
       drafts: async () => {
+        if (pendingHydrate) return pendingHydrate;
         if (draftsRequestFailed) {
           throw new Error('offline');
         }
@@ -32,6 +35,7 @@ vi.mock('@/shared/api', () => ({
       },
       saveDraft: async (scope: string, draft: { text: string; queuedMessage?: unknown }) => {
         savedDrafts.push({ scope, ...draft });
+        if (pendingSave) await pendingSave;
         return new Response('{}', { status: 200 });
       },
       deleteDraft: async (scope: string) => {
@@ -53,6 +57,8 @@ beforeEach(() => {
   deletedScopes.length = 0;
   serverDrafts = [];
   draftsRequestFailed = false;
+  pendingSave = null;
+  pendingHydrate = null;
   vi.useFakeTimers();
 });
 
@@ -130,6 +136,8 @@ test('hydrate removes a mirrored queue after the server claims it', async () => 
   store.writeQueuedMessage('session-a', { content: 'server-owned queue' });
   assert.equal(store.readQueuedMessage('session-a')?.content, 'server-owned queue');
 
+  // A server can only consume the queue after its save has been acknowledged.
+  await vi.advanceTimersByTimeAsync(0);
   serverDrafts = [];
   await store.hydrateChatDrafts();
 
@@ -240,4 +248,55 @@ test('multiple queued items retain order, attachments and session scope across a
   assert.deepEqual(restored.readQueuedMessages('session-a')[0].attachments, [{ name: 'notes.txt' }]);
   assert.equal(restored.readQueuedMessages('session-b')[0].content, 'other session');
   assert.equal(savedDrafts.length, 3, 'each queue action is immediately persisted');
+});
+
+test('queue saves stay ordered and polling preserves edits until the server acknowledges them', async () => {
+  const store = await loadStore();
+  let finishSave!: () => void;
+  pendingSave = new Promise<void>((resolve) => { finishSave = resolve; });
+  store.writeQueuedMessage('session-a', { id: 'one', content: 'first' });
+  store.writeQueuedMessage('session-a', { id: 'two', content: 'second' });
+  assert.equal(savedDrafts.length, 1, 'a later save waits for the older request');
+  await store.hydrateChatDrafts();
+  assert.deepEqual(store.readQueuedMessages('session-a').map((item) => item.id), ['one', 'two']);
+
+  pendingSave = null;
+  finishSave();
+  await vi.advanceTimersByTimeAsync(0);
+  assert.equal(savedDrafts.length, 2);
+  assert.deepEqual((savedDrafts[1].queuedMessage as { items: { id: string }[] }).items.map((item) => item.id), ['one', 'two']);
+});
+
+test('a poll started before a queue edit cannot erase that edit even after its save finishes', async () => {
+  const store = await loadStore();
+  let finishHydrate!: (response: Response) => void;
+  pendingHydrate = new Promise<Response>((resolve) => { finishHydrate = resolve; });
+  const hydrate = store.hydrateChatDrafts();
+  store.writeQueuedMessage('session-a', { id: 'new', content: 'keep this' });
+  await vi.advanceTimersByTimeAsync(0);
+  finishHydrate(new Response(JSON.stringify({ drafts: [] })));
+  await hydrate;
+  assert.equal(store.readQueuedMessages('session-a')[0]?.content, 'keep this');
+});
+
+test('overlapping polls make progress on slow connections and discard older snapshots arriving last', async () => {
+  const store = await loadStore();
+  let finishFirst!: (response: Response) => void;
+  let finishSecond!: (response: Response) => void;
+  let finishThird!: (response: Response) => void;
+  const snapshot = (text: string) => new Response(JSON.stringify({ drafts: [{ scope: 'session-a', text }] }));
+  pendingHydrate = new Promise<Response>((resolve) => { finishFirst = resolve; });
+  const first = store.hydrateChatDrafts();
+  pendingHydrate = new Promise<Response>((resolve) => { finishSecond = resolve; });
+  const second = store.hydrateChatDrafts();
+  finishFirst(snapshot('first'));
+  await first;
+  assert.equal(store.readDraftText('session-a'), 'first', 'a pending later poll does not block progress');
+  pendingHydrate = new Promise<Response>((resolve) => { finishThird = resolve; });
+  const third = store.hydrateChatDrafts();
+  finishThird(snapshot('third'));
+  await third;
+  finishSecond(snapshot('second'));
+  await second;
+  assert.equal(store.readDraftText('session-a'), 'third', 'an older late response cannot undo a newer snapshot');
 });
