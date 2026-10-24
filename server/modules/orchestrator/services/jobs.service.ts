@@ -13,7 +13,8 @@ import { chatRunRegistry, runDetachedChatTurn } from '@/modules/websocket/index.
 import type { ProviderRuntimeGateway } from '@/modules/websocket/index.js';
 import { AppError } from '@/shared/utils.js';
 
-import { pickBackend } from './balancer.service.js';
+import { isInGlmPeakHours, pickBackend } from './balancer.service.js';
+import { modelLabel, resolveRequestedModel } from './orchestrator-config.service.js';
 import type { OrchestratorConfig } from './orchestrator-config.service.js';
 import {
   hasCommitsAhead,
@@ -32,7 +33,6 @@ const BACKENDS: OrchestratorBackend[] = ['claude', 'codex', 'glm'];
 export type OrchestratorJobView = OrchestratorJobRow & {
   /** working while its session has a turn going, waiting when the agent stopped for an answer. */
   activity: 'working' | 'waiting' | null;
-  model: string | null;
 };
 
 function slugify(title: string): string {
@@ -77,7 +77,10 @@ function buildJobPrompt(job: OrchestratorJobRow, label: string): string {
 export function createJobsService(deps: {
   runtime: ProviderRuntimeGateway;
   config: () => OrchestratorConfig;
+  /** The clock GLM's peak hours are read from; tests pin it. */
+  now?: () => Date;
 }) {
+  const now = deps.now ?? (() => new Date());
   // A job is set up once at a time; a tick that finds it mid-preparation leaves it.
   const preparing = new Set<string>();
 
@@ -99,7 +102,7 @@ export function createJobsService(deps: {
     return {
       ...job,
       activity: job.state === 'active' ? (processing ? 'working' : 'waiting') : null,
-      model: (session as { model?: string | null } | null)?.model ?? null,
+      model: job.model ?? (session as { model?: string | null } | null)?.model ?? null,
     };
   }
 
@@ -113,7 +116,8 @@ export function createJobsService(deps: {
       userId: firstUserId(),
       content,
       options: {
-        model: backend.model,
+        // The job's own model (Flash or full GLM...), whatever the config's default is now.
+        model: job.model ?? backend.model,
         ...(backend.effort ? { effort: backend.effort } : {}),
         permissionMode: 'bypassPermissions',
       },
@@ -131,8 +135,13 @@ export function createJobsService(deps: {
   async function start(job: OrchestratorJobRow, backend: OrchestratorBackend): Promise<void> {
     const config = deps.config();
     const backendConfig = config.backends[backend];
+    // The model asked for, when the backend that took the job offers it (a
+    // requested backend at its cap sends the job to GLM, on GLM's default).
+    const offered = job.model !== null && (job.model === backendConfig.model || job.model in backendConfig.models);
+    const model = offered ? job.model as string : backendConfig.model;
+    const label = modelLabel(backendConfig, model);
     preparing.add(job.id);
-    orchestratorJobsDb.update(job.id, { backend, state: 'preparing', last_error: null });
+    orchestratorJobsDb.update(job.id, { backend, model, state: 'preparing', last_error: null });
     try {
       await prepareWorktree({
         repoPath: job.repo_path,
@@ -145,12 +154,12 @@ export function createJobsService(deps: {
       if (!sessionId) {
         projectsDb.createProjectPath(job.worktree_path, `${path.basename(job.repo_path)} · ${job.title}`);
         sessionId = sessionsService.createAppSession(backendConfig.provider, job.worktree_path, job.title).sessionId;
-        sessionsDb.updateSessionCustomName(sessionId, `${backendConfig.label} · ${job.title}`);
-        sessionsDb.setSessionModel(sessionId, backendConfig.model);
+        sessionsDb.updateSessionCustomName(sessionId, `${label} · ${job.title}`);
+        sessionsDb.setSessionModel(sessionId, model);
         if (backendConfig.effort) sessionsDb.setSessionEffort(sessionId, backendConfig.effort);
       }
       const ready = orchestratorJobsDb.update(job.id, { session_id: sessionId, state: 'active' }) as OrchestratorJobRow;
-      await sendTurn(ready, buildJobPrompt(ready, backendConfig.label));
+      await sendTurn(ready, buildJobPrompt(ready, label));
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.error(`[Orchestrator] Job ${job.id} could not start`, message);
@@ -178,9 +187,12 @@ export function createJobsService(deps: {
       prompt: string;
       repoPath: string;
       backend: OrchestratorBackend | null;
+      /** A model id the backend offers (`zai-coding-plan/glm-5.3` or `glm-5.3`); with no backend, it picks one. */
+      model?: string | null;
       baseBranch: string | null;
     }): Promise<OrchestratorJobView> {
       const config = deps.config();
+      const requested = input.model ? resolveRequestedModel(config, input.backend, input.model) : null;
       const repoPath = path.resolve(input.repoPath);
       if (!repoPath.startsWith(path.resolve(config.workspacesRoot) + path.sep)) {
         throw new AppError(`repo must be inside ${config.workspacesRoot}`, { code: 'REPO_OUTSIDE_WORKSPACES', statusCode: 400 });
@@ -194,7 +206,8 @@ export function createJobsService(deps: {
         prompt: input.prompt,
         repoPath,
         baseBranch,
-        requestedBackend: input.backend,
+        requestedBackend: requested?.backend ?? input.backend,
+        model: requested?.model ?? null,
         branch: `job/${slugify(input.title)}-${id}`,
         worktreePath: path.join(config.worktreesRoot, repoName, id),
       });
@@ -323,8 +336,10 @@ export function createJobsService(deps: {
       }
 
       const config = deps.config();
+      const peak = config.glmPeakHours.avoid && isInGlmPeakHours(config.glmPeakHours, now());
+      const avoid: OrchestratorBackend[] = peak ? ['glm'] : [];
       for (const job of orchestratorJobsDb.listByState(['queued'])) {
-        const backend = pickBackend(job.requested_backend, loads(), caps(config), config.fallbackBackend);
+        const backend = pickBackend(job.requested_backend, loads(), caps(config), config.fallbackBackend, avoid);
         if (!backend) continue;
         void start(job, backend);
       }

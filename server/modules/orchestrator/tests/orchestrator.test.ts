@@ -100,6 +100,8 @@ async function withWorkspace(
   config.worktreesRoot = path.join(workspaces, '.jobs');
   config.checks = { demo: 'true' };
   config.forgejo.tokenFile = path.join(root, 'no-token');
+  // The balancing tests must not depend on the hour they run at.
+  config.glmPeakHours.avoid = false;
   tune(config);
 
   const runtime = createRuntime();
@@ -131,9 +133,10 @@ test('jobs go to the least busy backend, each a named session in its own worktre
     assert.ok(existsSync(path.join(first.worktree_path, 'app.txt')));
     assert.equal(git(first.worktree_path, 'rev-parse', '--abbrev-ref', 'HEAD'), first.branch);
     const session = sessionsDb.getSessionById(first.session_id!) as { custom_name: string; provider: string; model: string; project_path: string };
-    assert.equal(session.custom_name, 'GLM · one');
+    assert.equal(session.custom_name, 'GLM Flash · one');
     assert.equal(session.provider, 'opencode');
-    assert.equal(session.model, 'zai-coding-plan/glm-5.3');
+    assert.equal(session.model, 'zai-coding-plan/glm-5.3-flash');
+    assert.equal(first.model, 'zai-coding-plan/glm-5.3-flash');
 
     const turn = runtime.turns.find((t) => t.sessionId === first.session_id)!;
     assert.match(turn.command, /do one/);
@@ -141,6 +144,62 @@ test('jobs go to the least busy backend, each a named session in its own worktre
     assert.equal(turn.options.permissionMode, 'bypassPermissions');
     assert.equal(turn.options.cwd, first.worktree_path);
   });
+});
+
+test('GLM runs Flash by default and the full model on request, kept on every later turn', async () => {
+  await withWorkspace(async ({ repo, runtime, jobs, job }) => {
+    const full = await jobs.create({ title: 'hard', prompt: 'p', repoPath: repo, backend: null, model: 'glm-5.3', baseBranch: null });
+    await eventually(() => job(full.id).state === 'active', 'hard to start');
+    assert.equal(job(full.id).backend, 'glm');
+    assert.equal(job(full.id).model, 'zai-coding-plan/glm-5.3');
+    const session = sessionsDb.getSessionById(job(full.id).session_id!) as { custom_name: string; model: string };
+    assert.equal(session.custom_name, 'GLM · hard');
+    assert.equal(session.model, 'zai-coding-plan/glm-5.3');
+
+    // A message from the CI/CD queue (or a restart's "continue") runs on the job's model.
+    runtime.finish(job(full.id).session_id!);
+    await jobs.notify(job(full.id), 'checks failed');
+    const turns = runtime.turns.filter((t) => t.sessionId === job(full.id).session_id);
+    assert.equal(turns.length, 2);
+    assert.ok(turns.every((t) => t.options.model === 'zai-coding-plan/glm-5.3'));
+
+    const flash = await jobs.create({ title: 'easy', prompt: 'p', repoPath: repo, backend: 'glm', baseBranch: null });
+    await eventually(() => job(flash.id).state === 'active', 'easy to start');
+    assert.equal(job(flash.id).model, 'zai-coding-plan/glm-5.3-flash');
+    assert.equal(jobs.get(flash.id)!.model, 'zai-coding-plan/glm-5.3-flash');
+  });
+});
+
+test('a model the backend does not offer is refused, naming the ones it does', async () => {
+  await withWorkspace(async ({ repo, jobs, job }) => {
+    await assert.rejects(
+      jobs.create({ title: 'x', prompt: 'p', repoPath: repo, backend: 'claude', model: 'glm-5.3', baseBranch: null }),
+      /model glm-5.3 is not offered \(claude: claude-opus-5-5\)/,
+    );
+    await assert.rejects(
+      jobs.create({ title: 'x', prompt: 'p', repoPath: repo, backend: null, model: 'gpt-4', baseBranch: null }),
+      /not offered.*glm: zai-coding-plan\/glm-5.3-flash, zai-coding-plan\/glm-5.3/,
+    );
+    const codex = await jobs.create({ title: 'y', prompt: 'p', repoPath: repo, backend: null, model: 'gpt-6.1-sol', baseBranch: null });
+    assert.equal(codex.requested_backend, 'codex');
+    await eventually(() => job(codex.id).state === 'active', 'y to start');
+  });
+});
+
+test('the default model per backend and the peak-hours rule come from orchestrator.json, with no rebuild', async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'orchestrator-config-'));
+  try {
+    const file = path.join(dir, 'orchestrator.json');
+    assert.equal(loadOrchestratorConfig(file).backends.glm.model, 'zai-coding-plan/glm-5.3-flash');
+    writeFileSync(file, JSON.stringify({ backends: { glm: { model: 'zai-coding-plan/glm-5.3' } }, glmPeakHours: { avoid: false } }));
+    const config = loadOrchestratorConfig(file);
+    assert.equal(config.backends.glm.model, 'zai-coding-plan/glm-5.3');
+    assert.equal(config.backends.glm.models['zai-coding-plan/glm-5.3-flash'], 'GLM Flash');
+    assert.equal(config.backends.glm.cap, 3);
+    assert.deepEqual(config.glmPeakHours, { avoid: false, utcOffsetHours: 8, fromHour: 14, toHour: 18 });
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });
 
 test('a requested backend at its cap sends the job to GLM; with GLM full too, it waits for a slot', async () => {

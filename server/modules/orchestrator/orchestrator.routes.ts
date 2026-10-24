@@ -66,6 +66,7 @@ export function createOrchestratorRouter(services: {
       prompt: readString(body.prompt, 'prompt', true),
       repoPath: readString(body.repo, 'repo', true),
       backend: readBackend(body.backend),
+      model: readString(body.model, 'model', false),
       baseBranch: readString(body.base, 'base', false),
     });
     res.status(201).json(createApiSuccessResponse({ job }));

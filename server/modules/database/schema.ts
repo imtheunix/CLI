@@ -137,6 +137,9 @@ CREATE TABLE IF NOT EXISTS orchestrator_jobs (
     -- backend what the balancer gave it (NULL while queued).
     requested_backend TEXT,
     backend TEXT,
+    -- The model asked for (NULL: the backend's default), then the one the
+    -- job runs on once started; retries and resumes keep it.
+    model TEXT,
     branch TEXT NOT NULL,
     worktree_path TEXT NOT NULL,
     session_id TEXT,

@@ -458,6 +458,12 @@ const addSessionEffortColumn = (db: Database): void => {
   addColumnToTableIfNotExists(db, 'sessions', columnNames, 'effort', 'TEXT');
 };
 
+/** Jobs created before `tjob new --model` ran on their backend's default model; NULL says so. */
+const addOrchestratorJobModelColumn = (db: Database): void => {
+  const columnNames = getTableInfo(db, 'orchestrator_jobs').map((column) => column.name);
+  addColumnToTableIfNotExists(db, 'orchestrator_jobs', columnNames, 'model', 'TEXT');
+};
+
 /**
  * Adds the reasoning-effort metadata columns to the custom-model library.
  *
@@ -537,6 +543,7 @@ export const runMigrations = (db: Database) => {
     ensureProjectsForSessionPaths(db);
     db.exec(SCHEDULED_MESSAGES_TABLE_SCHEMA_SQL);
     db.exec(ORCHESTRATOR_JOBS_TABLE_SCHEMA_SQL);
+    addOrchestratorJobModelColumn(db);
 
     db.exec('CREATE INDEX IF NOT EXISTS idx_session_ids_lookup ON sessions(session_id)');
     db.exec('CREATE INDEX IF NOT EXISTS idx_sessions_provider_session_id ON sessions(provider_session_id)');

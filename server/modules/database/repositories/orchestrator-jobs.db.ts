@@ -14,6 +14,8 @@ export type OrchestratorJobRow = {
   base_branch: string;
   requested_backend: OrchestratorBackend | null;
   backend: OrchestratorBackend | null;
+  /** The model the job asked for (`tjob new --model`), then the one it runs on once started. */
+  model: string | null;
   branch: string;
   worktree_path: string;
   session_id: string | null;
@@ -29,11 +31,11 @@ export type OrchestratorJobRow = {
 };
 
 type JobPatch = Partial<Pick<OrchestratorJobRow,
-  'backend' | 'session_id' | 'state' | 'in_turn' | 'merge_step' | 'merge_attempts'
+  'backend' | 'model' | 'session_id' | 'state' | 'in_turn' | 'merge_step' | 'merge_attempts'
   | 'pushed_sha' | 'deploy_waiting_since' | 'last_error'>>;
 
 const PATCHABLE_COLUMNS: Array<keyof JobPatch> = [
-  'backend', 'session_id', 'state', 'in_turn', 'merge_step', 'merge_attempts',
+  'backend', 'model', 'session_id', 'state', 'in_turn', 'merge_step', 'merge_attempts',
   'pushed_sha', 'deploy_waiting_since', 'last_error',
 ];
 
@@ -46,13 +48,14 @@ export const orchestratorJobsDb = {
     repoPath: string;
     baseBranch: string;
     requestedBackend: OrchestratorBackend | null;
+    model?: string | null;
     branch: string;
     worktreePath: string;
   }): OrchestratorJobRow {
     const db = getConnection();
     db.prepare(
-      `INSERT INTO orchestrator_jobs (id, title, prompt, repo_path, base_branch, requested_backend, branch, worktree_path)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO orchestrator_jobs (id, title, prompt, repo_path, base_branch, requested_backend, model, branch, worktree_path)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
       input.id,
       input.title,
@@ -60,6 +63,7 @@ export const orchestratorJobsDb = {
       input.repoPath,
       input.baseBranch,
       input.requestedBackend,
+      input.model ?? null,
       input.branch,
       input.worktreePath,
     );

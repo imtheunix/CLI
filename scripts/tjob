@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # tjob: the CLI orchestrator's jobs, from a shell (the orchestrating session and each job's agent).
-#   tjob new "<title>" [--repo PATH] [--backend auto|claude|codex|glm] [--base BRANCH] [--prompt TEXT]   (else the prompt is read from stdin)
+#   tjob new "<title>" [--repo PATH] [--backend auto|claude|codex|glm] [--model ID] [--base BRANCH] [--prompt TEXT]   (else the prompt is read from stdin)
+#                           --model: one the backend offers; GLM runs glm-5.3-flash unless asked for glm-5.3; with --backend auto, the model picks the backend
 #   tjob ls                 every job: backend, state, what its session is doing, where it is in the CI/CD queue
 #   tjob show <id>
 #   tjob done <id>          the agent's code is complete and committed: hand it to the CI/CD queue
@@ -34,7 +35,8 @@ def line(j):
     doing = j.get("activity") or j["state"]
     merge = "" if j["merge_step"] == "none" else "  ci:" + j["merge_step"]
     err = ("  ! " + j["last_error"].splitlines()[0][:100]) if j.get("last_error") else ""
-    return "%s  %-6s %-11s%-13s %s%s" % (j["id"], j.get("backend") or "-", doing, merge, j["title"][:60], err)
+    model = (j.get("model") or "").split("/")[-1]
+    return "%s  %-6s %-14s %-11s%-13s %s%s" % (j["id"], j.get("backend") or "-", model or "-", doing, merge, j["title"][:60], err)
 if mode == "ls":
     loads, caps = data["loads"], data["caps"]
     print("  ".join("%s: %s/%s" % (b, loads[b], caps[b]) for b in ("claude", "codex", "glm")))
@@ -53,12 +55,13 @@ json_body() { python3 -c 'import json,sys; print(json.dumps(dict(zip(sys.argv[1:
 cmd=${1:-ls}; shift || true
 case "$cmd" in
   new)
-    title=${1:?usage: tjob new "<title>" [--repo PATH] [--backend B] [--base BRANCH] [--prompt TEXT]}; shift
-    repo="" backend=auto base="" prompt=""
+    title=${1:?usage: tjob new "<title>" [--repo PATH] [--backend B] [--model ID] [--base BRANCH] [--prompt TEXT]}; shift
+    repo="" backend=auto model="" base="" prompt=""
     while [ $# -gt 0 ]; do
       case "$1" in
         --repo) repo=$2; shift 2 ;;
         --backend) backend=$2; shift 2 ;;
+        --model) model=$2; shift 2 ;;
         --base) base=$2; shift 2 ;;
         --prompt) prompt=$2; shift 2 ;;
         *) echo "tjob: unknown option $1" >&2; exit 2 ;;
@@ -68,10 +71,11 @@ case "$cmd" in
     [ -n "$repo" ] || repo=$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")
     [ -n "$prompt" ] || prompt=$(cat)
     args=(title "$title" prompt "$prompt" repo "$(realpath "$repo")" backend "$backend")
+    [ -n "$model" ] && args+=(model "$model")
     [ -n "$base" ] && args+=(base "$base")
     api POST "" "$(json_body "${args[@]}")" | render new ;;
   ls) api GET "" | render ls ;;
   show) api GET "/${1:?id}" | render show ;;
   done|retry|resume|cancel) api POST "/${1:?id}/$cmd" '{}' | render "$cmd" ;;
-  *) sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+  *) sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac
