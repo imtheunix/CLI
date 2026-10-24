@@ -36,13 +36,15 @@ test('queue items edit in place, reorder and remove without losing attachments o
 test.each([true, false])('Send now is enabled and forces the chosen item when busy=%s', async (busy) => {
   await act(async () => { seed(); });
   vi.mocked(api.user.saveDraft).mockClear();
-  // The running turn is never interrupted anymore (the server hands the
-  // message over or queues it first in line), so a busy session must not
-  // stand between the tap and the force flag.
+  // The tap itself is the confirmation: the server stops a running turn and
+  // sends the forced item next, so no dialog stands between them.
   const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
   render(<QueuedMessageList scope="a" busy={busy} />);
   const sendNow = screen.getAllByRole('button', { name: 'Send now' })[1] as HTMLButtonElement;
   expect(sendNow.disabled).toBe(false);
+  expect(sendNow.title).toBe(busy
+    ? 'Stops the running turn, as Stop does, and sends this message as the next turn.'
+    : 'Sends this message now, ahead of the rest of the queue.');
   fireEvent.click(sendNow);
   const queue = JSON.parse(localStorage.getItem('chat-drafts')!).a.queuedMessage;
   expect(queue.forceId).toBe('second');

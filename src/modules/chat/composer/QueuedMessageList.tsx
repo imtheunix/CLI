@@ -41,7 +41,7 @@ export default function QueuedMessageList({ scope, busy }: { scope: string; busy
                 type="button"
                 className={buttonClass}
                 title={busy
-                  ? 'Hands this message to the running turn without stopping it; if the provider cannot take it mid-turn, it goes out the moment the turn ends.'
+                  ? 'Stops the running turn, as Stop does, and sends this message as the next turn.'
                   : 'Sends this message now, ahead of the rest of the queue.'}
                 onClick={() => {
                   replaceQueuedMessages(scope, items, false, item.id);

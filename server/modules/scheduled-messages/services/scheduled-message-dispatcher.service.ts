@@ -1,6 +1,6 @@
 import { scheduledMessagesDb, sessionDraftsDb } from '@/modules/database/index.js';
 import type { QueuedSessionMessageRecord, ScheduledMessageRow } from '@/modules/database/index.js';
-import { chatRunRegistry, injectIntoActiveRun, runDetachedChatTurn } from '@/modules/websocket/index.js';
+import { chatRunRegistry, runDetachedChatTurn } from '@/modules/websocket/index.js';
 import type { ProviderRuntimeGateway } from '@/modules/websocket/index.js';
 
 /**
@@ -69,36 +69,15 @@ async function sendClaimedQueuedMessage(
     return;
   }
 
-  // "Send now" never interrupts: while the session is busy the message is
-  // handed to the running turn when the provider can take it, and otherwise
-  // put first in line for the moment the turn ends. Only the Stop button
-  // aborts a run.
-  if (queue?.forceId && isSessionBusy(candidate.sessionId, runtime)) {
-    const delivery = await injectIntoActiveRun(
-      {
-        sessionId: candidate.sessionId,
-        content: message.content,
-        options: { ...message.options, attachments: message.attachments },
-      },
-      { runtime },
-    );
-    if (delivery === 'injected') {
-      sessionDraftsDb.deleteEmptyDraft(candidate.userId, candidate.sessionId);
-      return;
-    }
-    if (delivery === 'unsupported') {
-      sessionDraftsDb.deferQueuedMessage(candidate);
-      return;
-    }
-    // 'idle': the run ended between the busy check and the injection attempt
-    // — fall through and start the turn now (still interrupting nothing).
-  }
-
+  // "Send now" stops the running turn, as Stop does, and sends the message as
+  // the next user turn. Mid-turn input is not an option: Claude reads it only
+  // at its next step and never shows it as a turn, so the agent kept working
+  // as if nothing had been sent; Codex and OpenCode cannot take it at all.
   const result = await runDetachedChatTurn(
     {
       sessionId: candidate.sessionId,
       userId: candidate.userId,
-      interruptActiveRun: false,
+      interruptActiveRun: Boolean(queue?.forceId),
       onReserved,
       content: message.content,
       options: { ...message.options, attachments: message.attachments },

@@ -24,7 +24,7 @@ test('local websocket server delivers Send now and Stop to phone and desktop idl
   const runtime: ProviderRuntimeGateway = {
     hasRuntime: () => true, hasBackgroundWork: () => false,
     getPendingApprovalsForSession: () => [], resolveToolApproval: () => {},
-    pushUserMessage: async () => false, stopBackgroundTask: async () => false,
+    stopBackgroundTask: async () => false,
     abort: async () => true,
     run: async (_provider, content, options, writer) => {
       writer.send({ kind: 'text', provider: 'claude', content: `live answer: ${content}` });
@@ -56,13 +56,14 @@ test('local websocket server delivers Send now and Stop to phone and desktop idl
     const dispatched = runDetachedChatTurn({ sessionId: 'session', userId: Number(user.id), content: 'send this now' }, { runtime });
     await answer;
     // Status and answer can be separate socket frames in the same tick.
-    while (!phone.frames.some((frame) => frame.kind === 'text')) await once(phone.client, 'message');
+    while (!phone.frames.some((frame) => frame.kind === 'text' && frame.role !== 'user')) await once(phone.client, 'message');
     desktop.client.send(JSON.stringify({ type: 'chat.abort', sessionId: 'session' }));
     while (!phone.frames.some((frame) => frame.kind === 'complete')) await once(phone.client, 'message');
     while (!desktop.frames.some((frame) => frame.kind === 'complete')) await once(desktop.client, 'message');
     await dispatched;
     for (const browser of [phone, desktop]) {
-      assert.equal(browser.frames.find((frame) => frame.kind === 'text')?.content, 'live answer: send this now');
+      assert.equal(browser.frames.find((frame) => frame.kind === 'text' && frame.role === 'user')?.content, 'send this now');
+      assert.equal(browser.frames.find((frame) => frame.kind === 'text' && frame.role !== 'user')?.content, 'live answer: send this now');
       assert.equal(browser.frames.find((frame) => frame.kind === 'complete')?.aborted, true);
     }
     assert.equal(chatRunRegistry.isProcessing('session'), false);

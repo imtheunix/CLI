@@ -33,7 +33,7 @@ for (const provider of ['claude', 'codex', 'opencode'] as LLMProvider[]) {
       const runtime: ProviderRuntimeGateway = {
         hasRuntime: () => true, hasBackgroundWork: () => false,
         getPendingApprovalsForSession: () => [], resolveToolApproval: () => {},
-        pushUserMessage: async () => false, stopBackgroundTask: async () => false,
+        stopBackgroundTask: async () => false,
         // A graceful provider interrupt can stall; the run's signal must still
         // stop the process and release the UI without waiting for that reply.
         abort: (name, id) => { aborts.push(`${name}:${id}`); return new Promise(() => {}); },

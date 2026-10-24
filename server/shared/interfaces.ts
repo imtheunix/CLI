@@ -51,14 +51,6 @@ export interface IProviderRuntime {
    * settled, or the id was never one of its own.
    */
   stopBackgroundTask?(sessionId: string, taskId: string): Promise<boolean>;
-  /**
-   * Feeds one more user message into a session's live process while its turn
-   * is still running (or its process is held open for background work),
-   * without interrupting anything — the provider-side answer to "Send now".
-   * Resolves false when the provider cannot take mid-turn input; the caller
-   * must then wait for the turn to end instead of aborting it.
-   */
-  pushUserMessage?(sessionId: string, content: string, options?: AnyRecord): Promise<boolean>;
 }
 
 /**

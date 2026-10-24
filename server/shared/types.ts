@@ -658,12 +658,6 @@ export type ProviderRuntimeContext = {
     interrupt(): Promise<void>;
     stopTask?(taskId: string): Promise<void>;
   };
-  /**
-   * How long a turn's `result` waits for the turn the CLI may start for a
-   * "Send now" message pushed late in it. Production uses the runtime's
-   * default; tests shorten it.
-   */
-  injectedTurnGraceMs?: number;
 };
 
 export type ProviderRunFunction = (

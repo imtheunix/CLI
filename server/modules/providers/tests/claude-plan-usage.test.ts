@@ -304,7 +304,6 @@ test('a run folds the rate_limit_event messages from its SDK stream', async () =
     normalizeMessage: (raw, sessionId) => sessions.normalizeMessage(raw, sessionId),
     isProviderInstalled: async () => true,
     createQuery,
-    injectedTurnGraceMs: 150,
   };
 
   const cwd = await mkdtemp(path.join(tmpdir(), 'claude-plan-usage-cwd-'));

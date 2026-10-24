@@ -1,4 +1,5 @@
 import { sessionDraftsDb } from '@/modules/database/index.js';
+import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 
 import type { WebSocket } from 'ws';
@@ -79,16 +80,6 @@ export type ProviderRuntimeGateway = {
   hasBackgroundWork(sessionId: string): boolean;
   resolveToolApproval(requestId: string, payload: ProviderPermissionDecision): void;
   getPendingApprovalsForSession(sessionId: string): unknown[];
-  /**
-   * Feeds one more user message into a session's live process without
-   * interrupting it; false when the provider cannot take mid-turn input.
-   */
-  pushUserMessage(
-    provider: LLMProvider,
-    sessionId: string,
-    content: string,
-    options?: AnyRecord,
-  ): Promise<boolean>;
 };
 
 type ChatWebSocketDependencies = {
@@ -308,6 +299,21 @@ async function dispatchRun(
     // run instead of leaving the session processing forever.
     await beforeRun?.(run);
     if (run.abortController.signal.aborted) return { started: true, error: null };
+    if (!ws) {
+      // A detached turn (queue, schedule) has no composer that showed its
+      // message. Echo it on the run's stream so every watcher sees the turn
+      // begin; the `local_` id lets the transcript copy replace it later.
+      run.writer.send({
+        id: `local_${randomUUID()}`,
+        kind: 'text',
+        role: 'user',
+        provider,
+        timestamp: new Date().toISOString(),
+        content: command,
+        images: runtimeOptions.images.length ? runtimeOptions.images : undefined,
+        files: runtimeOptions.files.length ? runtimeOptions.files : undefined,
+      });
+    }
     run.writer.send({ kind: 'status', provider, text: 'Processing', canInterrupt: true });
     await dependencies.runtime.run(provider, command, runtimeOptions, run.writer);
   } catch (error) {
@@ -632,7 +638,8 @@ export async function runDetachedChatTurn(
     /**
      * Aborts a run already in progress instead of refusing to start. A
      * scheduled message sets this: the user picked the time knowing it might
-     * land mid-run, so the timer outranks whatever is running.
+     * land mid-run, so the timer outranks whatever is running. "Send now" on
+     * a queued message sets it too: the user asked for it to go right away.
      */
     interruptActiveRun?: boolean;
     /** Lets the queue dispatcher release its preparation lock after reservation. */
@@ -660,12 +667,11 @@ export async function runDetachedChatTurn(
     // interrupted run end before this turn's stream begins. The interrupted
     // run's own dispatch settles later through completeRunIfCurrent, which is
     // scoped to that run and cannot touch the one started here.
+    // The abort signal has already cancelled the provider run, so a graceful
+    // interrupt that fails (Claude rejects one after the signal) is no error.
     activeRun.abortController.abort();
-    const aborted = await dependencies.runtime.abort(activeRun.provider, input.sessionId);
-    chatRunRegistry.completeRunIfCurrent(activeRun, {
-      exitCode: aborted ? 0 : 1,
-      aborted: true,
-    });
+    await dependencies.runtime.abort(activeRun.provider, input.sessionId);
+    chatRunRegistry.completeRunIfCurrent(activeRun, { exitCode: 0, aborted: true });
   }
 
   return dispatchRun(
@@ -678,73 +684,6 @@ export async function runDetachedChatTurn(
     {},
     input.onReserved,
   );
-}
-
-/** What became of an attempt to hand a message to a session that is already busy. */
-export type BusySessionDelivery =
-  /** The message reached the running turn (or the process held open for its background work). */
-  | 'injected'
-  /** The provider cannot take mid-turn input; the message must wait for the turn to end. */
-  | 'unsupported'
-  /** Nothing was running after all — an ordinary run can start right away. */
-  | 'idle';
-
-/**
- * Delivers a "Send now" message to a busy session WITHOUT interrupting it.
- *
- * When the provider's live process can take another user message mid-turn
- * (Claude's SDK streaming input can), the message is handed straight to the
- * running agent, the way Claude Code treats input typed during a turn. Every
- * other outcome keeps the turn going too: `unsupported` tells the caller to
- * send the message right after the current turn instead, and `idle` that the
- * busy state was stale and a normal dispatch applies. Only the Stop button
- * ever aborts a run.
- */
-export async function injectIntoActiveRun(
-  input: {
-    sessionId: string;
-    content: string;
-    options?: AnyRecord;
-  },
-  dependencies: ChatWebSocketDependencies,
-): Promise<BusySessionDelivery> {
-  const session = sessionsDb.getSessionById(input.sessionId);
-  if (!session) {
-    return 'idle';
-  }
-
-  const provider = session.provider as LLMProvider;
-  if (!dependencies.runtime.hasRuntime(provider)) {
-    return 'unsupported';
-  }
-
-  const busy =
-    chatRunRegistry.isProcessing(input.sessionId) ||
-    dependencies.runtime.hasBackgroundWork(input.sessionId);
-  if (!busy) {
-    return 'idle';
-  }
-
-  const clientOptions = (input.options ?? {}) as AnyRecord;
-  const attachmentCandidates = [
-    ...normalizeAttachmentDescriptors(clientOptions.images),
-    ...normalizeAttachmentDescriptors(clientOptions.files),
-    ...normalizeAttachmentDescriptors(clientOptions.attachments),
-  ];
-  const verifiedAttachments = filterAttachmentsToUploadStore(attachmentCandidates);
-  const uniqueAttachments = verifiedAttachments.filter(
-    (descriptor, index, all) => all.findIndex((candidate) => candidate.path === descriptor.path) === index,
-  );
-
-  const injected = await dependencies.runtime.pushUserMessage(provider, input.sessionId, input.content, {
-    ...clientOptions,
-    attachments: uniqueAttachments,
-    images: uniqueAttachments.filter(isImageAttachmentDescriptor),
-    files: uniqueAttachments.filter((descriptor) => !isImageAttachmentDescriptor(descriptor)),
-    sessionId: input.sessionId,
-    cwd: clientOptions.cwd ?? session.project_path ?? undefined,
-  });
-  return injected ? 'injected' : 'unsupported';
 }
 
 export function handleChatConnection(

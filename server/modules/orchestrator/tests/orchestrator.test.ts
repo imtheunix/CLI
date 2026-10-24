@@ -43,7 +43,6 @@ function createRuntime() {
       stopBackgroundTask: async () => false,
       resolveToolApproval: () => undefined,
       getPendingApprovalsForSession: () => [],
-      pushUserMessage: async () => false,
       abort: async () => true,
       run: (_provider: string, command: string, options: Record<string, unknown>) => {
         const sessionId = String(options.sessionId);
