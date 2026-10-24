@@ -384,7 +384,7 @@ function ChatInterface({
 
   // The sessions this one spawned, listed by the composer's checklist panel.
   const { children: spawnedSessions, refresh: refreshSpawnedSessions } =
-    useSpawnedSessions(selectedSession?.id || currentSessionId || null);
+    useSpawnedSessions(selectedSession?.id || currentSessionId || null, subscribe);
 
   // Opens a spawned session row's target through the same navigation the fork
   // action uses, so the workspace resolves it even from another project.

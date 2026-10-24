@@ -1,8 +1,13 @@
+import { createInstance } from 'i18next';
+import { I18nextProvider } from 'react-i18next';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 
 import type { ChatMessage, SpawnedSessionChild } from '@/shared/types';
 import SessionChecklist from '@/modules/chat/composer/SessionChecklist';
+
+const i18n = createInstance();
+await i18n.init({ lng: 'pt', fallbackLng: 'en', resources: {}, initImmediate: false });
 
 let nextTimestamp = 1;
 function message(overrides: Partial<ChatMessage>): ChatMessage {
@@ -61,7 +66,7 @@ function renderPanel(overrides: Partial<Parameters<typeof SessionChecklist>[0]> 
     onRefreshSpawnedSessions,
     ...overrides,
   };
-  const view = render(<SessionChecklist {...props} />);
+  const view = render(<I18nextProvider i18n={i18n}><SessionChecklist {...props} /></I18nextProvider>);
   return { view, props };
 }
 
@@ -140,4 +145,22 @@ test('a checklist with everything done says Done', () => {
     ],
   });
   expect(screen.getByRole('button', { name: /1\/1 · Done/i })).toBeTruthy();
+});
+
+
+test.each([360, 412])('at %ipx the panel defaults closed and preserves its choice on session changes', (width) => {
+  const previousWidth = window.innerWidth;
+  Object.defineProperty(window, 'innerWidth', { configurable: true, value: width });
+  try {
+    const { view, props } = renderPanel({ messages: [todoWrite([{ content: 'x'.repeat(500), status: 'in_progress' }])] });
+    expect(screen.getByRole('button').getAttribute('aria-expanded')).toBe('false');
+    fireEvent.click(screen.getByRole('button'));
+    expect(screen.getAllByRole('button')).toHaveLength(2);
+    view.rerender(<I18nextProvider i18n={i18n}><SessionChecklist {...props} sessionId="other" /></I18nextProvider>);
+    expect(screen.getByRole('button').getAttribute('aria-expanded')).toBe('false');
+    view.rerender(<I18nextProvider i18n={i18n}><SessionChecklist {...props} /></I18nextProvider>);
+    expect(screen.getAllByRole('button')[0].getAttribute('aria-expanded')).toBe('true');
+  } finally {
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: previousWidth });
+  }
 });

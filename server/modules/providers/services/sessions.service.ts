@@ -633,12 +633,11 @@ export const sessionsService = {
     // "Running" merges the same sources as the running-sessions poll: an
     // in-app run, background work that outlived the turn, or a Claude CLI
     // turn driven outside the app.
+    const children = sessionsDb.getSessionsSpawnedBy(session.session_id);
     const runningSessionIds = new Set(
-      (await this.listRunningSessions()).map((entry) => entry.sessionId),
+      children.length ? (await this.listRunningSessions()).map((entry) => entry.sessionId) : [],
     );
-    const spawnedSessions: SpawnedSessionChild[] = sessionsDb
-      .getSessionsSpawnedBy(session.session_id)
-      .map((child) => ({
+    const spawnedSessions: SpawnedSessionChild[] = children.map((child) => ({
         sessionId: child.session_id,
         provider: child.provider as LLMProvider,
         name: child.custom_name?.trim() || child.session_id,

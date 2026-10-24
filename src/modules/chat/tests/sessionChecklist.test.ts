@@ -143,3 +143,20 @@ test('non-checklist tools and unknown statuses are ignored or treated as pending
   expect(todos.map((todo) => todo.status)).toEqual(['pending']);
   expect(running).toEqual([]);
 });
+
+
+test('old unresolved foreground launches expire at a user turn, while explicit background work survives', () => {
+  const old = message({ isToolUse: true, toolName: 'Agent', toolId: 'old' });
+  const background = message({ isToolUse: true, toolName: 'Agent', toolId: 'bg', taskStatus: { taskId: 'bg', taskType: 'local_agent', status: 'running' } });
+  const settled = message({ isToolUse: true, toolName: 'Agent', toolId: 'done', taskStatus: { taskId: 'done', taskType: 'local_agent', status: 'completed' } });
+  const nextTurn = message({ type: 'user', content: 'Continue' });
+  const current = message({ isToolUse: true, toolName: 'Workflow', toolId: 'current' });
+  expect(deriveSessionChecklist([old, background, nextTurn, settled, current]).running.map((row) => row.message.toolId)).toEqual(['bg', 'current']);
+});
+
+test('a removed checklist item reintroduced with the same status reveals the new plan', () => {
+  const first = todoWrite([{ content: 'Test', status: 'pending' }]);
+  const cleared = todoWrite([]);
+  const restarted = todoWrite([{ content: 'Test', status: 'pending' }]);
+  expect(deriveSessionChecklist([first, cleared, restarted]).todos[0].message).toBe(restarted);
+});

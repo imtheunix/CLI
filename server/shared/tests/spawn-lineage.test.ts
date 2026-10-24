@@ -1,3 +1,5 @@
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
 import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -14,7 +16,7 @@ import { findSpawningProviderSessionId } from '@/shared/spawn-lineage.js';
 function createFakeProc(
   processes: Array<{
     pid: number;
-    fds?: Array<{ name: string; target: string }>;
+    fds?: Array<{ name: string; target: string; flags?: string }>;
     environ?: Record<string, string>;
   }>,
 ): string {
@@ -22,8 +24,10 @@ function createFakeProc(
   for (const process_ of processes) {
     const pidRoot = path.join(procRoot, String(process_.pid));
     mkdirSync(path.join(pidRoot, 'fd'), { recursive: true });
+    mkdirSync(path.join(pidRoot, 'fdinfo'));
     for (const fd of process_.fds ?? []) {
       symlinkSync(fd.target, path.join(pidRoot, 'fd', fd.name));
+      writeFileSync(path.join(pidRoot, 'fdinfo', fd.name), `flags:\t${fd.flags ?? '0102001'}\n`);
     }
     const environ = Object.entries(process_.environ ?? {})
       .map(([key, value]) => `${key}=${value}`)
@@ -188,4 +192,36 @@ test('findSpawningProviderSessionId returns null when the proc root is unreadabl
     }),
     null,
   );
+});
+
+
+test('a transcript reader with an inherited session id cannot claim the writer lineage', () => {
+  const transcript = '/tmp/read-and-write.jsonl';
+  const procRoot = createFakeProc([
+    { pid: 101, fds: [{ name: '3', target: transcript, flags: '0100000' }], environ: { CLAUDE_CODE_SESSION_ID: 'reader-parent' } },
+    { pid: 102, fds: [{ name: '3', target: transcript }], environ: { CLAUDE_CODE_SESSION_ID: 'writer-parent' } },
+  ]);
+  try {
+    assert.equal(findSpawningProviderSessionId(transcript, 'child', { procRoot }), 'writer-parent');
+  } finally {
+    disposeFakeProc(procRoot);
+  }
+});
+
+
+test('real Linux proc detection identifies a live writer without invoking a provider CLI', { skip: process.platform !== 'linux' }, async () => {
+  const directory = mkdtempSync(path.join(tmpdir(), 'lineage-writer-'));
+  const transcript = path.join(directory, 'transcript.jsonl');
+  const writer = spawn(process.execPath, ['-e', `require('node:fs').openSync(process.argv[1], 'a'); process.stdout.write('ready\\n'); setInterval(() => {}, 1000);`, transcript], {
+    env: { CLAUDE_CODE_SESSION_ID: 'fixture-parent' },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  try {
+    await once(writer.stdout, 'data');
+    assert.equal(findSpawningProviderSessionId(transcript, 'fixture-child', { maxProcesses: 100_000 }), 'fixture-parent');
+  } finally {
+    writer.kill();
+    await once(writer, 'exit');
+    rmSync(directory, { recursive: true, force: true });
+  }
 });

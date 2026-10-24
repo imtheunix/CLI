@@ -41,6 +41,8 @@ function createFakeProc(transcriptPath: string, parentProviderSessionId: string)
   const pidRoot = path.join(procRoot, '4242');
   mkdirSync(path.join(pidRoot, 'fd'), { recursive: true });
   symlinkSync(transcriptPath, path.join(pidRoot, 'fd', '3'));
+  mkdirSync(path.join(pidRoot, 'fdinfo'));
+  writeFileSync(path.join(pidRoot, 'fdinfo', '3'), 'flags:\t0102001\n');
   writeFileSync(path.join(pidRoot, 'environ'), `HOME=/home/user\0CLAUDE_CODE_SESSION_ID=${parentProviderSessionId}\0`);
   return procRoot;
 }

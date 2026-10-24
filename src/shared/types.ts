@@ -1874,3 +1874,31 @@ export type BackgroundJob = {
 };
 /** Bounded log tail and optional completed-job summary returned by the job monitor. */
 export type BackgroundJobDetail = { job: BackgroundJob; log: string; summary: string };
+
+//----------------- SESSION CHECKLIST ------------
+/** The statuses the unified checklist surface carries; anything else reads as pending. */
+export type SessionChecklistTodoStatus = 'pending' | 'in_progress' | 'completed';
+
+/** One item of the latest checklist snapshot, pointing at the message its current status first appeared in. */
+export type SessionChecklistTodo = {
+  content: string;
+  status: SessionChecklistTodoStatus;
+  /** What the step calls itself while running, when the provider supplied one. */
+  activeForm?: string;
+  /** The TodoWrite message the item's current status was first seen in; tapping the item reveals it. */
+  message: ChatMessage;
+};
+
+/** A subagent or workflow launch whose work the current turn has not seen a result for yet. */
+export type SessionChecklistRunningEntry = {
+  kind: 'subagent' | 'workflow';
+  /** The launch's description (or subagent type / workflow name); tapping the entry reveals the launch. */
+  label: string;
+  message: ChatMessage;
+};
+
+/** What the composer's checklist strip shows for a session: its plan and what it is still waiting on. */
+export type SessionChecklistState = {
+  todos: SessionChecklistTodo[];
+  running: SessionChecklistRunningEntry[];
+};

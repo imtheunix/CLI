@@ -81,7 +81,7 @@ function SidebarSessionItem({
     ? session.spawnedBySessionId
     : null;
   const spawnedFromLabel = spawnedFromSessionId
-    ? `↳ from ${spawnedByName ?? 'another session'}`
+    ? t('session.spawnedFrom', { name: spawnedByName ?? t('session.anotherSession', { defaultValue: 'another session' }), defaultValue: '↳ from {{name}}' })
     : null;
   const openSpawnedFromParent = () => {
     navigate(`/session/${spawnedFromSessionId}`);
@@ -245,13 +245,13 @@ function SidebarSessionItem({
               {spawnedFromLabel && (
                 <button
                   type="button"
-                  className="-ml-1 mt-0.5 flex min-h-11 items-center gap-1 self-start rounded-md px-1 text-[15px] leading-tight text-muted-foreground transition-colors active:bg-muted"
+                  className="-ml-1 mt-0.5 flex min-h-11 max-w-full items-center gap-1 self-start rounded-md px-1 text-[15px] leading-tight text-muted-foreground transition-colors active:bg-muted"
                   onClick={(event) => {
                     event.stopPropagation();
                     openSpawnedFromParent();
                   }}
                 >
-                  {spawnedFromLabel}
+                  <span className="min-w-0 truncate">{spawnedFromLabel}</span>
                 </button>
               )}
             </div>

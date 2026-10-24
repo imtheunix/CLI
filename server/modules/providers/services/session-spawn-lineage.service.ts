@@ -1,6 +1,6 @@
 import { sessionsDb } from '@/modules/database/index.js';
-import { findSpawningProviderSessionId } from '@/shared/spawn-lineage.js';
-import type { SpawnLineageDependencies } from '@/shared/spawn-lineage.js';
+import { findSpawningProviderSessionId } from '@/shared/index.js';
+import type { SpawnLineageDependencies } from '@/shared/index.js';
 
 /**
  * Resolves the app session that spawned a provider session the synchronizers
@@ -44,7 +44,7 @@ export function findSpawnParentForNewSession(
     }
 
     const parent = sessionsDb.getSessionByProviderSessionId(parentProviderSessionId);
-    if (!parent || parent.session_id === input.providerSessionId) {
+    if (!parent || parent.provider !== 'claude' || parent.session_id === input.providerSessionId) {
       return null;
     }
 

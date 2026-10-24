@@ -1621,3 +1621,17 @@ export type CliApplication = {
 export type SandboxCommandService = {
   execute(argumentsList: string[]): Promise<number>;
 };
+
+//----------------- SPAWN LINEAGE DETECTION ------------
+/** Every fs/process input the scanner needs, overridable for tests. */
+export type SpawnLineageDependencies = {
+  platform?: NodeJS.Platform;
+  procRoot?: string;
+  maxProcesses?: number;
+  maxFileDescriptorsPerProcess?: number;
+  readdirSync?: typeof import('node:fs').readdirSync;
+  readFileSync?: typeof import('node:fs').readFileSync;
+  readlinkSync?: typeof import('node:fs').readlinkSync;
+  statSync?: typeof import('node:fs').statSync;
+  getuid?: () => number;
+};

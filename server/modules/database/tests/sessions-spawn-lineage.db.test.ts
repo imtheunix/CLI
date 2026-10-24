@@ -79,3 +79,20 @@ test('getSessionsSpawnedBy lists a session\'s children, newest first, without ar
     assert.equal(sessionsDb.getSessionsSpawnedBy('child-newer').length, 0, 'a childless session lists nothing');
   });
 });
+
+
+test('upgrading a pre-lineage database twice preserves sessions and recorded parents', async () => {
+  await withIsolatedDatabase(async () => {
+    sessionsDb.createSession('existing', 'claude', '/repo/demo', 'Keep this name');
+    const db = getConnection();
+    db.exec('DROP INDEX idx_sessions_spawned_by');
+    db.exec('ALTER TABLE sessions DROP COLUMN spawned_by_session_id');
+    await initializeDatabase();
+    assert.equal(sessionsDb.getSessionById('existing')?.custom_name, 'Keep this name');
+    assert.equal(sessionsDb.getSessionById('existing')?.spawned_by_session_id, null);
+    sessionsDb.setSessionSpawnedBy('existing', 'parent');
+    await initializeDatabase();
+    assert.equal(sessionsDb.getSessionById('existing')?.spawned_by_session_id, 'parent');
+    assert.ok((db.prepare('PRAGMA index_list(sessions)').all() as Array<{ name: string }>).some((row) => row.name === 'idx_sessions_spawned_by'));
+  });
+});

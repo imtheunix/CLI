@@ -2,7 +2,8 @@ import assert from 'node:assert/strict';
 
 import { fireEvent, render } from '@testing-library/react';
 import React from 'react';
-import { MemoryRouter } from 'react-router-dom';
+import { createInstance } from 'i18next';
+import { MemoryRouter, useLocation } from 'react-router-dom';
 import { beforeEach, test, vi } from 'vitest';
 
 import type { Project, SessionWithProvider, SidebarProjectListProps } from '@/shared/types';
@@ -25,7 +26,12 @@ vi.mock('@/modules/sidebar/SessionOptions', () => ({
 
 const { default: SidebarSessionItem } = await import('@/modules/sidebar/SidebarSessionItem');
 
-const t = ((key: string) => key) as unknown as SidebarProjectListProps['t'];
+const i18n = createInstance();
+await i18n.init({ lng: 'pt', fallbackLng: 'en', resources: {}, initImmediate: false });
+const t = i18n.t as SidebarProjectListProps['t'];
+function Location() {
+  return <output data-testid="location">{useLocation().pathname}</output>;
+}
 const NOW = new Date('2026-10-24T10:00:00.000Z');
 const noop = () => {};
 
@@ -40,7 +46,7 @@ const SESSION = {
 } as unknown as SessionWithProvider;
 
 const renderRow = (session: SessionWithProvider, onSessionSelect = noop) => render(
-  React.createElement(MemoryRouter, null, React.createElement(SidebarSessionItem, {
+  React.createElement(MemoryRouter, null, React.createElement(Location), React.createElement(SidebarSessionItem, {
     project: PROJECT,
     session,
     selectedSession: null,
@@ -77,6 +83,7 @@ test('a spawned session says where it came from and opens the parent on tap', ()
   assert.ok(spawnedLine, 'the row shows the spawned-from line with the parent name');
 
   fireEvent.click(spawnedLine!);
+  assert.equal(container.querySelector('[data-testid="location"]')?.textContent, '/session/parent-1');
   assert.equal(onSessionSelect.mock.calls.length, 0, 'the tap opens the parent, not the row itself');
   assert.ok(
     container.textContent!.includes('Codex audit run'),
@@ -97,6 +104,7 @@ test('the spawned-from line shows for the compact layout too', () => {
   // The compact row opens the session on any tap on the card itself; the line
   // must stop that so only the parent opens.
   fireEvent.click(spawnedLine!);
+  assert.equal(container.querySelector('[data-testid="location"]')?.textContent, '/session/parent-1');
   assert.equal(onSessionSelect.mock.calls.length, 0);
 });
 

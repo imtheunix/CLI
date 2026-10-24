@@ -1,11 +1,12 @@
+import { useTranslation } from 'react-i18next';
 import { useEffect, useMemo, useState } from 'react';
 import { Check, ChevronRight, Loader2, Workflow } from 'lucide-react';
+import type { TFunction } from 'i18next';
 
 import { LLMProviderLogo } from '@/shared/ui';
 import { useDeviceSettings } from '@/shared/hooks/useDeviceSettings';
-import type { ChatMessage, SpawnedSessionChild } from '@/shared/types';
+import type { ChatMessage, SpawnedSessionChild, SessionChecklistTodo } from '@/shared/types';
 import { deriveSessionChecklist } from '@/modules/chat/utils/sessionChecklist';
-import type { SessionChecklistTodo } from '@/modules/chat/utils/sessionChecklist';
 
 type SessionChecklistProps = {
   messages: ChatMessage[];
@@ -36,12 +37,12 @@ function readStoredExpanded(sessionId: string | null, fallback: boolean): boolea
 }
 
 /** The collapsed strip's one-line summary: how far along, what is in flight, what else runs. */
-function summarize(todos: SessionChecklistTodo[]): string {
+function summarize(todos: SessionChecklistTodo[], t: TFunction): string {
   const active = todos.find((todo) => todo.status === 'in_progress');
   if (active) {
     return active.activeForm || active.content;
   }
-  return todos.every((todo) => todo.status === 'completed') ? 'Done' : todos[0]?.content ?? '';
+  return todos.every((todo) => todo.status === 'completed') ? t('sessionChecklist.done', { defaultValue: 'Done' }) : todos[0]?.content ?? '';
 }
 
 /** Text treatment per checklist status: done rows read as finished, the active one stands out. */
@@ -66,6 +67,7 @@ export default function SessionChecklist({
   onOpenSession,
   onRefreshSpawnedSessions,
 }: SessionChecklistProps) {
+  const { t } = useTranslation('chat');
   // Collapsed by default on phones: the strip must not crowd the composer.
   const { isMobile } = useDeviceSettings({ trackPWA: false });
   // The open/closed choice is the user's per session, so it survives reloads
@@ -104,15 +106,15 @@ export default function SessionChecklist({
   }
 
   const doneCount = todos.filter((todo) => todo.status === 'completed').length;
-  const headline = todos.length > 0 ? `${doneCount}/${todos.length} · ${summarize(todos)}` : 'Checklist';
-  const runningSuffix = running.length > 0 ? ` · ${running.length} running` : '';
+  const headline = todos.length > 0 ? `${doneCount}/${todos.length} · ${summarize(todos, t)}` : t('sessionChecklist.title', { defaultValue: 'Checklist' });
+  const runningSuffix = running.length > 0 ? ` · ${t('sessionChecklist.runningCount', { count: running.length, defaultValue: '{{count}} running' })}` : '';
 
   const toggle = () => setExpanded((previous) => !previous);
 
   return (
     <section
-      aria-label="Session checklist"
-      className="mx-auto mb-2 max-w-[54.25rem] rounded-lg border bg-card p-2 text-[15px] sm:text-sm"
+      aria-label={t('sessionChecklist.label', { defaultValue: 'Session checklist' })}
+      className="mx-auto mb-2 w-full min-w-0 max-w-[54.25rem] rounded-lg border bg-card p-2 text-[15px] sm:text-sm"
     >
       <button
         type="button"
@@ -124,17 +126,17 @@ export default function SessionChecklist({
           className={`h-4 w-4 shrink-0 text-muted-foreground transition-transform ${expanded ? 'rotate-90' : ''}`}
           aria-hidden="true"
         />
-        <span className="shrink-0 font-medium tabular-nums text-foreground">{headline}</span>
+        <span className="min-w-0 flex-1 truncate font-medium tabular-nums text-foreground">{headline}</span>
         {runningSuffix && (
-          <span className="min-w-0 flex-1 truncate text-primary">{runningSuffix}</span>
+          <span className="shrink-0 text-primary">{runningSuffix}</span>
         )}
       </button>
 
       {expanded && (
-        <div className="max-h-72 overflow-y-auto">
+        <div className="max-h-72 overflow-y-auto overflow-x-hidden">
           <ul>
-            {todos.map((todo) => (
-              <li key={todo.content}>
+            {todos.map((todo, index) => (
+              <li key={`${todo.content}-${index}`}>
                 <button
                   type="button"
                   onClick={() => revealMessage(todo.message)}
@@ -147,7 +149,7 @@ export default function SessionChecklist({
                   ) : (
                     <span className="h-2 w-2 shrink-0 rounded-full border border-muted-foreground/60" aria-hidden="true" />
                   )}
-                  <span className={`min-w-0 flex-1 leading-snug ${todoTextClass(todo.status)}`}>
+                  <span className={`min-w-0 flex-1 break-words leading-snug [overflow-wrap:anywhere] ${todoTextClass(todo.status)}`}>
                     {todo.content}
                   </span>
                 </button>
@@ -157,10 +159,10 @@ export default function SessionChecklist({
 
           {running.length > 0 && (
             <div className="mt-1 border-t border-border/40 pt-1">
-              <p className="px-2 pb-0.5 pt-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">Running</p>
+              <p className="px-2 pb-0.5 pt-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">{t('sessionChecklist.running', { defaultValue: 'Running' })}</p>
               <ul>
-                {running.map((entry) => (
-                  <li key={`${entry.kind}-${entry.label}`}>
+                {running.map((entry, index) => (
+                  <li key={entry.message.toolId ?? `${entry.kind}-${index}`}>
                     <button
                       type="button"
                       onClick={() => revealMessage(entry.message)}
@@ -182,7 +184,7 @@ export default function SessionChecklist({
           {spawnedList.length > 0 && (
             <div className="mt-1 border-t border-border/40 pt-1">
               <p className="px-2 pb-0.5 pt-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                Spawned sessions ({spawnedList.length})
+                {t('sessionChecklist.spawned', { count: spawnedList.length, defaultValue: 'Spawned sessions ({{count}})' })}
               </p>
               <ul>
                 {spawnedList.map((child) => (

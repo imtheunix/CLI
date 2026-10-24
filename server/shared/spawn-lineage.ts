@@ -1,6 +1,8 @@
 import { readdirSync, readFileSync, readlinkSync, statSync } from 'node:fs';
 import type { Dirent } from 'node:fs';
 
+import type { SpawnLineageDependencies } from './types.js';
+
 /**
  * Spawn-lineage detection for sessions discovered on disk.
  *
@@ -23,18 +25,6 @@ const DEFAULT_MAX_FDS_PER_PROCESS = 1024;
 
 const ENVIRONMENT_VARIABLE_NAME = 'CLAUDE_CODE_SESSION_ID';
 
-/** Every fs/process input the scanner needs, overridable for tests. */
-export type SpawnLineageDependencies = {
-  platform?: NodeJS.Platform;
-  procRoot?: string;
-  maxProcesses?: number;
-  maxFileDescriptorsPerProcess?: number;
-  readdirSync?: typeof readdirSync;
-  readFileSync?: typeof readFileSync;
-  readlinkSync?: typeof readlinkSync;
-  statSync?: typeof statSync;
-  getuid?: () => number;
-};
 
 function readClaudeCodeSessionId(
   environPath: string,
@@ -117,10 +107,20 @@ export function findSpawningProviderSessionId(
             break;
           }
           fdsScanned += 1;
-          // readlink is the cheap check: it resolves one symlink and nothing else.
-          if (readlink(`${fdRoot}/${fd.name}`) === transcriptPath) {
-            holdsTranscript = true;
-            break;
+          try {
+            // Readers (including our own transcript loader) do not establish
+            // lineage. Linux fdinfo flags are octal; access mode 1/2 writes.
+            if (readlink(`${fdRoot}/${fd.name}`) !== transcriptPath) {
+              continue;
+            }
+            const info = readFile(`${pidRoot}/fdinfo/${fd.name}`).toString();
+            const flags = /^flags:\s*([0-7]+)$/m.exec(info)?.[1];
+            if (flags && (Number.parseInt(flags, 8) & 3) !== 0) {
+              holdsTranscript = true;
+              break;
+            }
+          } catch {
+            // One closing fd must not hide the writer's other descriptors.
           }
         }
         if (!holdsTranscript) {
