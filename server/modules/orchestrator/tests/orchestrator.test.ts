@@ -253,6 +253,22 @@ test('a session waiting for an answer keeps its slot; only `done` with committed
   });
 });
 
+test("a JavaScript job's linked node_modules does not leave its worktree dirty", async () => {
+  await withWorkspace(async ({ repo, jobs, job }) => {
+    commitFile(repo, 'package.json', '{}', 'package');
+    commitFile(repo, 'package-lock.json', '{}', 'lockfile');
+    commitFile(repo, '.gitignore', 'node_modules/\n', 'ignore');
+    git(repo, 'push', '-q', 'origin', 'HEAD:main');
+    await mkdir(path.join(repo, 'node_modules'));
+
+    const created = await jobs.create({ title: 'js', prompt: 'p', repoPath: repo, backend: null, baseBranch: null });
+    await eventually(() => job(created.id).state === 'active', 'start');
+    const worktree = job(created.id).worktree_path;
+    assert.ok(existsSync(path.join(worktree, 'node_modules')));
+    assert.equal(git(worktree, 'status', '--porcelain'), '');
+  });
+});
+
 test('after a restart, a job that was mid-turn is told to continue', async () => {
   await withWorkspace(async ({ repo, runtime, jobs, job }) => {
     const created = await jobs.create({ title: 'long', prompt: 'p', repoPath: repo, backend: 'glm', baseBranch: null });

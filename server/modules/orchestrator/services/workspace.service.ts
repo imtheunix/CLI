@@ -94,10 +94,26 @@ async function linkNodeModules(repoPath: string, worktreePath: string): Promise<
   ]);
   if (existsSync(source) && ours !== null && ours === theirs) {
     await fs.symlink(source, target, 'dir');
+    await excludeFromGit(worktreePath, '/node_modules');
     return;
   }
   const install = await runCommand('npm', ['ci', '--no-audit', '--no-fund'], { cwd: worktreePath, timeoutMs: 15 * 60_000 });
   if (install.code !== 0) throw new Error(`npm ci failed: ${tail(install.stderr, 20)}`);
+}
+
+/**
+ * A `node_modules/` ignore rule does not match a symlink, so the linked
+ * dependencies would leave every job's worktree dirty (and `tjob done`
+ * refused). The repository's own `info/exclude` keeps them out of `git status`.
+ */
+async function excludeFromGit(worktreePath: string, pattern: string): Promise<void> {
+  const commonDir = await git(worktreePath, 'rev-parse', '--path-format=absolute', '--git-common-dir');
+  if (commonDir.code !== 0) return;
+  const exclude = path.join(commonDir.stdout.trim(), 'info', 'exclude');
+  const current = await fs.readFile(exclude, 'utf8').catch(() => '');
+  if (current.split('\n').includes(pattern)) return;
+  await fs.mkdir(path.dirname(exclude), { recursive: true });
+  await fs.appendFile(exclude, `${current && !current.endsWith('\n') ? '\n' : ''}${pattern}\n`);
 }
 
 /**
