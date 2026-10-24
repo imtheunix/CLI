@@ -574,6 +574,10 @@ export default function SidebarContent({
                                       ? session.created_at
                                       : null,
                               isProjectArchived: true,
+                              spawnedBySessionId:
+                                typeof session.spawnedBySessionId === 'string' && session.spawnedBySessionId
+                                  ? session.spawnedBySessionId
+                                  : null,
                             })}
                           >
                             <span className="flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-md bg-background/70">

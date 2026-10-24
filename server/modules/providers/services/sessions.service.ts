@@ -61,17 +61,28 @@ type ArchivedSessionListItem = {
   updatedAt: string | null;
   lastActivity: string | null;
   isProjectArchived: boolean;
+  /** The app session this one was spawned from, when the backend recorded one. */
+  spawnedBySessionId: string | null;
 };
 
 type RecentSessionListItem = Pick<
   ArchivedSessionListItem,
-  'sessionId' | 'provider' | 'projectId' | 'projectDisplayName' | 'sessionTitle' | 'lastActivity'
+  'sessionId' | 'provider' | 'projectId' | 'projectDisplayName' | 'sessionTitle' | 'lastActivity' | 'spawnedBySessionId'
 >;
 
 type RecentSessionsPage = {
   conversations: RecentSessionListItem[];
   total: number;
   hasMore: boolean;
+};
+
+/** One session spawned from another session's shell, as the detail API lists a session's children. */
+type SpawnedSessionChild = {
+  sessionId: string;
+  provider: LLMProvider;
+  name: string;
+  lastActivity: string | null;
+  running: boolean;
 };
 
 type SessionDetails = {
@@ -83,6 +94,10 @@ type SessionDetails = {
   updatedAt: string | null;
   lastActivity: string | null;
   isArchived: boolean;
+  /** The app session this one was spawned from (a CLI run started inside another session's shell); null when unrecorded. */
+  spawnedBySessionId: string | null;
+  /** The sessions this one spawned from its shell, newest first. */
+  spawnedSessions: SpawnedSessionChild[];
   project: {
     projectId: string;
     path: string;
@@ -235,6 +250,7 @@ export const sessionsService = {
         projectDisplayName: resolveProjectDisplayName(projectPath, project?.custom_project_name),
         sessionTitle: session.custom_name?.trim() || session.session_id,
         lastActivity: session.updated_at ?? session.created_at ?? null,
+        spawnedBySessionId: session.spawned_by_session_id ?? null,
       };
     });
 
@@ -591,14 +607,17 @@ export const sessionsService = {
 
   /**
    * Resolves one session (by app id, falling back to the provider-native id)
-   * to its metadata plus the owning project.
+   * to its metadata plus the owning project, its spawn parent and the
+   * sessions it spawned.
    *
    * This backs deep links like `/session/:sessionId`: the frontend's paginated
    * project payloads only carry each project's first session page, so a
    * session opened directly by URL may not be present client-side at all —
-   * this lookup is the authoritative way to learn which project owns it.
+   * this lookup is the authoritative way to learn which project owns it. The
+   * spawned children carry a running flag so the panel listing them can say
+   * which are still at work without a second request.
    */
-  getSessionDetailsById(sessionId: string): SessionDetails {
+  async getSessionDetailsById(sessionId: string): Promise<SessionDetails> {
     const session =
       sessionsDb.getSessionById(sessionId) ?? sessionsDb.getSessionByProviderSessionId(sessionId);
     if (!session) {
@@ -611,6 +630,22 @@ export const sessionsService = {
     const projectPath = session.project_path?.trim() ? session.project_path : null;
     const project = projectPath ? projectsDb.getProjectPath(projectPath) : null;
 
+    // "Running" merges the same sources as the running-sessions poll: an
+    // in-app run, background work that outlived the turn, or a Claude CLI
+    // turn driven outside the app.
+    const runningSessionIds = new Set(
+      (await this.listRunningSessions()).map((entry) => entry.sessionId),
+    );
+    const spawnedSessions: SpawnedSessionChild[] = sessionsDb
+      .getSessionsSpawnedBy(session.session_id)
+      .map((child) => ({
+        sessionId: child.session_id,
+        provider: child.provider as LLMProvider,
+        name: child.custom_name?.trim() || child.session_id,
+        lastActivity: child.updated_at ?? child.created_at ?? null,
+        running: runningSessionIds.has(child.session_id),
+      }));
+
     return {
       sessionId: session.session_id,
       provider: session.provider as LLMProvider,
@@ -619,6 +654,8 @@ export const sessionsService = {
       updatedAt: session.updated_at ?? null,
       lastActivity: session.updated_at ?? session.created_at ?? null,
       isArchived: Boolean(session.isArchived),
+      spawnedBySessionId: session.spawned_by_session_id ?? null,
+      spawnedSessions,
       project: project && projectPath
         ? {
             projectId: project.project_id,
@@ -662,6 +699,7 @@ export const sessionsService = {
         updatedAt: session.updated_at ?? null,
         lastActivity: session.updated_at ?? session.created_at ?? null,
         isProjectArchived: Boolean(project?.isArchived),
+        spawnedBySessionId: session.spawned_by_session_id ?? null,
       };
     });
   },

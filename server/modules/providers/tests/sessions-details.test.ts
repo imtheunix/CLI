@@ -31,18 +31,20 @@ async function withIsolatedDatabase(runTest: () => void | Promise<void>): Promis
 }
 
 test('getSessionDetailsById resolves the owning project for a disk-indexed session', async () => {
-  await withIsolatedDatabase(() => {
+  await withIsolatedDatabase(async () => {
     const projectPath = '/home/user/example-project';
     const sessionId = sessionsDb.createSession('provider-abc', 'claude', projectPath, 'My session');
     const projectRow = projectsDb.getProjectPath(projectPath);
     assert.ok(projectRow, 'project row should exist after createSession');
 
-    const details = sessionsService.getSessionDetailsById(sessionId);
+    const details = await sessionsService.getSessionDetailsById(sessionId);
 
     assert.equal(details.sessionId, sessionId);
     assert.equal(details.provider, 'claude');
     assert.equal(details.summary, 'My session');
     assert.equal(details.isArchived, false);
+    assert.equal(details.spawnedBySessionId, null);
+    assert.deepEqual(details.spawnedSessions, []);
     assert.ok(details.project, 'project should be resolved');
     assert.equal(details.project?.projectId, projectRow?.project_id);
     // Paths are normalized to platform separators when stored.
@@ -51,21 +53,43 @@ test('getSessionDetailsById resolves the owning project for a disk-indexed sessi
 });
 
 test('getSessionDetailsById falls back to the provider-native id and returns the canonical app id', async () => {
-  await withIsolatedDatabase(() => {
+  await withIsolatedDatabase(async () => {
     const projectPath = '/home/user/alias-project';
     const appSessionId = sessionsDb.createAppSession('app-session-1', 'claude', projectPath);
     sessionsDb.assignProviderSessionId(appSessionId, 'provider-native-1');
 
-    const details = sessionsService.getSessionDetailsById('provider-native-1');
+    const details = await sessionsService.getSessionDetailsById('provider-native-1');
 
     assert.equal(details.sessionId, appSessionId);
     assert.equal(details.project?.fullPath, normalizeProjectPath(projectPath));
   });
 });
 
+test('getSessionDetailsById lists the sessions this one spawned, newest first, with a running flag', async () => {
+  await withIsolatedDatabase(async () => {
+    const projectPath = '/home/user/spawn-project';
+    const parent = sessionsDb.createSession('parent-provider', 'claude', projectPath, 'Parent');
+    sessionsDb.createSession('spawn-older', 'codex', projectPath, 'Older spawn', '2026-10-20T10:00:00Z', '2026-10-20T10:05:00Z');
+    sessionsDb.createSession('spawn-newer', 'codex', projectPath, 'Newer spawn', '2026-10-24T10:00:00Z', '2026-10-24T10:05:00Z');
+    sessionsDb.setSessionSpawnedBy('spawn-older', parent);
+    sessionsDb.setSessionSpawnedBy('spawn-newer', parent);
+
+    const details = await sessionsService.getSessionDetailsById(parent);
+
+    assert.equal(details.spawnedBySessionId, null, 'the parent itself was not spawned');
+    assert.deepEqual(
+      details.spawnedSessions.map((child) => [child.sessionId, child.name, child.provider, child.running]),
+      [
+        ['spawn-newer', 'Newer spawn', 'codex', false],
+        ['spawn-older', 'Older spawn', 'codex', false],
+      ],
+    );
+  });
+});
+
 test('getSessionDetailsById throws SESSION_NOT_FOUND for unknown ids', async () => {
-  await withIsolatedDatabase(() => {
-    assert.throws(
+  await withIsolatedDatabase(async () => {
+    await assert.rejects(
       () => sessionsService.getSessionDetailsById('does-not-exist'),
       (error: unknown) => error instanceof AppError && error.code === 'SESSION_NOT_FOUND',
     );

@@ -14,7 +14,7 @@ import { PaperclipIcon, MessageSquareIcon, XIcon, Loader2, ArrowUpIcon, PencilIc
 
 import { useVoiceInput } from '@/modules/chat/hooks/useVoiceInput';
 import { useVoiceAvailable } from '@/modules/chat/hooks/useVoiceAvailable';
-import type { BackgroundSendChoice, BackgroundSendPrompt, QueuedDraft, ScheduledMessage, SlashCommand,SessionActivity,PendingPermissionRequest,PermissionMode,ProviderModelOption } from '@/shared/types';
+import type { BackgroundSendChoice, BackgroundSendPrompt, ChatMessage, QueuedDraft, ScheduledMessage, SlashCommand,SessionActivity,PendingPermissionRequest,PermissionMode,ProviderModelOption,SpawnedSessionChild } from '@/shared/types';
 import {
   PromptInput,
   PromptInputHeader,
@@ -31,6 +31,7 @@ import ComposerAttachment from '@/modules/chat/composer/ComposerAttachment';
 import VoiceInputButton from '@/modules/chat/composer/VoiceInputButton';
 import PermissionRequestsBanner from '@/modules/chat/composer/PermissionRequestsBanner';
 import TokenUsageSummary from '@/modules/chat/composer/TokenUsageSummary';
+import SessionChecklist from '@/modules/chat/composer/SessionChecklist';
 import QueuedMessageList from '@/modules/chat/composer/QueuedMessageList';
 import BackgroundSendDialog from '@/modules/chat/composer/BackgroundSendDialog';
 import { ScheduleMessagePopover } from '@/modules/chat/composer/ScheduleMessagePopover';
@@ -78,6 +79,16 @@ type ChatComposerProps = {
   isDragActive: boolean;
   queuedDraft: QueuedDraft | null;
   queueScope?: string | null;
+  /** Transcript rows the checklist strip above the queue derives the session's plan from. */
+  chatMessages: ChatMessage[];
+  /** Scrolls the transcript to one row, for checklist/running entries tapped in the strip. */
+  onRevealMessage: (message: ChatMessage) => void;
+  /** Sessions spawned from the open one, listed in the checklist strip's expanded view. */
+  spawnedSessions: SpawnedSessionChild[];
+  /** Opens a spawned session by id when its row is tapped. */
+  onOpenSpawnedSession: (sessionId: string) => void;
+  /** Re-reads the spawned list when the checklist strip expands. */
+  onRefreshSpawnedSessions: () => void;
   backgroundSendPrompt: BackgroundSendPrompt | null;
   onResolveBackgroundSendPrompt: (choice: BackgroundSendChoice) => void;
   /** Set while the composer is replacing an already-sent message. */
@@ -159,6 +170,11 @@ export default function ChatComposer({
   isDragActive,
   queuedDraft,
   queueScope,
+  chatMessages,
+  onRevealMessage,
+  spawnedSessions,
+  onOpenSpawnedSession,
+  onRefreshSpawnedSessions,
   backgroundSendPrompt,
   onResolveBackgroundSendPrompt,
   isEditingSentMessage,
@@ -359,6 +375,15 @@ export default function ChatComposer({
       <BackgroundSendDialog
         prompt={backgroundSendPrompt}
         onResolve={onResolveBackgroundSendPrompt}
+      />
+
+      <SessionChecklist
+        messages={chatMessages}
+        revealMessage={onRevealMessage}
+        sessionId={queueScope ?? null}
+        spawnedSessions={spawnedSessions}
+        onOpenSession={onOpenSpawnedSession}
+        onRefreshSpawnedSessions={onRefreshSpawnedSessions}
       />
 
       {queueScope && <QueuedMessageList scope={queueScope} busy={isLoading} />}

@@ -1,4 +1,5 @@
 import { memo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import type { KeyboardEvent } from 'react';
 import { Check, CheckSquare, Edit2, Loader2, MoreHorizontal, Square, Trash2, X } from 'lucide-react';
 import type { TFunction } from 'i18next';
@@ -65,11 +66,26 @@ function SidebarSessionItem({
   onToggleSessionSelected,
   t,
 }: SidebarSessionItemProps) {
+  const navigate = useNavigate();
   const isCompact = useCompactSidebar();
   const sessionView = createSessionViewModel(session, currentTime, t);
   const isSelected = selectedSession?.id === session.id;
   const compactSessionAge = formatCompactAge(sessionView.sessionTime, currentTime);
   const [isMobileOptionsOpen, setIsMobileOptionsOpen] = useState(false);
+  // A session spawned from another session's shell shows where it came from;
+  // tapping the line opens that parent (deep-link route resolves its project).
+  const spawnedByName = typeof session.spawnedByName === 'string' && session.spawnedByName.trim()
+    ? session.spawnedByName
+    : null;
+  const spawnedFromSessionId = typeof session.spawnedBySessionId === 'string' && session.spawnedBySessionId
+    ? session.spawnedBySessionId
+    : null;
+  const spawnedFromLabel = spawnedFromSessionId
+    ? `↳ from ${spawnedByName ?? 'another session'}`
+    : null;
+  const openSpawnedFromParent = () => {
+    navigate(`/session/${spawnedFromSessionId}`);
+  };
   const showAttentionIndicator = needsAttention && !isSelected;
   // Background work takes the recent-activity dot's place: the session is
   // still doing something, which says more than that it was touched lately.
@@ -226,6 +242,18 @@ function SidebarSessionItem({
                   </Badge>
                 )}
               </div>
+              {spawnedFromLabel && (
+                <button
+                  type="button"
+                  className="-ml-1 mt-0.5 flex min-h-11 items-center gap-1 self-start rounded-md px-1 text-[15px] leading-tight text-muted-foreground transition-colors active:bg-muted"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    openSpawnedFromParent();
+                  }}
+                >
+                  {spawnedFromLabel}
+                </button>
+              )}
             </div>
 
             {!isSelecting && (
@@ -458,6 +486,30 @@ function SidebarSessionItem({
               <div className="mt-0.5 flex items-center">
                 {sessionView.messageCount > 0 && <Badge variant="secondary" className="px-1 py-0 text-xs">{sessionView.messageCount}</Badge>}
               </div>
+              {spawnedFromLabel && (
+                // A span, not a button: interactive content cannot nest inside
+                // the row anchor. Clicks are intercepted so only the parent
+                // session opens, never the row's own navigation.
+                <span
+                  role="button"
+                  tabIndex={0}
+                  className="mt-0.5 block cursor-pointer truncate text-[11px] leading-tight text-muted-foreground transition-colors hover:text-foreground"
+                  onClick={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    openSpawnedFromParent();
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter' || event.key === ' ') {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      openSpawnedFromParent();
+                    }
+                  }}
+                >
+                  {spawnedFromLabel}
+                </span>
+              )}
             </div>
           </div>
         </a>

@@ -13,6 +13,10 @@ type SessionSummary = {
   summary: string;
   messageCount: number;
   lastActivity: string;
+  /** The app session this one was spawned from (a CLI run started inside another session's shell), when recorded at discovery. */
+  spawnedBySessionId: string | null;
+  /** That parent's display name, resolved here so a sidebar row can say "↳ from <name>" without a follow-up request. */
+  spawnedByName: string | null;
 };
 
 type SessionRepositoryRow = {
@@ -21,6 +25,7 @@ type SessionRepositoryRow = {
   custom_name?: string | null;
   updated_at?: string | null;
   created_at?: string | null;
+  spawned_by_session_id?: string | null;
 };
 
 export type ProjectListItem = {
@@ -117,21 +122,44 @@ function normalizeSessionPagination(options: SessionPaginationOptions = {}): { l
   };
 }
 
-function mapSessionRowToSummary(row: SessionRepositoryRow): SessionSummary {
+/**
+ * Resolves spawn-parent display names for one read, caching by parent id so a
+ * page of rows costs at most one query per distinct parent (only spawned
+ * sessions ask at all).
+ */
+function createSpawnParentNameResolver(): (parentSessionId: string) => string | null {
+  const namesBySessionId = new Map<string, string | null>();
+  return (parentSessionId: string) => {
+    if (!namesBySessionId.has(parentSessionId)) {
+      const parent = sessionsDb.getSessionById(parentSessionId);
+      namesBySessionId.set(parentSessionId, parent?.custom_name?.trim() || null);
+    }
+    return namesBySessionId.get(parentSessionId) ?? null;
+  };
+}
+
+function mapSessionRowToSummary(
+  row: SessionRepositoryRow,
+  resolveSpawnParentName: (parentSessionId: string) => string | null,
+): SessionSummary {
+  const spawnedBySessionId = row.spawned_by_session_id ?? null;
   return {
     id: row.session_id,
     provider: row.provider,
     summary: row.custom_name || '',
     messageCount: 0,
     lastActivity: row.updated_at ?? row.created_at ?? new Date().toISOString(),
+    spawnedBySessionId,
+    spawnedByName: spawnedBySessionId ? resolveSpawnParentName(spawnedBySessionId) : null,
   };
 }
 
 function readProjectSessionsIncludingArchived(projectPath: string): ProjectSessionsPageResult {
   const rows = sessionsDb.getSessionsByProjectPathIncludingArchived(projectPath) as SessionRepositoryRow[];
+  const resolveSpawnParentName = createSpawnParentNameResolver();
 
   return {
-    sessions: rows.map(mapSessionRowToSummary),
+    sessions: rows.map((row) => mapSessionRowToSummary(row, resolveSpawnParentName)),
     total: rows.length,
     hasMore: false,
   };
@@ -151,9 +179,10 @@ function readProjectSessionsPageByPath(
     pagination.offset,
   ) as SessionRepositoryRow[];
   const total = sessionsDb.countSessionsByProjectPath(projectPath);
+  const resolveSpawnParentName = createSpawnParentNameResolver();
 
   return {
-    sessions: rows.map(mapSessionRowToSummary),
+    sessions: rows.map((row) => mapSessionRowToSummary(row, resolveSpawnParentName)),
     total,
     hasMore: pagination.offset + rows.length < total,
   };
