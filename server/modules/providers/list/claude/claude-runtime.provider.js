@@ -37,6 +37,7 @@ import {
   notifyUserIfEnabled
 } from '@/modules/notifications/index.js';
 import { sessionHistoryCache } from '@/modules/providers/services/session-history-cache.service.js';
+import { rememberClaudeRateLimit } from '@/modules/providers/services/claude-plan-usage.service.js';
 import {
   getReportedClaudeContextWindow,
   rememberClaudeContextWindow
@@ -1423,6 +1424,11 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
         sawTaskEventThisTurn = true;
       }
       backgroundWork.apply(sessionKey(), message);
+
+      // The SDK's rate_limit_event messages keep the plan-usage snapshot (the
+      // one Claude Code's status line used to write while sessions ran in a
+      // terminal) fresh; the fold is fire-and-forget and never breaks the run.
+      rememberClaudeRateLimit(message);
 
       // A task the user stopped gets no follow-up turn from the CLI — only its
       // `stopped` notification — so when that was the last outstanding task
