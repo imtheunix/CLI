@@ -32,6 +32,7 @@ import VoiceInputButton from '@/modules/chat/composer/VoiceInputButton';
 import PermissionRequestsBanner from '@/modules/chat/composer/PermissionRequestsBanner';
 import TokenUsageSummary from '@/modules/chat/composer/TokenUsageSummary';
 import QueuedMessageList from '@/modules/chat/composer/QueuedMessageList';
+import SendToLoadBalancerButton from '@/modules/chat/composer/SendToLoadBalancerButton';
 import BackgroundSendDialog from '@/modules/chat/composer/BackgroundSendDialog';
 import { ScheduleMessagePopover } from '@/modules/chat/composer/ScheduleMessagePopover';
 import { ScheduledMessageList } from '@/modules/chat/composer/ScheduledMessageList';
@@ -522,6 +523,18 @@ export default function ChatComposer({
                 disabled={!input.trim()}
                 onSchedule={onScheduleMessage}
               />
+
+              {/* Stays mounted while empty, so its "sent as job …" note outlives the cleared input. */}
+              {queueScope && (
+                <SendToLoadBalancerButton
+                  compact
+                  sessionId={queueScope}
+                  content={input}
+                  disabled={attachedFiles.length > 0}
+                  disabledReason="Messages with attached files stay with this session"
+                  onSent={onClearInput}
+                />
+              )}
 
               <ComposerModelMenu
                 effort={effort}

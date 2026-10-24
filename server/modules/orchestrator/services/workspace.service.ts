@@ -100,6 +100,16 @@ async function linkNodeModules(repoPath: string, worktreePath: string): Promise<
   if (install.code !== 0) throw new Error(`npm ci failed: ${tail(install.stderr, 20)}`);
 }
 
+/**
+ * Used by the jobs service when a session's message goes to the load
+ * balancer: the main checkout behind a folder, also when that folder is
+ * itself a worktree (a job's). Null when it is not in a git repository.
+ */
+export async function resolveMainCheckout(folder: string): Promise<string | null> {
+  const result = await git(folder, 'rev-parse', '--path-format=absolute', '--git-common-dir');
+  return result.code === 0 ? path.dirname(result.stdout.trim()) : null;
+}
+
 /** Used by the jobs and CI/CD queue services: the commit a ref points at, or null. */
 export async function revParse(cwd: string, ref: string): Promise<string | null> {
   const result = await git(cwd, 'rev-parse', '--verify', '--quiet', ref);

@@ -71,6 +71,16 @@ export function createOrchestratorRouter(services: {
     res.status(201).json(createApiSuccessResponse({ job }));
   }));
 
+  router.post('/from-session', asyncHandler(async (req, res) => {
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const job = await services.jobs.createFromSession({
+      sessionId: readString(body.sessionId, 'sessionId', true),
+      content: readString(body.content, 'content', true),
+      backend: readBackend(body.backend),
+    });
+    res.status(201).json(createApiSuccessResponse({ job }));
+  }));
+
   router.get('/:id', asyncHandler(async (req, res) => {
     const job = services.jobs.get(String(req.params.id));
     if (!job) throw new AppError('Job not found', { code: 'JOB_NOT_FOUND', statusCode: 404 });

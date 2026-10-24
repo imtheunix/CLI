@@ -28,6 +28,10 @@ Caps, models and the rest can be overridden in `~/.config/cli/orchestrator.json`
 
 A failing check, conflicts the resolver left, or a refused push go back to the agent as a message in its session; it fixes, commits and runs `tjob done` again. A failed deploy **blocks** the job (`tjob retry <id>` after rerunning it in Forgejo). Every step is recorded before it runs, so a restart of the CLI server, or another job's deploy, resumes each job at its step. A job that was mid-turn when the server restarted is told to continue.
 
+## From a session: wait, or send to the load balancer
+
+While a session is busy, a message can still wait for it (the queue), or go to the load balancer instead: the shuffle button in the composer (the message being written) and **To load balancer** on each queued message. The message becomes a job in the repository the session works in (its main checkout, also when the session is itself a job), on whichever backend is least busy, and the composer says which. Messages with attached files stay with their session.
+
 ## `tjob`
 
 ```

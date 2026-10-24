@@ -20,6 +20,7 @@ import {
   isDirty,
   prepareWorktree,
   resolveBaseBranch,
+  resolveMainCheckout,
 } from './workspace.service.js';
 
 /** Jobs that hold a backend's slot: being set up, or with an agent on them (working or waiting for an answer). */
@@ -199,6 +200,32 @@ export function createJobsService(deps: {
       });
       await this.tick();
       return view(orchestratorJobsDb.get(job.id) ?? job);
+    },
+
+    /**
+     * "Send to load balancer" from a session's composer or queue: the message
+     * becomes a job in the repository the session works in (its main
+     * checkout), instead of waiting for that session.
+     */
+    async createFromSession(input: { sessionId: string; content: string; backend: OrchestratorBackend | null }): Promise<OrchestratorJobView> {
+      const session = sessionsDb.getSessionById(input.sessionId) as { project_path?: string | null; custom_name?: string | null } | null;
+      if (!session?.project_path) {
+        throw new AppError(`Session ${input.sessionId} was not found`, { code: 'SESSION_NOT_FOUND', statusCode: 404 });
+      }
+      const repoPath = await resolveMainCheckout(session.project_path);
+      if (!repoPath) {
+        throw new AppError(`${session.project_path} is not a git repository`, { code: 'NOT_A_REPOSITORY', statusCode: 400 });
+      }
+      const firstLine = input.content.trim().split('\n').find((line) => line.trim())?.trim() ?? 'Job';
+      const title = firstLine.length > 60 ? `${firstLine.slice(0, 57)}…` : firstLine;
+      const origin = session.custom_name ? ` "${session.custom_name}"` : '';
+      return this.create({
+        title,
+        prompt: `${input.content.trim()}\n\n(Sent to the load balancer from the session${origin}, working in ${session.project_path}.)`,
+        repoPath,
+        backend: input.backend,
+        baseBranch: null,
+      });
     },
 
     /**

@@ -201,6 +201,13 @@ export const api = {
     list: () => authenticatedFetch('/api/background-jobs'),
     detail: (id: string) => authenticatedFetch(`/api/background-jobs/${encodeURIComponent(id)}`),
   },
+  orchestrator: {
+    // A session's message becomes a job on the least busy of Claude, GPT and GLM.
+    sendFromSession: (sessionId: string, content: string) => authenticatedFetch('/api/orchestrator/from-session', {
+      method: 'POST',
+      body: JSON.stringify({ sessionId, content }),
+    }),
+  },
   // Auth endpoints (no token required)
   auth: {
     status: () => fetch('/api/auth/status'),

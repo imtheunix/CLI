@@ -361,3 +361,24 @@ test('one job at a time per repository goes from rebase to push', async () => {
     assert.ok(existsSync(path.join(ctx.upstream, 'b.txt')));
   });
 });
+
+test('a message from a session goes to the load balancer as a job in that session\'s repository', async () => {
+  await withWorkspace(async ({ repo, runtime, jobs, job }) => {
+    // The sending session may itself be a job, working in a worktree.
+    const parent = await jobs.create({ title: 'parent', prompt: 'p', repoPath: repo, backend: 'claude', baseBranch: null });
+    await eventually(() => job(parent.id).state === 'active', 'parent');
+
+    const sent = await jobs.createFromSession({
+      sessionId: job(parent.id).session_id!,
+      content: '\nAdd a dark mode toggle to the settings page\nKeep the current theme as default.',
+      backend: null,
+    });
+    await eventually(() => job(sent.id).state === 'active', 'sent job');
+    assert.equal(job(sent.id).repo_path, repo);
+    assert.equal(job(sent.id).title, 'Add a dark mode toggle to the settings page');
+    assert.equal(job(sent.id).backend, 'glm');
+    assert.match(runtime.turns.at(-1)!.command, /Keep the current theme as default\.[\s\S]*Sent to the load balancer from the session "Claude · parent"/);
+
+    await assert.rejects(jobs.createFromSession({ sessionId: 'missing', content: 'x', backend: null }), /not found/);
+  });
+});
