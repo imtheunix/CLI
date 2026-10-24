@@ -6,8 +6,8 @@ import {
   type ResolveClaudeCodeExecutablePathDependencies,
 } from '@/shared/claude-cli-path.js';
 
-// Passing `undefined` falls back to CLAUDE_CLI_PATH, which a Claude session
-// running the tests has set, so the defaults are tested without it.
+// Passing `undefined` falls back to CLAUDE_CLI_PATH, which a CLI session or the
+// server's CI/CD queue running the tests has set, so the defaults are tested without it.
 const savedClaudeCliPath = process.env.CLAUDE_CLI_PATH;
 test.before(() => {
   delete process.env.CLAUDE_CLI_PATH;

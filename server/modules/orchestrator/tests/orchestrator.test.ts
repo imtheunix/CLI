@@ -12,7 +12,7 @@ import { createJobsService } from '@/modules/orchestrator/services/jobs.service.
 import { createMergeQueueService } from '@/modules/orchestrator/services/merge-queue.service.js';
 import { loadOrchestratorConfig } from '@/modules/orchestrator/services/orchestrator-config.service.js';
 import type { OrchestratorConfig } from '@/modules/orchestrator/services/orchestrator-config.service.js';
-import { runCommand } from '@/modules/orchestrator/services/workspace.service.js';
+import { checkEnvironment, runCommand } from '@/modules/orchestrator/services/workspace.service.js';
 import { chatRunRegistry } from '@/modules/websocket/index.js';
 
 type Turn = { sessionId: string; command: string; options: Record<string, unknown> };
@@ -269,6 +269,20 @@ test("a JavaScript job's linked node_modules does not leave its worktree dirty",
   });
 });
 
+test("checks run without the server's own settings or secrets, as in a plain shell", async () => {
+  const env = checkEnvironment({ DATABASE_PATH: '/live/auth.db', NODE_ENV: 'production', CLAUDE_CLI_PATH: '/bin/claude', PLANS_CLIENT_SECRET: 's', HOME: '/home/x' });
+  assert.deepEqual(Object.keys(env).sort(), ['CLAUDE_CLI_PATH', 'DATABASE_PATH', 'NODE_ENV', 'PLANS_CLIENT_SECRET']);
+  const previous = process.env.DATABASE_PATH;
+  process.env.DATABASE_PATH = '/live/auth.db';
+  try {
+    const result = await runCommand('echo "${DATABASE_PATH-unset}"', [], { cwd: tmpdir(), shell: true, env: checkEnvironment() });
+    assert.equal(result.stdout.trim(), 'unset');
+  } finally {
+    if (previous === undefined) delete process.env.DATABASE_PATH;
+    else process.env.DATABASE_PATH = previous;
+  }
+});
+
 test('after a restart, a job that was mid-turn is told to continue', async () => {
   await withWorkspace(async ({ repo, runtime, jobs, job }) => {
     const created = await jobs.create({ title: 'long', prompt: 'p', repoPath: repo, backend: 'glm', baseBranch: null });
@@ -351,9 +365,10 @@ test('failing checks go back to the agent, whose job takes its slot again', asyn
 
     assert.equal(ctx.job(id).state, 'active');
     assert.equal(ctx.job(id).merge_step, 'none');
-    assert.match(ctx.runtime.turns.at(-1)!.command, /`echo broken; false` failed:[\s\S]*broken/);
+    const message = ctx.runtime.turns.at(-1)!.command;
+    assert.match(message, /failed:\s+Failing:\s+```\nnot ok 2 - broken\n```[\s\S]*# fail 1/);
     assert.equal(git(ctx.upstream, 'ls-remote', 'origin', 'main').split('\t')[0], git(ctx.repo, 'rev-parse', 'origin/main'));
-  }, (config) => { config.checks = { demo: 'echo broken; false' }; });
+  }, (config) => { config.checks = { demo: 'printf "ok 1 - fine\\nnot ok 2 - broken\\n# fail 1\\n"; false' }; });
 });
 
 test('main moving during the queue sends the job back to rebase, not to a failed push', async () => {

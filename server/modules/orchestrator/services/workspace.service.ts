@@ -31,6 +31,26 @@ export function runCommand(
   });
 }
 
+/** The server's own settings, which would point a check at the live server (its database, its Claude binary). */
+const SERVER_ONLY_VARIABLES = [
+  'NODE_ENV', 'DATABASE_PATH', 'HOST', 'SERVER_PORT', 'PORT',
+  'CLAUDE_CLI_PATH', 'CLAUDE_CODE_EXECUTABLE', 'CLAUDE_CODE_EXECPATH',
+];
+
+/**
+ * Used by the CI/CD queue to run a repository's checks as a plain shell
+ * would: without the server's own settings (a test must not open the live
+ * server's database) or its secrets. Removed variables are set to undefined,
+ * which `runCommand`'s merge over `process.env` drops.
+ */
+export function checkEnvironment(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const removed: NodeJS.ProcessEnv = {};
+  for (const name of Object.keys(env)) {
+    if (SERVER_ONLY_VARIABLES.includes(name) || /SECRET|PASSWORD|API_KEY|_TOKEN$/i.test(name)) removed[name] = undefined;
+  }
+  return removed;
+}
+
 /** Used by the CI/CD queue to put a failure's tail in front of the agent without flooding the session. */
 export function tail(text: string, lines = 60): string {
   return text.trimEnd().split('\n').slice(-lines).join('\n');

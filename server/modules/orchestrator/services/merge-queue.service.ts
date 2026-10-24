@@ -6,6 +6,7 @@ import type { OrchestratorJobRow, OrchestratorMergeStep } from '@/modules/databa
 import type { JobsService } from './jobs.service.js';
 import type { OrchestratorConfig } from './orchestrator-config.service.js';
 import {
+  checkEnvironment,
   readOriginRepository,
   resolveCheckCommand,
   revParse,
@@ -156,9 +157,13 @@ export function createMergeQueueService(deps: {
   async function stepCheck(job: OrchestratorJobRow): Promise<void> {
     const command = await resolveCheckCommand(job.repo_path, job.worktree_path, deps.config().checks);
     if (command) {
-      const result = await run(command, [], { cwd: job.worktree_path, shell: true, timeoutMs: 45 * 60_000 });
+      const result = await run(command, [], { cwd: job.worktree_path, shell: true, timeoutMs: 45 * 60_000, env: checkEnvironment() });
       if (result.code !== 0) {
-        await backToAgent(job, `after rebasing onto origin/${job.base_branch}, \`${command}\` failed:\n\n\`\`\`\n${tail(result.stdout + result.stderr)}\n\`\`\``);
+        const output = result.stdout + result.stderr;
+        // The tail of a long test run is its summary; the failing tests' names are further up.
+        const failing = output.split('\n').filter((line) => /^\s*not ok\b/.test(line)).slice(0, 30);
+        const failingList = failing.length > 0 ? `Failing:\n\n\`\`\`\n${failing.join('\n')}\n\`\`\`\n\n` : '';
+        await backToAgent(job, `after rebasing onto origin/${job.base_branch}, \`${command}\` failed:\n\n${failingList}\`\`\`\n${tail(output)}\n\`\`\``);
         return;
       }
     }
