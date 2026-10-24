@@ -64,7 +64,7 @@ function defaults(): OrchestratorConfig {
         provider: 'opencode',
         model: 'zai-coding-plan/glm-5.3-flash',
         models: { 'zai-coding-plan/glm-5.3-flash': 'GLM Flash', 'zai-coding-plan/glm-5.3': 'GLM' },
-        effort: null,
+        effort: 'medium',
         cap: 3,
         label: 'GLM',
       },

@@ -1,0 +1,27 @@
+zai-coding-plan/glm-5.3
+{
+  "id": "glm-5.3",
+  "name": "GLM-5.3",
+  "providerID": "zai-coding-plan",
+  "options": { "reasoningEffort": "medium" },
+  "variants": {
+    "low": { "reasoningEffort": "low" },
+    "high": { "reasoningEffort": "high" },
+    "max": { "reasoningEffort": "max" },
+    "medium": { "reasoningEffort": "medium" },
+    "thinking": {}
+  }
+}
+zai-coding-plan/glm-5.3-flash
+{
+  "id": "glm-5.3-flash",
+  "name": "GLM-5.3-Flash",
+  "providerID": "zai-coding-plan",
+  "variants": {
+    "thinking": {},
+    "low": { "reasoningEffort": "low" },
+    "high": { "reasoningEffort": "high" },
+    "max": { "reasoningEffort": "max" },
+    "medium": { "reasoningEffort": "medium" }
+  }
+}

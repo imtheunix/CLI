@@ -124,6 +124,7 @@ const getSessionSelectionKey = (provider: LLMProvider, sessionId: string): strin
   `${provider}:${sessionId}`
 );
 
+/** Used by chat composer state to reconcile provider models, efforts, and session selections. */
 export function useChatProviderState({ selectedSession, selectedProject: _selectedProject }: UseChatProviderStateArgs) {
   const [permissionMode, setPermissionMode] = useState<PermissionMode>('default');
   const [pendingPermissionRequests, setPendingPermissionRequests] = useState<PendingPermissionRequest[]>([]);
@@ -335,7 +336,11 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     }
 
     if (currentEffort === DEFAULT_EFFORT_VALUE || !currentEffort) {
-      return DEFAULT_EFFORT_VALUE;
+      // OpenCode variants describe the concrete default sent on the next turn.
+      const modelDefault = targetProvider === 'opencode'
+        ? getModelOption(targetProvider, model)?.effort?.default
+        : undefined;
+      return modelDefault && allowedValues.includes(modelDefault) ? modelDefault : DEFAULT_EFFORT_VALUE;
     }
 
     if (allowedValues.includes(currentEffort)) {
@@ -343,7 +348,7 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     }
 
     return DEFAULT_EFFORT_VALUE;
-  }, [getAllowedEffortValues]);
+  }, [getAllowedEffortValues, getModelOption]);
 
   // One reconciliation pass over every provider, mirroring the effort effect
   // below. This was four copy-pasted eleven-line effects, one per provider.

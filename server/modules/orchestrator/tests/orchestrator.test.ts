@@ -152,9 +152,10 @@ test('GLM runs Flash by default and the full model on request, kept on every lat
     await eventually(() => job(full.id).state === 'active', 'hard to start');
     assert.equal(job(full.id).backend, 'glm');
     assert.equal(job(full.id).model, 'zai-coding-plan/glm-5.3');
-    const session = sessionsDb.getSessionById(job(full.id).session_id!) as { custom_name: string; model: string };
+    const session = sessionsDb.getSessionById(job(full.id).session_id!) as { custom_name: string; model: string; effort: string };
     assert.equal(session.custom_name, 'GLM · hard');
     assert.equal(session.model, 'zai-coding-plan/glm-5.3');
+    assert.equal(session.effort, 'medium');
 
     // A message from the CI/CD queue (or a restart's "continue") runs on the job's model.
     runtime.finish(job(full.id).session_id!);
@@ -162,6 +163,7 @@ test('GLM runs Flash by default and the full model on request, kept on every lat
     const turns = runtime.turns.filter((t) => t.sessionId === job(full.id).session_id);
     assert.equal(turns.length, 2);
     assert.ok(turns.every((t) => t.options.model === 'zai-coding-plan/glm-5.3'));
+    assert.ok(turns.every((t) => t.options.effort === 'medium'));
 
     const flash = await jobs.create({ title: 'easy', prompt: 'p', repoPath: repo, backend: 'glm', baseBranch: null });
     await eventually(() => job(flash.id).state === 'active', 'easy to start');

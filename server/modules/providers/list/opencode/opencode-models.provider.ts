@@ -10,6 +10,7 @@ import type { IProviderModels } from '@/shared/interfaces.js';
 import type {
   ProviderCurrentActiveModel,
   ProviderModelsDefinition,
+  ProviderModelOption,
 } from '@/shared/types.js';
 import {
   buildDefaultProviderCurrentActiveModel,
@@ -314,61 +315,73 @@ const OPENCODE_MODELS_CACHE_TTL_MS = 5 * 60_000;
 const OPENCODE_MODELS_EMPTY_CACHE_TTL_MS = 30_000;
 const OPENCODE_MODEL_REFERENCE_PATTERN = /^[a-z0-9][a-z0-9._-]*\/[a-z0-9][a-z0-9._/:+-]*$/i;
 
-/**
- * Reads model references from the local OpenCode CLI without invoking a shell.
- *
- * Model availability can differ by account and changes independently of
- * CloudCLI releases, so `opencode models` is the source of truth. The CLI
- * output is deliberately treated as untrusted: only standalone,
- * fully-qualified `<provider>/<model>` lines are accepted.
- */
-const readInstalledOpenCodeModels = async (): Promise<string[]> => new Promise((resolve) => {
+/** Parse verbose model blocks without exposing provider options or headers to the client. */
+const parseOpenCodeModels = (output: string): ProviderModelOption[] => {
+  const models: ProviderModelOption[] = [];
+  const blocks = output.split(/^(?=[a-z0-9][a-z0-9._-]*\/[a-z0-9])/im);
+  for (const block of blocks) {
+    const [reference, ...lines] = block.trim().split(/\r?\n/);
+    if (!OPENCODE_MODEL_REFERENCE_PATTERN.test(reference)) continue;
+    const predefined = OPENCODE_PREDEFINED_OPTIONS_BY_VALUE.get(reference);
+    const [providerId, ...modelIdParts] = reference.split('/');
+    let metadata: Record<string, unknown> | null = null;
+    try {
+      metadata = readObjectRecord(JSON.parse(lines.join('\n')));
+    } catch {
+      // Older CLI versions and injected plain listings still provide model IDs.
+    }
+    const variants = readObjectRecord(metadata?.variants);
+    const preferred = ['low', 'medium', 'high', 'max'];
+    const values = Object.keys(variants ?? {})
+      .filter((value) => readObjectRecord(variants?.[value]))
+      .sort((a, b) => {
+        const rank = (value: string): number => {
+          const index = preferred.indexOf(value);
+          return index < 0 ? preferred.length : index;
+        };
+        return rank(a) - rank(b);
+      });
+    const configuredDefault = readOptionalString(readObjectRecord(metadata?.options)?.reasoningEffort);
+    const defaultEffort = values.includes('medium') ? 'medium'
+      : configuredDefault && values.includes(configuredDefault) ? configuredDefault : undefined;
+    const effort = metadata
+      ? values.length > 0 ? {
+        ...(defaultEffort ? { default: defaultEffort } : {}),
+        values: values.map((value) => ({ value })),
+      } : undefined
+      : predefined?.effort;
+    models.push({
+      value: reference,
+      label: predefined?.label ?? readOptionalString(metadata?.name) ?? modelIdParts.join('/'),
+      description: predefined?.description ?? providerId,
+      ...(effort ? { effort } : {}),
+    });
+  }
+  return [...new Map(models.map((model) => [model.value, model])).values()];
+};
+
+/** Read the installed CLI's account-specific variants; discard partial or failed listings. */
+const readInstalledOpenCodeModels = async (): Promise<string> => new Promise((resolve) => {
   let settled = false;
   let output = '';
   let timeout: NodeJS.Timeout | undefined;
-  const models = new Set<string>();
-  const finish = (): void => {
-    if (settled) {
-      return;
-    }
+  const finish = (result = ''): void => {
+    if (settled) return;
     settled = true;
-    if (timeout) {
-      clearTimeout(timeout);
-    }
-    resolve([...models]);
+    if (timeout) clearTimeout(timeout);
+    resolve(result);
   };
-  const child = spawn('opencode', ['models'], {
+  const child = spawn('opencode', ['models', '--verbose'], {
     stdio: ['ignore', 'pipe', 'ignore'],
     shell: false,
   });
   timeout = setTimeout(() => {
-    // A truncated listing must not be cached as a complete one; an empty
-    // result takes the short retry path instead.
-    models.clear();
     child.kill();
     finish();
   }, OPENCODE_MODELS_TIMEOUT_MS);
-
-  child.stdout?.on('data', (chunk: Buffer) => {
-    output += chunk.toString();
-    const completeLines = output.split(/\r?\n/);
-    output = completeLines.pop() ?? '';
-    for (const line of completeLines) {
-      const model = line.trim();
-      if (OPENCODE_MODEL_REFERENCE_PATTERN.test(model)) {
-        models.add(model);
-      }
-    }
-  });
-  child.on('error', finish);
-  child.on('close', (code) => {
-    if (code !== 0) {
-      models.clear();
-    } else if (OPENCODE_MODEL_REFERENCE_PATTERN.test(output.trim())) {
-      models.add(output.trim());
-    }
-    finish();
-  });
+  child.stdout?.on('data', (chunk: Buffer) => { output += chunk.toString(); });
+  child.on('error', () => finish());
+  child.on('close', (code) => finish(code === 0 ? output : ''));
 });
 
 const readOpenCodeJsonFile = async (filePath: string): Promise<Record<string, unknown> | null> => {
@@ -478,25 +491,12 @@ const OPENCODE_PREDEFINED_OPTIONS_BY_VALUE = new Map(
 );
 
 const createDiscoveredOpenCodeModels = (
-  modelReferences: string[],
+  discoveredModels: ProviderModelOption[],
   connectedProviderIds: Set<string> | null,
 ): ProviderModelsDefinition | null => {
-  const options = modelReferences
-    .filter((model) => !connectedProviderIds || connectedProviderIds.has(model.split('/')[0]))
-    .map((value) => {
-      const predefined = OPENCODE_PREDEFINED_OPTIONS_BY_VALUE.get(value);
-      if (predefined) {
-        return predefined;
-      }
-
-      const [providerId, ...modelIdParts] = value.split('/');
-      return {
-        value,
-        label: modelIdParts.join('/'),
-        description: providerId,
-      };
-    });
-
+  const options = discoveredModels.filter(
+    (model) => !connectedProviderIds || connectedProviderIds.has(model.value.split('/')[0]),
+  );
   return options.length > 0
     ? { OPTIONS: options, DEFAULT: options[0].value }
     : null;
@@ -546,22 +546,23 @@ const parseOpenCodeSessionModelValue = (rawModel: unknown): string | null => {
 /** Provider registry model adapter for OpenCode predefined models and session metadata. */
 export class OpenCodeProviderModels implements IProviderModels {
   /** Last `opencode models` listing and when it stops being fresh. */
-  private cachedModelReferences: { references: string[]; expiresAt: number } | null = null;
+  private cachedModelReferences: { references: ProviderModelOption[]; expiresAt: number } | null = null;
 
   /** In-flight CLI read, shared so concurrent picker loads spawn one process. */
-  private pendingModelReferences: Promise<string[]> | null = null;
+  private pendingModelReferences: Promise<ProviderModelOption[]> | null = null;
 
   /** Used by the provider registry and focused adapter tests to read local OpenCode models. */
   constructor(
-    private readonly readModels = readInstalledOpenCodeModels,
+    private readonly readModels: () => Promise<string[] | string> = readInstalledOpenCodeModels,
     private readonly now: () => number = Date.now,
   ) {}
 
-  private refreshModelReferences(): Promise<string[]> {
+  private refreshModelReferences(): Promise<ProviderModelOption[]> {
     this.pendingModelReferences ??= this.readModels()
       // The picker remains available when a local CLI invocation fails.
       .catch(() => [] as string[])
-      .then((references) => {
+      .then((listing) => {
+        const references = parseOpenCodeModels(Array.isArray(listing) ? listing.join('\n') : listing);
         const ttl = references.length > 0
           ? OPENCODE_MODELS_CACHE_TTL_MS
           : OPENCODE_MODELS_EMPTY_CACHE_TTL_MS;
@@ -580,7 +581,7 @@ export class OpenCodeProviderModels implements IProviderModels {
    * Spawning `opencode models` takes seconds and every picker load asks for
    * the catalog, so only the first read after startup waits on the CLI.
    */
-  private async readModelReferences(): Promise<string[]> {
+  private async readModelReferences(): Promise<ProviderModelOption[]> {
     if (!this.cachedModelReferences) {
       return this.refreshModelReferences();
     }

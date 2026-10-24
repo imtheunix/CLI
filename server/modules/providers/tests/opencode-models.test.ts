@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -28,7 +28,7 @@ const OPENCODE_ENV_KEYS = [
 const withOpenCodeHome = async (
   setUp: (homeDir: string) => Promise<void>,
   runTest: (adapter: OpenCodeProviderModels) => Promise<void>,
-  readModels: () => Promise<string[]> = async () => [],
+  readModels: () => Promise<string[] | string> = async () => [],
 ): Promise<void> => {
   const homeDir = await mkdtemp(path.join(os.tmpdir(), 'opencode-catalog-'));
   const originalHomedir = os.homedir;
@@ -496,4 +496,41 @@ test('OpenCode composes the provider prefix into session model ids', async () =>
     }
     await rm(tempSessionsDirectory, { recursive: true, force: true });
   }
+});
+
+
+test('OpenCode builds Z.ai effort choices and a medium default from verbose model variants', async () => {
+  const listing = await readFile(new URL('./fixtures/opencode-models-verbose.txt', import.meta.url), 'utf8');
+  await withOpenCodeHome(
+    (home) => writeOpenCodeAuth(home, { 'zai-coding-plan': { type: 'api', key: 'test' } }),
+    async (adapter) => {
+      const catalog = await adapter.getSupportedModels();
+      assert.equal(catalog.OPTIONS.length, 2);
+      for (const model of catalog.OPTIONS) {
+        assert.deepEqual(model.effort, {
+          default: 'medium',
+          values: ['low', 'medium', 'high', 'max', 'thinking'].map((value) => ({ value })),
+        });
+        assert.equal('options' in model, false);
+      }
+    },
+    async () => listing,
+  );
+});
+
+test('OpenCode keeps only advertised variants and omits effort for models without variants', async () => {
+  await withOpenCodeHome(async () => {}, async (adapter) => {
+    const { OPTIONS } = await adapter.getSupportedModels();
+    assert.deepEqual(OPTIONS[0].effort, { values: [{ value: 'low' }, { value: 'max' }] });
+    assert.equal(OPTIONS[1].effort, undefined);
+    assert.equal(OPTIONS[2].effort, undefined);
+    assert.equal(OPTIONS[3].effort, undefined);
+  }, async () => `opencode-go/glm-5.3
+{"variants":{"max":{},"low":{}},"options":{"reasoningEffort":"medium"}}
+opencode-go/glm-5.3-flash
+{"variants":{}}
+zai-coding-plan/plain
+{"name":"Plain"}
+opencode-go/glm-5.2
+{"name":"No variants"}`);
 });
