@@ -3,13 +3,25 @@ import * as nodeCrypto from 'node:crypto';
 import { EventEmitter, once } from 'node:events';
 import type { AddressInfo } from 'node:net';
 import { PassThrough } from 'node:stream';
-import test from 'node:test';
+import test, { beforeEach } from 'node:test';
+import { format } from 'node:util';
 
 import express from 'express';
 
-import { createAgentRouter } from '../agent.routes.js';
+import { createAgentRouter } from '@/modules/agent/agent.routes.js';
 
 type AgentDependencies = Parameters<typeof createAgentRouter>[0];
+
+beforeEach((context) => {
+  assert.ok('diagnostic' in context, 'route hooks run within individual tests');
+  // Node 22 multiplexes binary test reports and raw application stdout. When
+  // the OS coalesces those writes, its report parser can deserialize a log as
+  // a report and fail the whole file. Preserve logs as framed diagnostics;
+  // the per-test mock restores console.log automatically after each test.
+  context.mock.method(console, 'log', (...args: unknown[]) => {
+    context.diagnostic(format(...args));
+  });
+});
 
 function createDependencies(
   overrides: Partial<AgentDependencies> = {},
