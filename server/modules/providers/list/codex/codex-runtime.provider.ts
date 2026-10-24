@@ -303,7 +303,8 @@ async function queryCodex(
   // stderr dump of unrelated CLI log lines, so the thrown wrapper is dropped
   // when the stream already reported the failure.
   let errorSurfaced = false;
-  const abortController = new AbortController();
+  const abortController = options.abortController instanceof AbortController ? options.abortController : new AbortController();
+  if (abortController.signal.aborted) return;
   // Session-map key: the app session id when the caller supplied one, else
   // the provider-native thread id once captured (legacy/direct API callers).
   const sessionKey = () => sessionId || capturedSessionId || null;
@@ -459,7 +460,7 @@ async function queryCodex(
     const session = activeCodexSessions.get(sessionKey() || '');
     const runError = error instanceof Error ? error : new Error(String(error));
     const wasAborted =
-      session?.status === 'aborted' ||
+      abortController.signal.aborted || session?.status === 'aborted' ||
       runError.name === 'AbortError' ||
       runError.message.toLowerCase().includes('aborted');
 
@@ -495,7 +496,7 @@ async function queryCodex(
     // Update session status
     if (sessionKey()) {
       const session = activeCodexSessions.get(sessionKey() || '');
-      if (session) {
+      if (session?.abortController === abortController) {
         session.status = session.status === 'aborted' ? 'aborted' : 'completed';
       }
     }

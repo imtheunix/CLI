@@ -61,7 +61,7 @@ const renderComposer = (sendMessage: (message: unknown) => boolean, ws: WebSocke
         currentProviderModel: 'test-model',
         currentProviderEffort: 'medium',
         isLoading: false,
-        canAbortSession: false,
+        canAbortSession: true,
         tokenBudget: null,
         sendMessage,
         ws: socket,
@@ -262,4 +262,23 @@ test('a RUN_IN_PROGRESS rejection moves the message into the durable queue inste
     }
   });
   assert.equal(sessionStore.appendRealtime.mock.calls.length, 1, 'an unidentified send still surfaces the error');
+});
+
+
+test('Stop sends chat.abort and a disconnected Stop is retried for its original session', () => {
+  let connected = false;
+  const frames: ChatFrame[] = [];
+  const { view } = renderComposer((frame) => {
+    if (!connected) return false;
+    frames.push(frame as ChatFrame);
+    return true;
+  });
+  act(() => view.result.current.handleAbortSession());
+  assert.deepEqual(frames, []);
+  connected = true;
+  // Navigation during reconnect must not redirect the stop to another agent.
+  view.rerender({ socket: null, status: 'connected', session: SESSION_B });
+  assert.deepEqual(frames, [{ type: 'chat.abort', sessionId: SESSION.id }]);
+  act(() => view.result.current.handleAbortSession());
+  assert.deepEqual(frames.at(-1), { type: 'chat.abort', sessionId: SESSION_B.id });
 });

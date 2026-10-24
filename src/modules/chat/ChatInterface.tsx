@@ -16,6 +16,7 @@ import type {
   SessionEstablishedContext,
   SessionNavigationOptions,
 } from '@/shared/types';
+import { useChatLiveSync } from '@/modules/chat/hooks/useChatLiveSync';
 import { useChatProviderState } from '@/modules/chat/hooks/useChatProviderState';
 import { useScheduledMessages } from '@/modules/chat/composer/useScheduledMessages';
 import { useChatSessionState } from '@/modules/chat/hooks/useChatSessionState';
@@ -167,15 +168,11 @@ function ChatInterface({
     isActive,
     selectedProject,
     selectedSession,
-    ws,
-    sendMessage,
     externalMessageUpdate,
     newSessionTrigger,
     processingSessions,
     onSessionIdle,
     resetStreamingState,
-    statusCheckSentAtRef,
-    lastSeqRef,
     sessionStore,
   });
 
@@ -271,23 +268,6 @@ function ChatInterface({
     resolvePermissionModeForProvider,
   });
 
-  // On WebSocket reconnect, request a bounded persisted-tail sync (deferred
-  // while Chat is hidden), then re-subscribe — the
-  // `chat_subscribed` ack restores or clears the activity indicator, replays
-  // missed live events, and re-attaches a still-running stream to this socket.
-  const handleWebSocketReconnect = useCallback(async () => {
-    if (!selectedProject || !selectedSession) return;
-    await requestLatestMessages(selectedSession.id, isActive);
-    statusCheckSentAtRef.current.set(selectedSession.id, Date.now());
-    sendMessage({
-      type: 'chat.subscribe',
-      sessions: [{
-        sessionId: selectedSession.id,
-        lastSeq: lastSeqRef.current.get(selectedSession.id) ?? 0,
-      }],
-    });
-  }, [isActive, requestLatestMessages, selectedProject, selectedSession, sendMessage]);
-
   useChatRealtimeHandlers({
     isActive,
     subscribe,
@@ -305,9 +285,18 @@ function ChatInterface({
     onSessionIdle,
     onSessionBackground,
     getSessionActivity,
-    onWebSocketReconnect: handleWebSocketReconnect,
     requestLatestMessages,
     sessionStore,
+  });
+
+  useChatLiveSync({
+    sessionId: selectedSession?.id || currentSessionId || null,
+    connectionStatus,
+    isActive,
+    sendMessage,
+    requestLatestMessages,
+    lastSeqRef,
+    statusCheckSentAtRef,
   });
 
   // Lets the command palette hand text to the

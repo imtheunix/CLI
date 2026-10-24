@@ -8,6 +8,7 @@ import { closeConnection, initializeDatabase, scheduledMessagesDb, sessionDrafts
 import { dispatchDueScheduledMessages, dispatchQueuedMessages } from '@/modules/scheduled-messages/services/scheduled-message-dispatcher.service.js';
 import { scheduledMessagesService } from '@/modules/scheduled-messages/services/scheduled-messages.service.js';
 import { chatRunRegistry } from '@/modules/websocket/index.js';
+import type { ProviderRuntimeWriter } from '@/shared/types.js';
 import { getGlobalImageAssetsDir } from '@/shared/image-attachments.js';
 
 const SESSION_ID = 'scheduled-session';
@@ -573,5 +574,30 @@ test('a deferral never overwrites a queue the user edited while the injection wa
     await dispatchQueuedMessages(runtime);
     const stored = sessionDraftsDb.getDrafts(userId)[0].queuedMessage as { items: { id: string }[] };
     assert.deepEqual(stored.items.map((item) => item.id), ['a', 'b', 'd'], 'the edit stands, the item in it');
+  });
+});
+
+test('Send now delivers a detached queued turn to browsers subscribed while idle and across turns', async () => {
+  await withIsolatedDatabase(async (userId) => {
+    const phone = { readyState: 1, frames: [] as Array<Record<string, unknown>>, send(data: string) { this.frames.push(JSON.parse(data)); } };
+    chatRunRegistry.attachConnection(SESSION_ID, phone);
+    const desktop = { ...phone, frames: [] as Array<Record<string, unknown>> };
+    chatRunRegistry.attachConnection(SESSION_ID, desktop);
+    for (const id of ['first', 'second']) {
+      sessionDraftsDb.saveDraft(userId, SESSION_ID, { text: '', queuedMessage: { items: [{ id, content: id }], forceId: id } });
+      await dispatchQueuedMessages({
+        ...createRuntime([]),
+        run: async (_provider: string, command: string, _options: Record<string, unknown>, writer: ProviderRuntimeWriter) => {
+          writer.send({ kind: 'text', provider: 'claude', content: `answer to ${command}` });
+          writer.send({ kind: 'complete', provider: 'claude', exitCode: 0 });
+        },
+      });
+    }
+    for (const browser of [phone, desktop]) {
+      assert.deepEqual(browser.frames.filter((frame) => frame.kind === 'text').map((frame) => frame.content), ['answer to first', 'answer to second']);
+      assert.equal(browser.frames.filter((frame) => frame.kind === 'status').length, 2);
+      const seqs = browser.frames.map((frame) => Number(frame.seq));
+      assert.ok(seqs.every((seq, index) => index === 0 || seq > seqs[index - 1]), 'replay cursor must advance across turns');
+    }
   });
 });

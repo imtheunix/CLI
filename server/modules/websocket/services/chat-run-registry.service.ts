@@ -1,5 +1,6 @@
 import { sessionsDb, sessionDraftsDb } from '@/modules/database/index.js';
 import { ChatSessionWriter } from '@/modules/websocket/services/chat-session-writer.service.js';
+import { WS_OPEN_STATE } from '@/modules/websocket/services/websocket-state.service.js';
 import { broadcastSessionUpserted } from '@/modules/websocket/services/session-upsert-broadcast.service.js';
 import type {
   LLMProvider,
@@ -19,8 +20,11 @@ type ChatRunStatus = 'running' | 'completed';
  * - `status`: drives `chat_subscribed.isProcessing`, prevents double sends
  *   into the same session, and guards the synthetic-complete fallback in the
  *   chat handler (only emitted when a runtime died without completing).
- * - `lastSeq` / `events`: the per-run event log. Every live event gets a
- *   monotonically increasing `seq` and is buffered so a reconnecting client
+ * - `abortController`: cancellation for this reservation, including provider
+ *   startup before its process is registered. Never reused by the next turn.
+ * - `lastSeq` / `events`: the per-run event log. The cursor continues from
+ *   the previous retained turn so a reconnect never skips a later turn.
+ *   Every live event is buffered so a reconnecting client
  *   can replay exactly the events it missed via `chat.subscribe`.
  */
 type ChatRun = {
@@ -31,6 +35,7 @@ type ChatRun = {
   lastSeq: number;
   events: NormalizedMessage[];
   writer: ChatSessionWriter;
+  abortController: AbortController;
   startedAt: number;
   completedAt: number | null;
 };
@@ -58,6 +63,8 @@ const MAX_BUFFERED_EVENTS_PER_RUN = 5000;
  * path all consult it instead of asking each provider runtime individually.
  */
 const runs = new Map<string, ChatRun>();
+// Session audiences outlive runs, including an idle subscription before the first turn.
+const subscriptions = new Map<string, Set<RealtimeClientConnection>>();
 
 /**
  * Answers whether a completed run must stay registered a while longer. Set by
@@ -110,12 +117,19 @@ function evictRunLater(run: ChatRun): void {
  * 4. Flip the run to `completed` when the terminal `complete` event passes by.
  */
 function decorateAndRecordEvent(run: ChatRun, message: NormalizedMessage): NormalizedMessage | null {
+  // A superseded process can wind down after the next run has already started.
+  if (runs.get(run.appSessionId) !== run) return null;
   // Exactly-one-complete contract: when a run is aborted the chat handler
   // emits the terminal `complete` immediately, but the killed runtime may
   // still emit its own `complete` from its exit handler moments later.
   // Whichever arrives first wins; the duplicate is dropped here.
   if (message.kind === 'complete' && run.status === 'completed') {
     return null;
+  }
+
+  if (run.abortController.signal.aborted && message.kind !== 'complete') return null;
+  if (message.kind === 'complete' && run.abortController.signal.aborted) {
+    message = { ...message, aborted: true, exitCode: 0 };
   }
 
   run.lastSeq += 1;
@@ -247,9 +261,10 @@ export const chatRunRegistry = {
       provider: input.provider,
       providerSessionId: input.providerSessionId,
       status: 'running',
-      lastSeq: 0,
+      lastSeq: existing?.lastSeq ?? 0,
       events: [],
       writer: null as unknown as ChatSessionWriter,
+      abortController: new AbortController(),
       startedAt: Date.now(),
       completedAt: null,
     };
@@ -265,6 +280,11 @@ export const chatRunRegistry = {
       decorateOutboundEvent: (message) => decorateAndRecordEvent(run, message),
     });
 
+    if (input.connection) this.attachConnection(input.appSessionId, input.connection, false);
+    for (const connection of subscriptions.get(input.appSessionId) ?? []) {
+      if (connection.readyState === WS_OPEN_STATE) run.writer.updateWebSocket(connection);
+      else subscriptions.get(input.appSessionId)?.delete(connection);
+    }
     runs.set(input.appSessionId, run);
     return run;
   },
@@ -294,7 +314,8 @@ export const chatRunRegistry = {
   },
 
   /**
-   * Adds a websocket connection to a run's live audience.
+   * Remembers a websocket subscription across future turns, even while idle.
+   * `attachToCurrent` is false when an idle subscribe must avoid the old writer.
    *
    * This is the generic replacement for the Claude-only writer reconnect:
    * after a page refresh the new socket subscribes and immediately starts
@@ -306,14 +327,25 @@ export const chatRunRegistry = {
    * closed. Replay stays per-connection because each client sends its own
    * `lastSeq` with `chat.subscribe`.
    */
-  attachConnection(appSessionId: string, connection: RealtimeClientConnection): boolean {
+  attachConnection(appSessionId: string, connection: RealtimeClientConnection, attachToCurrent = true): boolean {
+    const audience = subscriptions.get(appSessionId) ?? new Set<RealtimeClientConnection>();
+    audience.add(connection);
+    subscriptions.set(appSessionId, audience);
     const run = runs.get(appSessionId);
-    if (!run) {
+    if (!run || !attachToCurrent) {
       return false;
     }
 
     run.writer.updateWebSocket(connection);
     return true;
+  },
+
+  /** Used by the websocket gateway to release subscriptions when a socket closes. */
+  detachConnection(connection: RealtimeClientConnection): void {
+    for (const [sessionId, audience] of subscriptions) {
+      audience.delete(connection);
+      if (!audience.size) subscriptions.delete(sessionId);
+    }
   },
 
   /**
@@ -366,5 +398,6 @@ export const chatRunRegistry = {
    */
   clearAll(): void {
     runs.clear();
+    subscriptions.clear();
   },
 };

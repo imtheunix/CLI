@@ -62,11 +62,7 @@ test('revealing a row not yet rendered waits for it instead of scrolling to its 
       isActive: true,
       selectedProject: project,
       selectedSession: session,
-      ws: null,
-      sendMessage: vi.fn(),
       resetStreamingState: vi.fn(),
-      statusCheckSentAtRef: { current: new Map() },
-      lastSeqRef: { current: new Map() },
       sessionStore: store as never,
     }),
   );
@@ -101,11 +97,7 @@ test('the last attempt settles for the nearest row, for a hit collapsed inside a
       isActive: true,
       selectedProject: project,
       selectedSession: session,
-      ws: null,
-      sendMessage: vi.fn(),
       resetStreamingState: vi.fn(),
-      statusCheckSentAtRef: { current: new Map() },
-      lastSeqRef: { current: new Map() },
       sessionStore: store as never,
     }),
   );

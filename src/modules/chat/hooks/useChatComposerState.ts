@@ -1402,6 +1402,15 @@ export function useChatComposerState({
     setIsTextareaExpanded(false);
   }, [resetCommandMenuState]);
 
+  // A Stop tapped during a mobile disconnect must reach that session on reconnect.
+  const pendingAbortRef = useRef<string | null>(null);
+  useEffect(() => {
+    const sessionId = pendingAbortRef.current;
+    if (connectionStatus === 'connected' && sessionId && sendMessage({ type: 'chat.abort', sessionId })) {
+      pendingAbortRef.current = null;
+    }
+  }, [connectionStatus, sendMessage]);
+
   const handleAbortSession = useCallback(() => {
     if (!canAbortSession) {
       return;
@@ -1415,10 +1424,10 @@ export function useChatComposerState({
 
     // The backend resolves the provider from the session row, so no provider
     // field is needed here.
-    sendMessage({
-      type: 'chat.abort',
-      sessionId: targetSessionId,
-    });
+    pendingAbortRef.current = targetSessionId;
+    if (sendMessage({ type: 'chat.abort', sessionId: targetSessionId })) {
+      pendingAbortRef.current = null;
+    }
   }, [canAbortSession, currentSessionId, selectedSession?.id, sendMessage]);
 
   const handleGrantToolPermission = useCallback(

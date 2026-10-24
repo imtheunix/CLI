@@ -295,6 +295,7 @@ async function dispatchRun(
     images: uniqueAttachments.filter(isImageAttachmentDescriptor),
     files: uniqueAttachments.filter((descriptor) => !isImageAttachmentDescriptor(descriptor)),
     sessionId,
+    abortController: run.abortController,
     cwd: clientOptions.cwd ?? session.project_path ?? undefined,
     projectPath: session.project_path ?? clientOptions.projectPath,
   };
@@ -306,6 +307,8 @@ async function dispatchRun(
     // be taken back. Inside the try so a rewind that throws still releases the
     // run instead of leaving the session processing forever.
     await beforeRun?.(run);
+    if (run.abortController.signal.aborted) return { started: true, error: null };
+    run.writer.send({ kind: 'status', provider, text: 'Processing', canInterrupt: true });
     await dependencies.runtime.run(provider, command, runtimeOptions, run.writer);
   } catch (error) {
     failure = error instanceof Error ? error.message : String(error);
@@ -450,12 +453,14 @@ async function handleChatAbort(
     return;
   }
 
-  const success = await dependencies.runtime.abort(run.provider, sessionId);
-
-  chatRunRegistry.completeRun(sessionId, {
-    exitCode: success ? 0 : 1,
-    aborted: true,
+  // Cancellation belongs to the reserved run, even before a provider registers
+  // its process. Never let a slow graceful interrupt hold the Stop acknowledgement.
+  chatRunRegistry.attachConnection(sessionId, ws);
+  run.abortController.abort();
+  void dependencies.runtime.abort(run.provider, sessionId).catch((error: unknown) => {
+    console.error('[Chat] Provider interrupt failed after cancellation', error instanceof Error ? error.message : String(error));
   });
+  chatRunRegistry.completeRunIfCurrent(run, { exitCode: 0, aborted: true });
 }
 
 /**
@@ -545,9 +550,7 @@ function handleChatSubscribe(
     // keeps producing events through the same writer (task progress, the
     // turn the CLI pushes when a task reports), so a tab opened during that
     // work attaches too; the registry keeps the run while the work lasts.
-    if (isProcessing || dependencies.runtime.hasBackgroundWork(sessionId)) {
-      chatRunRegistry.attachConnection(sessionId, ws);
-    }
+    chatRunRegistry.attachConnection(sessionId, ws, isProcessing || dependencies.runtime.hasBackgroundWork(sessionId));
 
     // Pending approvals are tracked under the app session id inside the
     // Claude runtime, so they can be looked up directly.
@@ -567,7 +570,7 @@ function handleChatSubscribe(
     // replaying them (e.g. after a page reload where the client's lastSeq is
     // 0) would duplicate messages the history fetch already returned.
     if (isProcessing) {
-      for (const event of chatRunRegistry.replayEvents(sessionId, lastSeq)) {
+      for (const event of chatRunRegistry.replayEvents(sessionId, lastSeq > (run?.lastSeq ?? 0) ? 0 : lastSeq)) {
         sendJson(ws, event);
       }
     }
@@ -657,6 +660,7 @@ export async function runDetachedChatTurn(
     // interrupted run end before this turn's stream begins. The interrupted
     // run's own dispatch settles later through completeRunIfCurrent, which is
     // scoped to that run and cannot touch the one started here.
+    activeRun.abortController.abort();
     const aborted = await dependencies.runtime.abort(activeRun.provider, input.sessionId);
     chatRunRegistry.completeRunIfCurrent(activeRun, {
       exitCode: aborted ? 0 : 1,
@@ -796,5 +800,6 @@ export function handleChatConnection(
   ws.on('close', () => {
     console.log('[INFO] Chat client disconnected');
     connectedClients.delete(ws);
+    chatRunRegistry.detachConnection(ws);
   });
 }

@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import type { MutableRefObject } from 'react';
 
 import { api } from '@/shared/api';
 import type { MarkSessionIdle, SessionActivityMap,Project,ProjectSession,LLMProvider,NormalizedMessage,ChatMessage,DiffCalculator } from '@/shared/types';
@@ -93,17 +92,11 @@ type UseChatSessionStateArgs = {
   isActive: boolean;
   selectedProject: Project | null;
   selectedSession: ProjectSession | null;
-  ws: WebSocket | null;
-  sendMessage: (message: unknown) => void;
   externalMessageUpdate?: number;
   newSessionTrigger?: number;
   processingSessions?: SessionActivityMap;
   onSessionIdle?: MarkSessionIdle;
   resetStreamingState: () => void;
-  /** When each session's `chat.subscribe` was last sent; guards stale idle acks. */
-  statusCheckSentAtRef: MutableRefObject<Map<string, number>>;
-  /** Highest live seq observed per session; sent as `lastSeq` on subscribe. */
-  lastSeqRef: MutableRefObject<Map<string, number>>;
   sessionStore: SessionStore;
 };
 
@@ -193,15 +186,11 @@ export function useChatSessionState({
   isActive,
   selectedProject,
   selectedSession,
-  ws,
-  sendMessage,
   externalMessageUpdate,
   newSessionTrigger,
   processingSessions,
   onSessionIdle,
   resetStreamingState,
-  statusCheckSentAtRef,
-  lastSeqRef,
   sessionStore,
 }: UseChatSessionStateArgs) {
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(selectedSession?.id || null);
@@ -670,21 +659,6 @@ export function useChatSessionState({
       if (rafId) cancelAnimationFrame(rafId);
     };
   }, [chatMessages.length, isActive, isLoadingSessionMessages, scrollToBottom]);
-
-  // Session replay/subscription remains active regardless of which main tab is
-  // visible. Only persisted-history HTTP traffic is visibility-gated below.
-  useEffect(() => {
-    if (!selectedSession || !selectedProject || !ws) return;
-
-    statusCheckSentAtRef.current.set(selectedSession.id, Date.now());
-    sendMessage({
-      type: 'chat.subscribe',
-      sessions: [{
-        sessionId: selectedSession.id,
-        lastSeq: lastSeqRef.current.get(selectedSession.id) ?? 0,
-      }],
-    });
-  }, [lastSeqRef, selectedProject, selectedSession, sendMessage, statusCheckSentAtRef, ws]);
 
   // Main session loading effect — store-based.
   //

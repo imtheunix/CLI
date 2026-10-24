@@ -92,3 +92,30 @@ for (const command of ['', '  \n\t']) {
     ]);
   });
 }
+
+test('Codex forwards the reserved run cancellation signal to the SDK and accepts abort by app id', async (t) => {
+  const controller = new AbortController();
+  let sdkSignal: AbortSignal | undefined;
+  const thread = {
+    id: 'native-stop',
+    async runStreamed(_prompt: unknown, options: { signal?: AbortSignal }) {
+      sdkSignal = options.signal;
+      return { events: (async function* () {
+        yield { type: 'thread.started', thread_id: 'native-stop' };
+        await new Promise<void>((resolve) => options.signal?.addEventListener('abort', () => resolve(), { once: true }));
+      })() };
+    },
+  } as unknown as Thread;
+  t.mock.method(Codex.prototype, 'startThread', () => thread);
+  const context: ProviderRuntimeContext = {
+    resolveProviderSessionId: () => null, resolveResumeModel: async () => 'test-model',
+    getProviderModels: async () => ({ OPTIONS: [], DEFAULT: 'test-model' }),
+    normalizeMessage: () => [], isProviderInstalled: async () => true,
+  };
+  const done = codexRuntime.run('work', { sessionId: 'app-stop', abortController: controller }, { send: () => {} }, context);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(sdkSignal, controller.signal);
+  assert.equal(codexRuntime.abort('app-stop'), true);
+  assert.equal(controller.signal.aborted, true);
+  await done;
+});

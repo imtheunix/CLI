@@ -287,7 +287,9 @@ async function spawnOpenCode(command, options = {}, ws, context) {
         args.push(flattenPromptForWindowsShell(promptWithAttachments));
       }
 
+      if (options.abortController?.signal.aborted) { resolve(); return; }
       opencodeProcess = spawnFunction('opencode', args, {
+        signal: options.abortController?.signal,
         cwd: workingDir,
         stdio: ['pipe', 'pipe', 'pipe'],
         env: { ...process.env, ...permissionOptions.env },
@@ -326,8 +328,9 @@ async function spawnOpenCode(command, options = {}, ws, context) {
 
       opencodeProcess.on('close', async (code) => {
         const finalSessionId = sessionId || capturedSessionId || processKey;
-        activeOpenCodeProcesses.delete(finalSessionId);
-        activeOpenCodeProcesses.delete(processKey);
+        if (activeOpenCodeProcesses.get(finalSessionId) === opencodeProcess) activeOpenCodeProcesses.delete(finalSessionId);
+        if (activeOpenCodeProcesses.get(processKey) === opencodeProcess) activeOpenCodeProcesses.delete(processKey);
+        if (options.abortController?.signal.aborted || opencodeProcess.aborted) { resolve(); return; }
 
         if (stdoutLineBuffer.trim()) {
           processOpenCodeOutputLine(stdoutLineBuffer.trim());
@@ -348,7 +351,7 @@ async function spawnOpenCode(command, options = {}, ws, context) {
 
         // Terminal complete — skipped for aborted runs (abort-session
         // already sent the aborted complete on this run's behalf).
-        if (!completeSent && !opencodeProcess.aborted) {
+        if (!completeSent && !opencodeProcess.aborted && !options.abortController?.signal.aborted) {
           completeSent = true;
           ws.send(createCompleteMessage({ provider: 'opencode', sessionId: finalSessionId, exitCode: code }));
         }
@@ -377,8 +380,9 @@ async function spawnOpenCode(command, options = {}, ws, context) {
 
       opencodeProcess.on('error', async (error) => {
         const finalSessionId = sessionId || capturedSessionId || processKey;
-        activeOpenCodeProcesses.delete(finalSessionId);
-        activeOpenCodeProcesses.delete(processKey);
+        if (activeOpenCodeProcesses.get(finalSessionId) === opencodeProcess) activeOpenCodeProcesses.delete(finalSessionId);
+        if (activeOpenCodeProcesses.get(processKey) === opencodeProcess) activeOpenCodeProcesses.delete(processKey);
+        if (options.abortController?.signal.aborted || opencodeProcess.aborted) { resolve(); return; }
 
         const installed = await context.isProviderInstalled();
         const errorContent = !installed
@@ -391,7 +395,7 @@ async function spawnOpenCode(command, options = {}, ws, context) {
           sessionId: finalSessionId,
           provider: 'opencode',
         }));
-        if (!completeSent && !opencodeProcess.aborted) {
+        if (!completeSent && !opencodeProcess.aborted && !options.abortController?.signal.aborted) {
           completeSent = true;
           ws.send(createCompleteMessage({ provider: 'opencode', sessionId: finalSessionId, exitCode: 1 }));
         }
