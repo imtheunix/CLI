@@ -2,7 +2,7 @@ import { getConnection } from '@/modules/database/connection.js';
 
 export type OrchestratorBackend = 'claude' | 'codex' | 'glm';
 
-export type OrchestratorJobState = 'queued' | 'preparing' | 'active' | 'done' | 'interrupted' | 'failed';
+export type OrchestratorJobState = 'queued' | 'preparing' | 'active' | 'done' | 'cancelled' | 'failed';
 
 export type OrchestratorMergeStep = 'none' | 'queued' | 'rebase' | 'check' | 'push' | 'deploy' | 'merged' | 'blocked';
 

@@ -61,7 +61,8 @@ function buildJobPrompt(job: OrchestratorJobRow, label: string): string {
     'How this job works:',
     "- Follow the repository's AGENTS.md / CLAUDE.md. Shared memory (decisions, context) is in Mem0 through the tripam-reasoning MCP when you have it.",
     '- Commit your work on this branch with a descriptive, topic-led message. Never push, never use --no-verify, never touch secrets, k8s, CI or tunnels.',
-    '- If you need a decision from the person, ask it and end your turn: they answer in this session.',
+    '- If you need a decision from the person, ask it and end your turn: they answer in this session. Being stopped mid-turn is not the end of the job: a change of direction or more context is coming.',
+    `- Only when the person tells you they do not want this job anymore, run: tjob cancel ${job.id} (and tjob resume ${job.id} if they want it back later).`,
     `- When the code is complete, committed, and the project's checks pass, run: tjob done ${job.id}`,
     `  That hands the branch to the CI/CD queue (rebase onto ${job.base_branch}, checks, push, deploy). If anything fails there, you get a message here.`,
   ].join('\n');
@@ -223,11 +224,28 @@ export function createJobsService(deps: {
       return view(orchestratorJobsDb.get(id) as OrchestratorJobRow);
     },
 
-    /** `tjob resume`: an interrupted (or failed) job takes a slot again; a failed one is set up again. */
+    /**
+     * `tjob cancel`: the person said they do not want the job anymore (in
+     * its session, where its agent runs this, or from a shell). It frees its
+     * slot and leaves the CI/CD queue; worktree, branch and session are kept.
+     * A merge already past its rebase is not taken back.
+     */
+    async cancel(id: string): Promise<OrchestratorJobView> {
+      const job = orchestratorJobsDb.get(id);
+      if (!job) throw new AppError(`Job ${id} was not found`, { code: 'JOB_NOT_FOUND', statusCode: 404 });
+      if (['rebase', 'check', 'push', 'deploy', 'merged'].includes(job.merge_step)) {
+        throw new AppError(`Job ${id} is already in the CI/CD queue (${job.merge_step})`, { code: 'JOB_MERGING', statusCode: 409 });
+      }
+      orchestratorJobsDb.update(id, { state: 'cancelled', merge_step: 'none' });
+      await this.tick();
+      return view(orchestratorJobsDb.get(id) as OrchestratorJobRow);
+    },
+
+    /** `tjob resume`: a cancelled job takes a slot again; a failed one is set up again. */
     async resume(id: string): Promise<OrchestratorJobView> {
       const job = orchestratorJobsDb.get(id);
       if (!job) throw new AppError(`Job ${id} was not found`, { code: 'JOB_NOT_FOUND', statusCode: 404 });
-      if (job.state === 'interrupted') orchestratorJobsDb.update(id, { state: 'active' });
+      if (job.state === 'cancelled') orchestratorJobsDb.update(id, { state: job.session_id ? 'active' : 'queued' });
       if (job.state === 'failed') orchestratorJobsDb.update(id, { state: 'queued', last_error: null });
       await this.tick();
       return view(orchestratorJobsDb.get(id) as OrchestratorJobRow);
@@ -249,14 +267,14 @@ export function createJobsService(deps: {
       return Boolean(job.session_id && (chatRunRegistry.isProcessing(job.session_id) || deps.runtime.hasBackgroundWork(job.session_id)));
     },
 
-    /** A turn ended: a stopped one frees the job's slot; any other means the agent finished or is waiting. */
+    /**
+     * A turn ended, finished or stopped: either way the job keeps its slot. A
+     * stop is a change of direction or more context coming, not the end of
+     * the job; that takes the person saying so (`tjob cancel`).
+     */
     handleRunCompleted(completion: { appSessionId: string; exitCode: number; aborted: boolean }): void {
       const job = orchestratorJobsDb.getBySessionId(completion.appSessionId);
       if (!job) return;
-      if (completion.aborted && job.state === 'active') {
-        orchestratorJobsDb.update(job.id, { state: 'interrupted', in_turn: 0 });
-        return;
-      }
       orchestratorJobsDb.update(job.id, {
         in_turn: 0,
         ...(completion.exitCode !== 0 && !completion.aborted ? { last_error: `The last turn ended with exit code ${completion.exitCode}` } : {}),
@@ -268,11 +286,9 @@ export function createJobsService(deps: {
      * queued jobs a backend while there is room, oldest first.
      */
     async tick(): Promise<void> {
-      for (const job of orchestratorJobsDb.listByState(['active', 'interrupted', 'done'])) {
+      for (const job of orchestratorJobsDb.listByState(['active', 'done'])) {
         if (!job.session_id || !chatRunRegistry.isProcessing(job.session_id)) continue;
-        // Someone is talking to the session again: it is the job's again.
-        if (job.state === 'interrupted') orchestratorJobsDb.update(job.id, { state: 'active', in_turn: 1 });
-        else if (job.state === 'done' && job.merge_step === 'queued' && startedAfter(job.session_id, job.updated_at)) {
+        if (job.state === 'done' && job.merge_step === 'queued' && startedAfter(job.session_id, job.updated_at)) {
           // A new turn after `tjob done` (not the turn that called it), before
           // the queue took the branch: the work is not finished after all.
           orchestratorJobsDb.update(job.id, { state: 'active', merge_step: 'none', in_turn: 1 });

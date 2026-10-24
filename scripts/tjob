@@ -5,7 +5,8 @@
 #   tjob show <id>
 #   tjob done <id>          the agent's code is complete and committed: hand it to the CI/CD queue
 #   tjob retry <id>         a blocked merge goes on from where it stopped
-#   tjob resume <id>        an interrupted or failed job takes a slot again
+#   tjob cancel <id>        the person does not want the job anymore: frees its slot, leaves the CI/CD queue
+#   tjob resume <id>        a cancelled or failed job takes a slot again
 set -euo pipefail
 
 marker="$HOME/.cloudcli/local-server.json"
@@ -71,6 +72,6 @@ case "$cmd" in
     api POST "" "$(json_body "${args[@]}")" | render new ;;
   ls) api GET "" | render ls ;;
   show) api GET "/${1:?id}" | render show ;;
-  done|retry|resume) api POST "/${1:?id}/$cmd" '{}' | render "$cmd" ;;
-  *) sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+  done|retry|resume|cancel) api POST "/${1:?id}/$cmd" '{}' | render "$cmd" ;;
+  *) sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac

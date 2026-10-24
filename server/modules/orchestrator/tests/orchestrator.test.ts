@@ -156,10 +156,15 @@ test('a requested backend at its cap sends the job to GLM; with GLM full too, it
     const waiting = await jobs.create({ title: 'd', prompt: 'd', repoPath: repo, backend: 'claude', baseBranch: null });
     assert.equal(job(waiting.id).state, 'queued');
 
-    // Stopping a job is "finished": its slot frees, and the waiting job takes it.
+    // Stop is a change of direction, not the end: the job keeps its slot.
     runtime.finish(job(a.id).session_id!, { aborted: true });
-    assert.equal(job(a.id).state, 'interrupted');
     await jobs.tick();
+    assert.equal(job(a.id).state, 'active');
+    assert.equal(job(waiting.id).state, 'queued');
+
+    // The person said they do not want it anymore: its slot frees, and the waiting job takes it.
+    await jobs.cancel(a.id);
+    assert.equal(job(a.id).state, 'cancelled');
     await eventually(() => job(waiting.id).state === 'active', 'd to start');
     assert.equal(job(waiting.id).backend, 'claude');
   }, (config) => { config.backends.glm.cap = 1; });

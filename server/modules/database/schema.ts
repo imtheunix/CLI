@@ -140,7 +140,7 @@ CREATE TABLE IF NOT EXISTS orchestrator_jobs (
     branch TEXT NOT NULL,
     worktree_path TEXT NOT NULL,
     session_id TEXT,
-    -- queued | preparing | active | done | interrupted | failed
+    -- queued | preparing | active | done | cancelled | failed
     state TEXT NOT NULL DEFAULT 'queued',
     -- 1 while the session has a turn going; a restart finds it set and sends
     -- the session a "continue" turn instead of losing it.

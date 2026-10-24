@@ -13,7 +13,7 @@ The orchestrating session (any chat in CLI) hands coding tasks to `tjob new`. Ea
 - A job without a backend goes to whichever backend is working on the fewest jobs (under its cap); ties go to the cheapest (GLM, then GPT, then Claude).
 - A job that asks for a backend gets it while it is under its cap, and GLM when it is not.
 - With no room, the job waits (`queued`) and starts when a slot frees, oldest first.
-- A job holds its slot while it is being set up and while its agent works **or waits for an answer**. It frees it when it is **finished**: its agent ran `tjob done <id>` (code complete and committed), or someone pressed Stop (`interrupted`; `tjob resume` or a new message takes it back).
+- A job holds its slot while it is being set up and while its agent works **or waits for an answer**. It frees it when it is **finished**: its agent ran `tjob done <id>` (code complete and committed), or the person told the session they do not want the job anymore (its agent runs `tjob cancel <id>`; `tjob resume` brings it back). Pressing Stop is **not** finishing: it is a change of direction or more context coming, and the job keeps its slot.
 
 Caps, models and the rest can be overridden in `~/.config/cli/orchestrator.json` (see `orchestrator-config.service.ts`), with no rebuild.
 
@@ -32,7 +32,7 @@ A failing check, conflicts the resolver left, or a refused push go back to the a
 
 ```
 tjob new "<title>" [--repo PATH] [--backend auto|claude|codex|glm] [--base BRANCH] [--prompt TEXT]   # else the prompt from stdin
-tjob ls | show <id> | done <id> | retry <id> | resume <id>
+tjob ls | show <id> | done <id> | cancel <id> | retry <id> | resume <id>
 ```
 
 It talks to the local server with the token in `~/.cloudcli/orchestrator.token` (0600), sent on curl's stdin.
