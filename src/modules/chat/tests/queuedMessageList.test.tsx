@@ -1,14 +1,16 @@
-import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
+
 import QueuedMessageList from '@/modules/chat/composer/QueuedMessageList';
+import { api } from '@/shared/api';
 import { readQueuedMessages, replaceQueuedMessages, resetChatDrafts, writeQueuedMessage } from '@/shared/chatDrafts';
 
 vi.mock('@/shared/api', () => ({ api: { user: {
   saveDraft: vi.fn(async () => new Response('{}')),
   deleteDraft: vi.fn(async () => new Response('{}')),
 } } }));
-beforeEach(() => { localStorage.clear(); resetChatDrafts(); });
-afterEach(() => { cleanup(); vi.restoreAllMocks(); });
+beforeEach(() => { localStorage.clear(); resetChatDrafts(); vi.clearAllMocks(); });
+afterEach(() => { cleanup(); resetChatDrafts(); vi.restoreAllMocks(); });
 
 function seed() {
   writeQueuedMessage('a', { id: 'first', content: 'First', attachments: [{ name: 'image.png' }] });
@@ -31,18 +33,40 @@ test('queue items edit in place, reorder and remove without losing attachments o
   expect(readQueuedMessages('b')[0].content).toBe('Other session');
 });
 
-test('Send now targets the chosen item without asking to interrupt anything', () => {
-  seed();
+test.each([true, false])('Send now is enabled and forces the chosen item when busy=%s', async (busy) => {
+  await act(async () => { seed(); });
+  vi.mocked(api.user.saveDraft).mockClear();
   // The running turn is never interrupted anymore (the server hands the
   // message over or queues it first in line), so a busy session must not
   // stand between the tap and the force flag.
   const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
-  render(<QueuedMessageList scope="a" busy />);
-  fireEvent.click(screen.getAllByText('Send now')[1]);
+  render(<QueuedMessageList scope="a" busy={busy} />);
+  const sendNow = screen.getAllByRole('button', { name: 'Send now' })[1] as HTMLButtonElement;
+  expect(sendNow.disabled).toBe(false);
+  fireEvent.click(sendNow);
   const queue = JSON.parse(localStorage.getItem('chat-drafts')!).a.queuedMessage;
   expect(queue.forceId).toBe('second');
   expect(queue.items.map((item: { id: string }) => item.id)).toEqual(['first', 'second']);
   expect(confirm).not.toHaveBeenCalled();
+  await waitFor(() => expect(api.user.saveDraft).toHaveBeenCalledWith('a', expect.objectContaining({
+    queuedMessage: expect.objectContaining({ forceId: 'second', paused: false }),
+  })));
+});
+
+test.each([500, 507, 400])('a failed Send now save (%s) shows an error and can be retried', async (status) => {
+  await act(async () => { seed(); });
+  vi.spyOn(console, 'error').mockImplementation(() => {});
+  vi.mocked(api.user.saveDraft).mockResolvedValueOnce(new Response('{}', { status }));
+  render(<QueuedMessageList scope="a" busy />);
+  const sendNow = screen.getAllByRole('button', { name: 'Send now' })[1] as HTMLButtonElement;
+  fireEvent.click(sendNow);
+  expect((await screen.findByRole('alert')).textContent).toContain('Queue changes could not be saved');
+  expect(sendNow.disabled).toBe(false);
+  expect(readQueuedMessages('a').map((item) => item.id)).toEqual(['first', 'second']);
+
+  fireEvent.click(sendNow);
+  await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
+  expect(JSON.parse(localStorage.getItem('chat-drafts')!).a.queuedMessage.forceId).toBe('second');
 });
 
 test('a paused queue remains editable and can be explicitly resumed', () => {

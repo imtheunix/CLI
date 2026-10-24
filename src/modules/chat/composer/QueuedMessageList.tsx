@@ -1,7 +1,7 @@
 import { useEffect, useReducer, useState } from 'react';
 
 import SendToLoadBalancerButton from '@/modules/chat/composer/SendToLoadBalancerButton';
-import { isQueuePaused, readQueuedMessages, replaceQueuedMessages, subscribeToChatDrafts } from '@/shared/chatDrafts';
+import { hasChatDraftSaveError, isQueuePaused, readQueuedMessages, replaceQueuedMessages, subscribeToChatDrafts } from '@/shared/chatDrafts';
 
 /** Used by ChatComposer to edit and control durable per-session queued turns. */
 export default function QueuedMessageList({ scope, busy }: { scope: string; busy: boolean }) {
@@ -17,10 +17,12 @@ export default function QueuedMessageList({ scope, busy }: { scope: string; busy
   }, [note]);
   const items = readQueuedMessages(scope);
   const paused = isQueuePaused(scope);
-  if (!items.length && !note) return null;
+  const saveFailed = hasChatDraftSaveError(scope);
+  if (!items.length && !note && !saveFailed) return null;
   const buttonClass = 'min-h-11 min-w-11 rounded-md border px-3 text-sm hover:bg-accent';
   return (
     <section aria-label="Queued messages" className="mx-auto mb-2 max-h-72 max-w-[54.25rem] overflow-y-auto rounded-lg border bg-card p-2 text-sm">
+      {saveFailed && <p role="alert" className="mb-2 text-destructive">Queue changes could not be saved to the server. Kept on this device; check the connection or server storage and try again.</p>}
       {note && <p role="status" className={`mb-2 ${note.error ? 'text-destructive' : ''}`}>{note.text}</p>}
       {!!items.length && <div className="flex items-center justify-between gap-2">
         <span>{paused ? 'Queue paused' : 'Queued'} · {items.length}</span>

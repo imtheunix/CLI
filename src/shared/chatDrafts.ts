@@ -61,6 +61,8 @@ const listeners = new Set<() => void>();
 
 let drafts = new Map<string, DraftRecord>();
 const pendingScopes = new Set<string>();
+// Failed saves must stay visible to queue controls and protected from polling.
+const failedScopes = new Set<string>();
 // Per-scope writes stay ordered, and polling must not replace unacknowledged edits.
 const serverWrites = new Map<string, Promise<void>>();
 const localRevisions = new Map<string, number>();
@@ -173,18 +175,24 @@ function flushServerWrites(retrying = false): void {
         const response = !draft || isEmptyDraft(draft)
           ? await api.user.deleteDraft(scope)
           : await api.user.saveDraft(scope, { text: draft.text, queuedMessage: draft.queuedMessage });
+        if (generation !== storeGeneration) return;
         if (!response.ok && isPermanentFailure(response.status)) {
           console.error(`Chat draft refused (${response.status}); kept on this device only`);
+          failedScopes.add(scope);
+          notifyListeners();
           return;
         }
         if (!response.ok) throw new Error(`Draft save failed (${response.status})`);
         confirmedQueues.set(scope, queueKey(draft?.queuedMessage));
+        if (failedScopes.delete(scope)) notifyListeners();
       } catch (error) {
         console.error('Failed to save chat draft:', error);
         // An undelivered draft (a queued message above all) must never be
         // dropped: keep the scope pending so the next hydrate cannot replace
         // it with the server's staler copy, and schedule another attempt.
         if (generation === storeGeneration) {
+          failedScopes.add(scope);
+          notifyListeners();
           pendingScopes.add(scope);
           if (serverWriteRetryTimer === null) {
             serverWriteRetryTimer = setTimeout(() => {
@@ -276,6 +284,11 @@ export function isQueuePaused(scope: string): boolean {
   return Boolean(stored && 'items' in stored && stored.paused);
 }
 
+/** Used by queue controls to report failed persistence without blocking another attempt. */
+export function hasChatDraftSaveError(scope: string): boolean {
+  return failedScopes.has(scope);
+}
+
 /** Replaces queue contents without changing the composer's unsent text. */
 export function replaceQueuedMessages(scope: string, items: StoredQueuedMessage[], paused = isQueuePaused(scope), forceId?: string): void {
   updateDraft(scope, { queuedMessage: items.length ? { items, paused, ...(forceId ? { forceId } : {}) } : null });
@@ -310,7 +323,7 @@ export function subscribeToChatDrafts(listener: () => void): () => void {
 export async function hydrateChatDrafts(): Promise<void> {
   const revision = ++hydrationRevision;
   const revisionsAtRequest = new Map(localRevisions);
-  const protectedScopes = new Set([...pendingScopes, ...serverWrites.keys()]);
+  const protectedScopes = new Set([...pendingScopes, ...serverWrites.keys(), ...failedScopes]);
   let serverDrafts: Array<{ scope?: unknown; text?: unknown; queuedMessage?: unknown }> = [];
 
   try {
@@ -334,8 +347,8 @@ export async function hydrateChatDrafts(): Promise<void> {
   // connection must still make progress while the next poll is outstanding.
   if (revision < lastHydratedRevision) return;
   lastHydratedRevision = revision;
-  for (const scope of [...pendingScopes, ...serverWrites.keys(), ...localRevisions.keys()]) {
-    if (pendingScopes.has(scope) || serverWrites.has(scope)
+  for (const scope of [...pendingScopes, ...serverWrites.keys(), ...failedScopes, ...localRevisions.keys()]) {
+    if (pendingScopes.has(scope) || serverWrites.has(scope) || failedScopes.has(scope)
       || localRevisions.get(scope) !== revisionsAtRequest.get(scope)) protectedScopes.add(scope);
   }
   const merged = new Map<string, DraftRecord>();
@@ -375,6 +388,7 @@ export function resetChatDrafts(): void {
   lastHydratedRevision = ++hydrationRevision;
   drafts = new Map();
   pendingScopes.clear();
+  failedScopes.clear();
   serverWrites.clear();
   localRevisions.clear();
   confirmedQueues.clear();

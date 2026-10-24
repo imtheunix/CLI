@@ -335,6 +335,25 @@ test('a queue changed on this device while offline is still retried as it stands
   assert.equal((savedDrafts[1].queuedMessage as { items: Array<{ content: string }> }).items[0].content, 'written offline');
 });
 
+test('a failed forced save stays visible and survives polling until the automatic retry succeeds', async () => {
+  const store = await loadStore();
+  store.writeQueuedMessage('session-a', { id: 'one', content: 'send this' });
+  await vi.advanceTimersByTimeAsync(0);
+  saveStatuses = [500]; // A full server disk fails the draft write.
+  store.replaceQueuedMessages('session-a', store.readQueuedMessages('session-a'), false, 'one');
+  await vi.advanceTimersByTimeAsync(0);
+  assert.equal(store.hasChatDraftSaveError('session-a'), true);
+  assert.equal(store.hasChatDraftSaveError('session-b'), false);
+  await store.hydrateChatDrafts();
+  assert.equal(store.readQueuedMessages('session-a')[0].id, 'one');
+
+  await vi.advanceTimersByTimeAsync(3_000);
+  assert.equal(store.hasChatDraftSaveError('session-a'), false);
+  const retry = savedDrafts.at(-1);
+  assert.ok(retry);
+  assert.equal((retry.queuedMessage as { forceId: string }).forceId, 'one');
+});
+
 test('a save the server refuses outright is not resent forever', async () => {
   const store = await loadStore();
   saveStatuses = [400];
@@ -342,5 +361,9 @@ test('a save the server refuses outright is not resent forever', async () => {
   await vi.advanceTimersByTimeAsync(1_500);
   await vi.advanceTimersByTimeAsync(20_000);
   assert.equal(savedDrafts.length, 1);
+  assert.equal(store.hasChatDraftSaveError('session-a'), true);
+  await store.hydrateChatDrafts();
   assert.equal(store.readDraftText('session-a'), 'refused', 'kept on this device');
+  store.resetChatDrafts();
+  assert.equal(store.hasChatDraftSaveError('session-a'), false);
 });
