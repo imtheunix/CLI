@@ -15,6 +15,8 @@ The orchestrating session (any chat in CLI) hands coding tasks to `tjob new`. Ea
 - With no room, the job waits (`queued`) and starts when a slot frees, oldest first.
 - A job holds its slot while it is being set up and while its agent works **or waits for an answer**. It frees it when it is **finished**: its agent ran `tjob done <id>` (code complete and committed), or the person told the session they do not want the job anymore (its agent runs `tjob cancel <id>`; `tjob resume` brings it back). Pressing Stop is **not** finishing: it is a change of direction or more context coming, and the job keeps its slot.
 
+The Codex runtime runs `$CODEX_PATH` when set, else the first `codex` on the server's PATH (outside `node_modules/.bin`), else the binary bundled with `@openai/codex-sdk`; it logs which one and its version on the first Codex turn. The bundled copy lags and can refuse newer models such as `gpt-6.1-sol`.
+
 Caps, models and the rest can be overridden in `~/.config/cli/orchestrator.json` (see `orchestrator-config.service.ts`), with no rebuild.
 
 ## CI/CD queue
