@@ -22,6 +22,7 @@ import { useChatSessionState } from '@/modules/chat/hooks/useChatSessionState';
 import { useChatRealtimeHandlers } from '@/modules/chat/hooks/useChatRealtimeHandlers';
 import { useChatComposerState } from '@/modules/chat/hooks/useChatComposerState';
 import { useSessionStore } from '@/modules/chat/hooks/useSessionStore';
+import { useSpawnedSessions } from '@/modules/chat/hooks/useSpawnedSessions';
 import {
   useProcessingSessions,
   useSessionProtectionActions,
@@ -381,6 +382,16 @@ function ChatInterface({
   const { scheduledMessages, schedule: scheduleMessage, cancel: cancelScheduledMessage } =
     useScheduledMessages(currentSessionId || selectedSession?.id || null);
 
+  // The sessions this one spawned, listed by the composer's checklist panel.
+  const { children: spawnedSessions, refresh: refreshSpawnedSessions } =
+    useSpawnedSessions(selectedSession?.id || currentSessionId || null);
+
+  // Opens a spawned session row's target through the same navigation the fork
+  // action uses, so the workspace resolves it even from another project.
+  const handleOpenSpawnedSession = useCallback((targetSessionId: string) => {
+    onNavigateToSession?.(targetSessionId);
+  }, [onNavigateToSession]);
+
   /**
    * Hands the composer's current text to the server to send later, and clears
    * the box as a send would — the message has left the composer either way.
@@ -573,8 +584,13 @@ function ChatInterface({
            onRetryFailedSend={retryFailedSend}
            onDismissFailedSend={dismissFailedSend}
            isDragActive={isDragActive}
-          queuedDraft={queuedDraft}
-          queueScope={selectedSession?.id || currentSessionId}
+           queuedDraft={queuedDraft}
+           queueScope={selectedSession?.id || currentSessionId}
+           chatMessages={chatMessages}
+           onRevealMessage={revealMessage}
+           spawnedSessions={spawnedSessions}
+           onOpenSpawnedSession={handleOpenSpawnedSession}
+           onRefreshSpawnedSessions={refreshSpawnedSessions}
           backgroundSendPrompt={backgroundSendPrompt}
           onResolveBackgroundSendPrompt={resolveBackgroundSendPrompt}
           onEditQueuedDraft={editQueuedDraft}

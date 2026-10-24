@@ -3,6 +3,7 @@ import path from 'node:path';
 import { readFile } from 'node:fs/promises';
 
 import { sessionsDb } from '@/modules/database/index.js';
+import { findSpawnParentForNewSession } from '@/modules/providers/services/session-spawn-lineage.service.js';
 import {
   buildLookupMap,
   extractFirstValidJsonlData,
@@ -53,7 +54,11 @@ export class CodexSessionSynchronizer implements IProviderSessionSynchronizer {
       }
 
       const timestamps = await readFileTimestamps(filePath);
-      sessionsDb.createSession(
+      const spawnParentSessionId = findSpawnParentForNewSession({
+        providerSessionId: parsed.sessionId,
+        transcriptPath: filePath,
+      });
+      const sessionId = sessionsDb.createSession(
         parsed.sessionId,
         this.provider,
         parsed.projectPath,
@@ -62,6 +67,9 @@ export class CodexSessionSynchronizer implements IProviderSessionSynchronizer {
         timestamps.updatedAt,
         filePath
       );
+      if (spawnParentSessionId) {
+        sessionsDb.setSessionSpawnedBy(sessionId, spawnParentSessionId);
+      }
       processed += 1;
     }
 
@@ -83,7 +91,11 @@ export class CodexSessionSynchronizer implements IProviderSessionSynchronizer {
     }
 
     const timestamps = await readFileTimestamps(filePath);
-    return sessionsDb.createSession(
+    const spawnParentSessionId = findSpawnParentForNewSession({
+      providerSessionId: parsed.sessionId,
+      transcriptPath: filePath,
+    });
+    const sessionId = sessionsDb.createSession(
       parsed.sessionId,
       this.provider,
       parsed.projectPath,
@@ -92,6 +104,10 @@ export class CodexSessionSynchronizer implements IProviderSessionSynchronizer {
       timestamps.updatedAt,
       filePath
     );
+    if (spawnParentSessionId) {
+      sessionsDb.setSessionSpawnedBy(sessionId, spawnParentSessionId);
+    }
+    return sessionId;
   }
 
   /**

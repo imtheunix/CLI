@@ -285,6 +285,10 @@ export type SessionUpsertedEvent = {
     summary: string;
     messageCount: number;
     lastActivity: string;
+    /** The app session this one was spawned from, when recorded at discovery; lets a live sidebar row show its "↳ from" line without a refetch. */
+    spawnedBySessionId?: string | null;
+    /** That parent's display name, resolved by the single event builder. */
+    spawnedByName?: string | null;
   };
   project: SessionUpsertedProject | null;
   timestamp: string;

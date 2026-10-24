@@ -36,6 +36,12 @@ async function buildSessionUpsertedEvent(
   const displayName = project?.custom_project_name?.trim()
     ? project.custom_project_name
     : await generateDisplayName(path.basename(projectPath ?? '') || (projectPath ?? ''), projectPath);
+  // Resolved here so a live upsert carries the sidebar's "↳ from <name>" line
+  // the same way a full project fetch does.
+  const spawnedBySessionId = row.spawned_by_session_id ?? null;
+  const spawnedByName = spawnedBySessionId
+    ? sessionsDb.getSessionById(spawnedBySessionId)?.custom_name?.trim() || null
+    : null;
 
   return {
     kind: 'session_upserted',
@@ -49,6 +55,8 @@ async function buildSessionUpsertedEvent(
       summary: row.custom_name || '',
       messageCount: 0,
       lastActivity: row.updated_at ?? row.created_at ?? new Date().toISOString(),
+      spawnedBySessionId,
+      spawnedByName,
     },
     project: project
       ? {

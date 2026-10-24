@@ -97,10 +97,25 @@ export type ProjectSession = {
   messageCount?: number;
   provider?: LLMProvider;
   __provider?: LLMProvider;
+  // The app session this one was spawned from (a CLI run started inside
+  // another session's shell). Present only when the backend recorded it.
+  spawnedBySessionId?: string | null;
+  // That parent session's display name, resolved server-side so a sidebar row
+  // can say "↳ from <name>" without a follow-up request.
+  spawnedByName?: string | null;
   // Tags the session with the owning project's DB `projectId` so UI handlers
   // (session switching, sidebar focus, etc.) can match against selectedProject.
   __projectId?: string;
   [key: string]: unknown;
+};
+
+/** One session spawned from another session's shell, as the composer's checklist panel lists it: identity, provider, recency and running state. */
+export type SpawnedSessionChild = {
+  sessionId: string;
+  provider: LLMProvider;
+  name: string;
+  lastActivity: string | null;
+  running: boolean;
 };
 
 /** Pagination metadata returned alongside a project's session page. */
@@ -1572,6 +1587,8 @@ export type ArchivedSessionListItem = {
   updatedAt: string | null;
   lastActivity: string | null;
   isProjectArchived: boolean;
+  /** The app session this one was spawned from, when the backend recorded one. */
+  spawnedBySessionId: string | null;
 };
 
 /** The subset of archived-session fields needed to render a recent-conversations row and reopen the session it points at. */

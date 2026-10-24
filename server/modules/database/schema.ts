@@ -181,6 +181,11 @@ CREATE TABLE IF NOT EXISTS sessions (
     -- normally. Informational only: a fork is a fully independent provider
     -- session, and deleting the source does not affect it.
     forked_from_session_id TEXT,
+    -- The app session whose shell spawned this one (a Codex/Claude/OpenCode
+    -- CLI started inside another session's terminal), recorded once when the
+    -- transcript is first discovered. Informational like forked_from: lineage
+    -- only, no behaviour depends on the parent still existing.
+    spawned_by_session_id TEXT,
     isArchived BOOLEAN DEFAULT 0,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,

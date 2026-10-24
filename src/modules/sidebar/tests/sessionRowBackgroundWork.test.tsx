@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 
 import { render } from '@testing-library/react';
 import React from 'react';
+import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, test, vi } from 'vitest';
 
 import type { Project, SessionWithProvider, SidebarProjectListProps } from '@/shared/types';
@@ -35,7 +36,9 @@ const PROJECT = { projectId: 'project-1', name: 'project-1', displayName: 'proje
 const SESSION = { id: 's1', summary: 'session one', lastActivity: '2026-08-21T09:59:00.000Z', __provider: 'claude' } as unknown as SessionWithProvider;
 
 const renderRow = (state: { isProcessing: boolean; hasBackgroundWork: boolean }) => render(
-  React.createElement(SidebarSessionItem, {
+  // MemoryRouter: the row navigates to a spawned session's parent via
+  // useNavigate, which needs a router context to exist.
+  React.createElement(MemoryRouter, null, React.createElement(SidebarSessionItem, {
     project: PROJECT,
     session: SESSION,
     selectedSession: null,
@@ -55,7 +58,7 @@ const renderRow = (state: { isProcessing: boolean; hasBackgroundWork: boolean })
     onToggleSessionSelected: noop,
     t,
     ...state,
-  }),
+  })),
 );
 
 beforeEach(() => {

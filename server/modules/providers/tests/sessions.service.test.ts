@@ -111,6 +111,8 @@ test('recent sessions map project metadata and preserve database pagination', { 
       '2026-08-01T11:00:00.000Z',
     );
     projectsDb.updateCustomProjectName('/tmp/recent-project', 'Recent Project');
+    // The newer conversation was started from the older one's shell.
+    sessionsDb.setSessionSpawnedBy('newer-session', 'older-session');
 
     const project = projectsDb.getProjectPath('/tmp/recent-project');
     const page = sessionsService.listRecentSessions(1, 0);
@@ -123,6 +125,7 @@ test('recent sessions map project metadata and preserve database pagination', { 
         projectDisplayName: 'Recent Project',
         sessionTitle: 'Newer conversation',
         lastActivity: '2026-08-01T11:00:00.000Z',
+        spawnedBySessionId: 'older-session',
       }],
       total: 2,
       hasMore: true,

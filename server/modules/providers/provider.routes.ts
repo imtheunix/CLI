@@ -925,7 +925,7 @@ router.get(
   '/sessions/:sessionId',
   asyncHandler(async (req: Request, res: Response) => {
     const sessionId = parseSessionId(req.params.sessionId);
-    const result = sessionsService.getSessionDetailsById(sessionId);
+    const result = await sessionsService.getSessionDetailsById(sessionId);
     res.json(createApiSuccessResponse(result));
   }),
 );

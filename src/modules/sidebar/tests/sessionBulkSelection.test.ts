@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 
 import { act, fireEvent, render, renderHook, waitFor } from '@testing-library/react';
 import React from 'react';
+import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, test, vi } from 'vitest';
 
 import type { Project, SessionWithProvider, SidebarProjectListProps, SidebarSessionSelection } from '@/shared/types';
@@ -92,7 +93,9 @@ type ListOverrides = {
 
 const renderSessions = (overrides: ListOverrides = {}) =>
   render(
-    React.createElement(SidebarProjectSessions, {
+    // MemoryRouter: session rows navigate to a spawned session's parent via
+    // useNavigate, which needs a router context to exist.
+    React.createElement(MemoryRouter, null, React.createElement(SidebarProjectSessions, {
       project: PROJECT,
       isExpanded: true,
       sessions: SESSIONS,
@@ -122,7 +125,7 @@ const renderSessions = (overrides: ListOverrides = {}) =>
       onDeleteSelectedSessions: noop,
       t,
       ...overrides,
-    }),
+    })),
   );
 
 const buttonWithText = (container: HTMLElement, text: string): HTMLButtonElement | null =>

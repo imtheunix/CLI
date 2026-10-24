@@ -15,6 +15,11 @@ type SessionRow = {
   effort: string | null;
   /** The app session this one was branched from; NULL unless it is a fork. */
   forked_from_session_id: string | null;
+  /**
+   * The app session whose shell spawned this one (a provider CLI started
+   * inside another session's terminal); NULL unless recorded at discovery.
+   */
+  spawned_by_session_id: string | null;
   isArchived: number;
   created_at: string;
   updated_at: string;
@@ -26,7 +31,7 @@ type RecentSessionsPage = {
 };
 
 const SESSION_ROW_COLUMNS =
-  'session_id, provider, provider_session_id, project_path, jsonl_path, custom_name, model, effort, forked_from_session_id, isArchived, created_at, updated_at';
+  'session_id, provider, provider_session_id, project_path, jsonl_path, custom_name, model, effort, forked_from_session_id, spawned_by_session_id, isArchived, created_at, updated_at';
 
 const SQLITE_UTC_TIMESTAMP_REGEX = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/;
 
@@ -446,6 +451,45 @@ export const sessionsDb = {
        SET custom_name = ?
        WHERE session_id = ?`
     ).run(customName, sessionId);
+  },
+
+  /**
+   * Records the session that spawned one newly discovered session.
+   *
+   * Never overwrites: the spawn parent is only knowable at discovery time, so
+   * a NULL is the only value a later, better-informed call could want to
+   * replace — and a second discovery of the same transcript must not move
+   * lineage that was already recorded.
+   */
+  setSessionSpawnedBy(sessionId: string, parentSessionId: string): void {
+    const db = getConnection();
+    db.prepare(
+      `UPDATE sessions
+       SET spawned_by_session_id = ?
+       WHERE session_id = ? AND spawned_by_session_id IS NULL`
+    ).run(parentSessionId, sessionId);
+  },
+
+  /**
+   * The sessions one session spawned from its shell, newest first, for the
+   * session-detail API's children list.
+   *
+   * Archived children are excluded: the parent panel lists live conversations,
+   * and the archive view already surfaces everything preserved.
+   */
+  getSessionsSpawnedBy(sessionId: string): SessionRow[] {
+    const db = getConnection();
+    const rows = db
+      .prepare(
+        `SELECT ${SESSION_ROW_COLUMNS}
+         FROM sessions
+         WHERE spawned_by_session_id = ?
+           AND isArchived = 0
+         ORDER BY datetime(COALESCE(updated_at, created_at)) DESC, session_id DESC`
+      )
+      .all(sessionId) as SessionRow[];
+
+    return normalizeSessionRows(rows);
   },
 
   getSessionById(sessionId: string): SessionRow | null {
