@@ -12,11 +12,12 @@ import type { OrchestratorBackend, OrchestratorJobRow } from '@/modules/database
 import { sessionsService } from '@/modules/providers/index.js';
 import { chatRunRegistry, runDetachedChatTurn } from '@/modules/websocket/index.js';
 import type { ProviderRuntimeGateway } from '@/modules/websocket/index.js';
-import { AppError } from '@/shared/utils.js';
+import { AppError } from '@/shared/index.js';
 
 import { isInGlmPeakHours, pickBackend } from './balancer.service.js';
 import { modelLabel, resolveRequestedModel } from './orchestrator-config.service.js';
 import type { OrchestratorConfig } from './orchestrator-config.service.js';
+import { prepareJobProjectMap } from './project-map.service.js';
 import {
   hasCommitsAhead,
   isDirty,
@@ -55,12 +56,13 @@ function firstUserId(): number | null {
 }
 
 /** The first turn of a job: the task, plus how a job ends. */
-function buildJobPrompt(job: OrchestratorJobRow, label: string): string {
+function buildJobPrompt(job: OrchestratorJobRow, label: string, projectMapGuidance: string): string {
   return [
     `You are ${label}, working on job ${job.id} — "${job.title}".`,
     `You are in your own git worktree (${job.worktree_path}), on branch ${job.branch}, made from origin/${job.base_branch} of ${job.repo_path}.`,
     '',
     job.prompt.trim(),
+    ...(projectMapGuidance ? ['', projectMapGuidance] : []),
     '',
     'How this job works:',
     "- Follow the repository's AGENTS.md / CLAUDE.md. Shared memory (decisions, context) is in Mem0 through the tripam-reasoning MCP when you have it.",
@@ -82,8 +84,11 @@ export function createJobsService(deps: {
   config: () => OrchestratorConfig;
   /** The clock GLM's peak hours are read from; tests pin it. */
   now?: () => Date;
+  /** Optional preparation is injectable so lifecycle tests can hold it before a job becomes active. */
+  prepareProjectMap?: (worktreePath: string) => Promise<string>;
 }) {
   const now = deps.now ?? (() => new Date());
+  const prepareProjectMap = deps.prepareProjectMap ?? prepareJobProjectMap;
   // A job is set up once at a time; a tick that finds it mid-preparation leaves it.
   const preparing = new Set<string>();
 
@@ -152,6 +157,7 @@ export function createJobsService(deps: {
         branch: job.branch,
         baseBranch: job.base_branch,
       });
+      const projectMapGuidance = await prepareProjectMap(job.worktree_path);
 
       let sessionId = job.session_id;
       if (!sessionId) {
@@ -162,7 +168,7 @@ export function createJobsService(deps: {
         if (backendConfig.effort) sessionsDb.setSessionEffort(sessionId, backendConfig.effort);
       }
       const ready = orchestratorJobsDb.update(job.id, { session_id: sessionId, state: 'active' }) as OrchestratorJobRow;
-      await sendTurn(ready, buildJobPrompt(ready, label));
+      await sendTurn(ready, buildJobPrompt(ready, label, projectMapGuidance));
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.error(`[Orchestrator] Job ${job.id} could not start`, message);

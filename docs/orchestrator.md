@@ -39,6 +39,8 @@ A backend's `models` maps the models a job may ask for to the label of its sessi
 
 ## CI/CD queue
 
+Optional local symbol/dependency maps for Claude, Codex and GLM jobs are documented in [Graphify project maps](graphify.md). They are disabled by default and use one bounded shell interface without changing model selection or job completion rules.
+
 `tjob done` puts the branch in the queue. Per repository, one job at a time goes through:
 
 1. **rebase** onto the latest `origin/<base>`. Conflicts are resolved by Gemini 3.8 Flash (`agy`); what it cannot settle goes back to the job's agent.

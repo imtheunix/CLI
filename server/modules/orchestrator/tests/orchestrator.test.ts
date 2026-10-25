@@ -8,11 +8,11 @@ import test from 'node:test';
 
 import { closeConnection, initializeDatabase, orchestratorJobsDb, sessionsDb, userDb } from '@/modules/database/index.js';
 import type { OrchestratorJobRow } from '@/modules/database/index.js';
-import { createJobsService } from '@/modules/orchestrator/services/jobs.service.js';
-import { createMergeQueueService } from '@/modules/orchestrator/services/merge-queue.service.js';
-import { loadOrchestratorConfig } from '@/modules/orchestrator/services/orchestrator-config.service.js';
-import type { OrchestratorConfig } from '@/modules/orchestrator/services/orchestrator-config.service.js';
-import { checkEnvironment, runCommand } from '@/modules/orchestrator/services/workspace.service.js';
+import { createJobsService } from '../services/jobs.service.js';
+import { createMergeQueueService } from '../services/merge-queue.service.js';
+import { loadOrchestratorConfig } from '../services/orchestrator-config.service.js';
+import type { OrchestratorConfig } from '../services/orchestrator-config.service.js';
+import { checkEnvironment, runCommand } from '../services/workspace.service.js';
 import { chatRunRegistry } from '@/modules/websocket/index.js';
 
 type Turn = { sessionId: string; command: string; options: Record<string, unknown> };
@@ -616,5 +616,32 @@ test('a job whose repository is unusable is refused with a reason, not recorded 
     await assert.rejects(jobs.create({ title: 'x', prompt: 'p', repoPath: path.join(workspaces, 'plain'), backend: null, baseBranch: null }), /plain is not a git repository/);
     await assert.rejects(jobs.create({ title: 'x', prompt: 'p', repoPath: path.join(workspaces, 'gone'), backend: null, baseBranch: null }), /gone does not exist/);
     assert.equal(jobs.list().length, 0);
+  });
+});
+
+test('map preparation stays in preparing and gives the same optional query guidance to all backends', async () => {
+  await withWorkspace(async ({ repo, config, runtime }) => {
+    const releases: Array<(guidance: string) => void> = [];
+    let preparingPath = '';
+    const jobs = createJobsService({
+      runtime: runtime.gateway,
+      config: () => config,
+      prepareProjectMap: (worktreePath) => {
+        preparingPath = worktreePath;
+        return new Promise<string>((resolve) => { releases.push(resolve); });
+      },
+    });
+    for (const [index, backend] of (['claude', 'codex', 'glm'] as const).entries()) {
+      const job = await jobs.create({ title: `map ${backend}`, prompt: 'investigate', repoPath: repo, backend, baseBranch: null });
+      await eventually(() => releases.length === index + 1, 'map preparation');
+      assert.equal(jobs.get(job.id)?.state, 'preparing');
+      assert.equal(runtime.turns.length, index);
+      assert.equal(preparingPath, job.worktree_path);
+      releases[index]('Optional map: query relevant symbols; inspect exact source.');
+      await eventually(() => runtime.turns.length === index + 1, 'first turn with guidance');
+      assert.equal(jobs.get(job.id)?.state, 'active');
+      assert.match(runtime.turns[index].command, /Optional map: query relevant symbols; inspect exact source\./);
+      runtime.finish(runtime.turns[index].sessionId);
+    }
   });
 });
