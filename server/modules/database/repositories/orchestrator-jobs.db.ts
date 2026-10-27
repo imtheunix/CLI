@@ -4,7 +4,8 @@ export type OrchestratorBackend = 'claude' | 'codex' | 'glm';
 
 export type OrchestratorJobState = 'queued' | 'preparing' | 'active' | 'done' | 'cancelled' | 'failed';
 
-export type OrchestratorMergeStep = 'none' | 'queued' | 'rebase' | 'check' | 'push' | 'deploy' | 'merged' | 'blocked';
+// review: a finished job waits for the orchestrating session's `tjob approve` before the queue (hub-and-spoke)
+export type OrchestratorMergeStep = 'none' | 'review' | 'queued' | 'rebase' | 'check' | 'push' | 'deploy' | 'merged' | 'blocked';
 
 export type OrchestratorJobRow = {
   id: string;
@@ -97,7 +98,7 @@ export const orchestratorJobsDb = {
   listInMergeQueue(): OrchestratorJobRow[] {
     return getConnection()
       .prepare(`SELECT * FROM orchestrator_jobs
-                WHERE merge_step NOT IN ('none', 'merged', 'blocked')
+                WHERE merge_step NOT IN ('none', 'review', 'merged', 'blocked')
                 ORDER BY updated_at ASC, rowid ASC`)
       .all() as OrchestratorJobRow[];
   },

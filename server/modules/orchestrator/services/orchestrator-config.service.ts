@@ -47,6 +47,12 @@ export type OrchestratorConfig = {
    * GPT have no room.
    */
   glmPeakHours: { avoid: boolean; utcOffsetHours: number; fromHour: number; toHour: number };
+  /**
+   * Hub-and-spoke (the user, 2026-10-27: sub-agents never reach each other or production on their own): a job's
+   * `tjob done` parks it at `review`; the orchestrating session (the hub) reads the branch and runs `tjob approve`
+   * to hand it to the CI/CD queue. Off, `tjob done` queues it at once.
+   */
+  review: boolean;
 };
 
 /** The order a tie between equally loaded backends is broken in: cheapest first. */
@@ -82,6 +88,7 @@ function defaults(): OrchestratorConfig {
       tokenFile: path.join(home, '.config/forgejo/claude-code-ops.token'),
     },
     glmPeakHours: { avoid: true, utcOffsetHours: 8, fromHour: 14, toHour: 18 },
+    review: true,
   };
 }
 
@@ -111,6 +118,7 @@ export function loadOrchestratorConfig(file = path.join(os.homedir(), '.config/c
   config.baseBranches = { ...config.baseBranches, ...(override.baseBranches as Record<string, string> ?? {}) };
   config.forgejo = { ...config.forgejo, ...(override.forgejo as object ?? {}) };
   config.glmPeakHours = { ...config.glmPeakHours, ...(override.glmPeakHours as object ?? {}) };
+  if (typeof override.review === 'boolean') config.review = override.review;
   return config;
 }
 

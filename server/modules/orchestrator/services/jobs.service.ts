@@ -70,7 +70,7 @@ function buildJobPrompt(job: OrchestratorJobRow, label: string, projectMapGuidan
     '- If you need a decision from the person, ask it and end your turn: they answer in this session. Being stopped mid-turn is not the end of the job: a change of direction or more context is coming.',
     `- Only when the person tells you they do not want this job anymore, run: tjob cancel ${job.id} (and tjob resume ${job.id} if they want it back later).`,
     `- When the code is complete, committed, and the project's checks pass, run: tjob done ${job.id}`,
-    `  That hands the branch to the CI/CD queue (rebase onto ${job.base_branch}, checks, push, deploy). If anything fails there, you get a message here.`,
+    `  That hands the branch to the orchestrating session for review; once approved it goes to the CI/CD queue (rebase onto ${job.base_branch}, checks, push, deploy). If anything fails there, you get a message here.`,
   ].join('\n');
 }
 
@@ -325,7 +325,22 @@ export function createJobsService(deps: {
       if (!await hasCommitsAhead(job.worktree_path, job.base_branch)) {
         throw new AppError(`The branch has no commits ahead of origin/${job.base_branch}`, { code: 'JOB_EMPTY', statusCode: 409 });
       }
-      orchestratorJobsDb.update(id, { state: 'done', merge_step: 'queued', merge_attempts: 0, pushed_sha: null, last_error: null });
+      orchestratorJobsDb.update(id, { state: 'done', merge_step: deps.config().review ? 'review' : 'queued', merge_attempts: 0,
+                                       pushed_sha: null, last_error: null });
+      return view(orchestratorJobsDb.get(id) as OrchestratorJobRow);
+    },
+
+    /**
+     * `tjob approve <id>`: the orchestrating session (the hub) reviewed a finished job's branch; it joins the CI/CD
+     * queue. Only a job waiting at review can be approved.
+     */
+    async approve(id: string): Promise<OrchestratorJobView> {
+      const job = orchestratorJobsDb.get(id);
+      if (!job) throw new AppError(`Job ${id} was not found`, { code: 'JOB_NOT_FOUND', statusCode: 404 });
+      if (job.state !== 'done' || job.merge_step !== 'review') {
+        throw new AppError(`Job ${id} is ${job.state} (${job.merge_step}), not waiting for review`, { code: 'JOB_NOT_IN_REVIEW', statusCode: 409 });
+      }
+      orchestratorJobsDb.update(id, { merge_step: 'queued' });
       return view(orchestratorJobsDb.get(id) as OrchestratorJobRow);
     },
 
@@ -393,7 +408,7 @@ export function createJobsService(deps: {
     async tick(): Promise<void> {
       for (const job of orchestratorJobsDb.listByState(['active', 'done'])) {
         if (!job.session_id || !chatRunRegistry.isProcessing(job.session_id)) continue;
-        if (job.state === 'done' && job.merge_step === 'queued' && startedAfter(job.session_id, job.updated_at)) {
+        if (job.state === 'done' && (job.merge_step === 'queued' || job.merge_step === 'review') && startedAfter(job.session_id, job.updated_at)) {
           // A new turn after `tjob done` (not the turn that called it), before
           // the queue took the branch: the work is not finished after all.
           orchestratorJobsDb.update(job.id, { state: 'active', merge_step: 'none', in_turn: 1 });

@@ -101,6 +101,7 @@ async function withWorkspace(
   config.forgejo.tokenFile = path.join(root, 'no-token');
   // The balancing tests must not depend on the hour they run at.
   config.glmPeakHours.avoid = false;
+  config.review = false;   // the queue's own tests; the review gate has its own
   tune(config);
 
   const runtime = createRuntime();
@@ -644,4 +645,23 @@ test('map preparation stays in preparing and gives the same optional query guida
       runtime.finish(runtime.turns[index].sessionId);
     }
   });
+});
+
+test('a finished job waits for the hub: tjob done parks it at review, tjob approve hands it to the queue', async () => {
+  // hub-and-spoke (the user, 2026-10-27): a sub-agent's branch never reaches the base branch on its own
+  await withWorkspace(async (ctx) => {
+    const id = await finishedJob(ctx, (worktree) => commitFile(worktree, 'feature.txt', 'f\n', 'feature'));
+    assert.equal(ctx.job(id).state, 'done');
+    assert.equal(ctx.job(id).merge_step, 'review');
+    const queue = createMergeQueueService({ jobs: ctx.jobs, config: () => ctx.config });
+    await queue.tick();
+    assert.equal(ctx.job(id).merge_step, 'review');   // the queue leaves it alone
+    const approved = await ctx.jobs.approve(id);
+    assert.equal(approved.merge_step, 'queued');
+    await assert.rejects(ctx.jobs.approve(id), /not waiting for review/);
+  }, (config) => { config.review = true; });
+});
+
+test('the review gate is the default', () => {
+  assert.equal(loadOrchestratorConfig('/nonexistent/orchestrator.json').review, true);
 });

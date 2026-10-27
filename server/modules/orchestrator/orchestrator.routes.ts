@@ -101,6 +101,10 @@ export function createOrchestratorRouter(services: {
     res.json(createApiSuccessResponse({ job: await services.jobs.markDone(String(req.params.id)) }));
   }));
 
+  router.post('/:id/approve', asyncHandler(async (req, res) => {
+    res.json(createApiSuccessResponse({ job: await services.jobs.approve(String(req.params.id)) }));
+  }));
+
   router.post('/:id/cancel', asyncHandler(async (req, res) => {
     res.json(createApiSuccessResponse({ job: await services.jobs.cancel(String(req.params.id)) }));
   }));
