@@ -34,6 +34,10 @@ const SLOT_STATES = ['preparing', 'active'] as const;
 const BACKENDS: OrchestratorBackend[] = ['claude', 'codex', 'glm'];
 
 /** What a job looks like to its callers: the row, plus what its session is doing right now. */
+
+/** Job branches are `feature/…` or `bugfix/…`; a finished one waits for the hub's review before it reaches main. */
+export type OrchestratorJobKind = 'feature' | 'bugfix';
+export const JOB_KINDS: readonly OrchestratorJobKind[] = ['feature', 'bugfix'];
 export type OrchestratorJobView = OrchestratorJobRow & {
   /** working while its session has a turn going, waiting when the agent stopped for an answer. */
   activity: 'working' | 'waiting' | null;
@@ -199,6 +203,8 @@ export function createJobsService(deps: {
       /** A model id the backend offers (`zai-coding-plan/glm-5.3` or `glm-5.3`); with no backend, it picks one. */
       model?: string | null;
       baseBranch: string | null;
+      /** The branch family: `feature/<slug>-<id>` (default) or `bugfix/<slug>-<id>`; the hub reviews it before main. */
+      kind?: OrchestratorJobKind;
     }): Promise<OrchestratorJobView> {
       const config = deps.config();
       const requested = input.model ? resolveRequestedModel(config, input.backend, input.model) : null;
@@ -225,7 +231,7 @@ export function createJobsService(deps: {
         baseBranch,
         requestedBackend: requested?.backend ?? input.backend,
         model: requested?.model ?? null,
-        branch: `job/${slugify(input.title)}-${id}`,
+        branch: `${input.kind ?? 'feature'}/${slugify(input.title)}-${id}`,
         worktreePath: path.join(config.worktreesRoot, repoName, id),
       });
       await this.tick();

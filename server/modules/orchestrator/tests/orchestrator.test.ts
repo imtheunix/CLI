@@ -665,3 +665,15 @@ test('a finished job waits for the hub: tjob done parks it at review, tjob appro
 test('the review gate is the default', () => {
   assert.equal(loadOrchestratorConfig('/nonexistent/orchestrator.json').review, true);
 });
+
+test('job branches are feature/… by default and bugfix/… on request', async () => {
+  // the user, 2026-11-01: work lands in a feature/bugfix branch, reviewed by the hub before main
+  await withWorkspace(async (ctx) => {
+    const feature = await ctx.jobs.create({ title: 'Add a thing', prompt: 'p', repoPath: ctx.repo, backend: 'glm', baseBranch: null });
+    assert.match(ctx.job(feature.id).branch, /^feature\/add-a-thing-[0-9a-f]{8}$/);
+    const bugfix = await ctx.jobs.create({ title: 'Fix a thing', prompt: 'p', repoPath: ctx.repo, backend: 'glm', baseBranch: null, kind: 'bugfix' });
+    assert.match(ctx.job(bugfix.id).branch, /^bugfix\/fix-a-thing-[0-9a-f]{8}$/);
+    // let both jobs finish starting (worktree creation) before the workspace is removed
+    await eventually(() => ctx.job(feature.id).state === 'active' && ctx.job(bugfix.id).state === 'active', 'start');
+  });
+});

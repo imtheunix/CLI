@@ -4,7 +4,7 @@ import type { NextFunction, Request, RequestHandler, Response } from 'express';
 import type { OrchestratorBackend } from '@/modules/database/index.js';
 import { AppError, asyncHandler, createApiSuccessResponse } from '@/shared/utils.js';
 
-import type { JobsService } from './services/jobs.service.js';
+import { JOB_KINDS, type JobsService, type OrchestratorJobKind } from './services/jobs.service.js';
 import type { createMergeQueueService } from './services/merge-queue.service.js';
 import { isOrchestratorToken } from './services/orchestrator-token.service.js';
 
@@ -18,6 +18,14 @@ function readString(value: unknown, name: string, required: boolean): string | n
     throw new AppError(`${name} is required`, { code: 'INVALID_REQUEST_BODY', statusCode: 400 });
   }
   return parsed || null;
+}
+
+function readKind(value: unknown): OrchestratorJobKind {
+  const kind = readString(value, 'kind', false) ?? 'feature';
+  if (!(JOB_KINDS as readonly string[]).includes(kind)) {
+    throw new AppError('kind must be feature or bugfix', { code: 'INVALID_KIND', statusCode: 400 });
+  }
+  return kind as OrchestratorJobKind;
 }
 
 function readBackend(value: unknown): OrchestratorBackend | null {
@@ -68,6 +76,7 @@ export function createOrchestratorRouter(services: {
       backend: readBackend(body.backend),
       model: readString(body.model, 'model', false),
       baseBranch: readString(body.base, 'base', false),
+      kind: readKind(body.kind),
     });
     res.status(201).json(createApiSuccessResponse({ job }));
   }));
