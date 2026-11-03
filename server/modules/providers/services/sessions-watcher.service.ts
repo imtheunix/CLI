@@ -35,6 +35,10 @@ export const PROVIDER_WATCH_PATHS: Array<{ provider: LLMProvider; rootPath: stri
     provider: 'agy',
     rootPath: path.join(os.homedir(), '.gemini', 'antigravity-cli'),
   },
+  {
+    provider: 'zcode',
+    rootPath: path.join(os.homedir(), '.zcode'),
+  },
 ];
 
 const WATCHER_IGNORED_PATTERNS = [
@@ -82,6 +86,10 @@ export function isWatcherTargetFile(provider: LLMProvider, filePath: string): bo
 
   if (provider === 'agy') {
     return path.basename(filePath) === 'conversation_summaries.db';
+  }
+
+  if (provider === 'zcode') {
+    return path.basename(filePath) === 'db.sqlite' || filePath.endsWith('.jsonl');
   }
 
   return filePath.endsWith('.jsonl');

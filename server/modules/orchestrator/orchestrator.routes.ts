@@ -9,7 +9,7 @@ import type { createMergeQueueService } from './services/merge-queue.service.js'
 import type { HubWakeService } from './services/hub-wake.service.js';
 import { isOrchestratorToken } from './services/orchestrator-token.service.js';
 
-const BACKENDS = ['claude', 'codex', 'glm', 'agy'];
+const BACKENDS = ['claude', 'codex', 'glm', 'agy', 'zcode'];
 
 function readString(value: unknown, name: string, required: true): string;
 function readString(value: unknown, name: string, required: false): string | null;
@@ -33,7 +33,7 @@ function readBackend(value: unknown): OrchestratorBackend | null {
   const backend = readString(value, 'backend', false);
   if (backend === null || backend === 'auto') return null;
   if (!BACKENDS.includes(backend)) {
-    throw new AppError('backend must be claude, codex, glm, agy or auto', { code: 'INVALID_BACKEND', statusCode: 400 });
+    throw new AppError('backend must be claude, codex, glm, agy, zcode or auto', { code: 'INVALID_BACKEND', statusCode: 400 });
   }
   return backend as OrchestratorBackend;
 }

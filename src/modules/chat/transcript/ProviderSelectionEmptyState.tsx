@@ -334,6 +334,10 @@ export default function ProviderSelectionEmptyState({
                   model: providerModels.agy,
                   defaultValue: "Ready with Antigravity {{model}}",
                 }),
+                zcode: t("providerSelection.readyPrompt.zcode", {
+                  model: providerModels.zcode,
+                  defaultValue: "Ready with ZCode {{model}}",
+                }),
               }[provider]
             }
           </p>

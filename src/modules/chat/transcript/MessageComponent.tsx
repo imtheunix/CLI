@@ -246,9 +246,11 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
                               ? t('messageTypes.opencode', { defaultValue: 'OpenCode' })
                               : provider === 'agy'
                                   ? t('messageTypes.agy', { defaultValue: 'Antigravity' })
-                                  : provider === 'labs'
-                                    ? 'LABS'
-                                    : t('messageTypes.claude'))}
+                                  : provider === 'zcode'
+                                    ? t('messageTypes.zcode', { defaultValue: 'ZCode' })
+                                    : provider === 'labs'
+                                      ? 'LABS'
+                                      : t('messageTypes.claude'))}
               </div>
             </div>
           )}

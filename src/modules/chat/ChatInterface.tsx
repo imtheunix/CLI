@@ -444,9 +444,11 @@ function ChatInterface({
             ? t('messageTypes.opencode', { defaultValue: 'OpenCode' })
             : provider === 'agy'
               ? t('messageTypes.agy', { defaultValue: 'Antigravity' })
-              : provider === 'labs'
-                ? 'LABS'
-                : t('messageTypes.claude');
+              : provider === 'zcode'
+                ? t('messageTypes.zcode', { defaultValue: 'ZCode' })
+                : provider === 'labs'
+                  ? 'LABS'
+                  : t('messageTypes.claude');
 
   const isReadOnly = provider === 'labs' || selectedSession?.__provider === 'labs';
 

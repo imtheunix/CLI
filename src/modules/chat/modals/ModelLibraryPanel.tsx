@@ -27,6 +27,7 @@ const PROVIDERS: Array<{ id: LLMProvider; label: string }> = [
   { id: 'cursor', label: 'Cursor' },
   { id: 'opencode', label: 'OpenCode' },
   { id: 'agy', label: 'Antigravity' },
+  { id: 'zcode', label: 'ZCode' },
 ];
 
 type ModelLibraryPanelProps = {

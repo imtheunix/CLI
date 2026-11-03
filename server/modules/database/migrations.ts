@@ -528,6 +528,21 @@ const allowLabsProviderModels = (db: Database): void => {
   })();
 };
 
+/** Upgrade the model catalog's provider CHECK to include zcode while retaining user models. */
+const allowZcodeProviderModels = (db: Database): void => {
+  const row = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'provider_models'").get() as { sql: string } | undefined;
+  if (!row || row.sql.includes("'zcode'")) return;
+  db.transaction(() => {
+    db.exec(PROVIDER_MODELS_TABLE_SCHEMA_SQL.replace('provider_models', 'provider_models_with_zcode'));
+    db.exec(`
+      INSERT INTO provider_models_with_zcode (id, provider, model_id, model_name, sort_order, created_at, updated_at, effort_values, effort_default)
+      SELECT id, provider, model_id, model_name, sort_order, created_at, updated_at, effort_values, effort_default FROM provider_models;
+      DROP TABLE provider_models;
+      ALTER TABLE provider_models_with_zcode RENAME TO provider_models;
+    `);
+  })();
+};
+
 const ensureProjectsForSessionPaths = (db: Database): void => {
   if (!tableExists(db, 'sessions')) {
     return;
@@ -574,6 +589,7 @@ export const runMigrations = (db: Database) => {
     addProviderModelEffortColumns(db);
     allowAgyProviderModels(db);
     allowLabsProviderModels(db);
+    allowZcodeProviderModels(db);
     db.exec(`
       CREATE INDEX IF NOT EXISTS idx_provider_models_provider_order
       ON provider_models(provider, sort_order, id)

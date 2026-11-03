@@ -27,6 +27,7 @@ export type UserPreferences = {
   labsPermissions?: unknown;
   opencodePermissions: unknown;
   agyPermissions: unknown;
+  zcodePermissions?: unknown;
   codeEditorSettings: unknown;
   uiPreferences: unknown;
   selectedProvider: string;
@@ -66,6 +67,7 @@ const LEGACY_STORAGE_KEYS: Record<UserPreferenceKey, string> = {
   labsPermissions: 'labs-settings',
   opencodePermissions: 'opencode-settings',
   agyPermissions: 'agy-settings',
+  zcodePermissions: 'zcode-settings',
   // Unused: the four code-editor settings never shared one key, so they are
   // read by readLegacyCodeEditorSettings instead.
   codeEditorSettings: '',

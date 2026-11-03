@@ -1,7 +1,7 @@
 import { getConnection } from '@/modules/database/connection.js';
 
 /** Orchestrator services/routes use these persisted backend ids for scheduling and job views. */
-export type OrchestratorBackend = 'claude' | 'codex' | 'glm' | 'agy';
+export type OrchestratorBackend = 'claude' | 'codex' | 'glm' | 'agy' | 'zcode';
 
 export type OrchestratorJobState = 'queued' | 'preparing' | 'active' | 'done' | 'cancelled' | 'failed';
 

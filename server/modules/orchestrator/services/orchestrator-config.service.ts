@@ -31,6 +31,8 @@ export type OrchestratorConfig = {
   fallbackBackend: OrchestratorBackend;
   /** Jobs service: continue quota-stopped GLM jobs on agy, or wait for reset. */
   glmQuotaFallback: 'agy' | 'wait';
+  /** Run glm jobs on zcode instead of opencode. Default 'opencode'. */
+  glmProvider: 'opencode' | 'zcode';
   /** Where job worktrees are created, one folder per job. */
   worktreesRoot: string;
   /** Only repositories under this folder can be given jobs. */
@@ -106,9 +108,18 @@ function defaults(): OrchestratorConfig {
         cap: 3,
         label: 'GLM',
       },
+      zcode: {
+        provider: 'zcode',
+        model: 'GLM-5.3-Flash',
+        models: { 'GLM-5.3-Flash': 'GLM Flash', 'GLM-5.3': 'GLM' },
+        effort: 'medium',
+        cap: 3,
+        label: 'GLM Flash',
+      },
     },
     fallbackBackend: 'glm',
     glmQuotaFallback: 'agy',
+    glmProvider: 'opencode',
     worktreesRoot: path.join(workspacesRoot, '.jobs'),
     workspacesRoot,
     conflictResolver: { command: 'agy', model: 'gemini-3.8-flash-medium' },
@@ -149,6 +160,16 @@ export function loadOrchestratorConfig(file = path.join(os.homedir(), '.config/c
     config.fallbackBackend = override.fallbackBackend as OrchestratorBackend;
   }
   if (override.glmQuotaFallback === 'agy' || override.glmQuotaFallback === 'wait') config.glmQuotaFallback = override.glmQuotaFallback;
+  if (override.glmProvider === 'opencode' || override.glmProvider === 'zcode') {
+    config.glmProvider = override.glmProvider;
+  }
+  if (config.glmProvider === 'zcode') {
+    config.backends.glm.provider = 'zcode';
+    config.backends.glm.model = 'GLM-5.3-Flash';
+    config.backends.glm.models = { 'GLM-5.3-Flash': 'GLM Flash', 'GLM-5.3': 'GLM' };
+  } else if (config.backends.glm.provider === 'zcode') {
+    config.glmProvider = 'zcode';
+  }
   if (typeof override.worktreesRoot === 'string') config.worktreesRoot = override.worktreesRoot;
   config.conflictResolver = { ...config.conflictResolver, ...(override.conflictResolver as object ?? {}) };
   config.checks = { ...config.checks, ...(override.checks as Record<string, string> ?? {}) };
@@ -197,7 +218,7 @@ export function resolveRequestedModel(
   requestedModel: string,
 ): { backend: OrchestratorBackend; model: string } {
   const allowed = (name: OrchestratorBackend) => [...new Set([config.backends[name].model, ...Object.keys(config.backends[name].models)])];
-  const matches = (id: string) => id === requestedModel || id.slice(id.indexOf('/') + 1) === requestedModel;
+  const matches = (id: string) => id.toLowerCase() === requestedModel.toLowerCase() || id.slice(id.indexOf('/') + 1).toLowerCase() === requestedModel.toLowerCase();
   const candidates = requestedBackend ? [requestedBackend] : (Object.keys(config.backends) as OrchestratorBackend[]);
   for (const backend of candidates) {
     const model = allowed(backend).find(matches);

@@ -216,4 +216,5 @@ export const PROVIDER_LABELS: Record<LLMProvider, string> = {
   labs: 'LABS',
   opencode: 'OpenCode',
   agy: 'Antigravity',
+  zcode: 'ZCode',
 };

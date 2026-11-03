@@ -138,6 +138,20 @@ const PROVIDER_CAPABILITIES: Record<LLMProvider, ProviderCapabilities> = {
     supportsMessageEditing: false,
     supportsSessionForking: false,
   },
+  zcode: {
+    provider: 'zcode',
+    permissionModes: ['default', 'bypassPermissions', 'plan'],
+    defaultPermissionMode: 'default',
+    supportsImages: false,
+    supportsFiles: false,
+    supportsAbort: true,
+    supportsPermissionRequests: false,
+    supportsTokenUsage: false,
+    supportsEffort: true,
+    effortLevels: ['low', 'medium', 'high', 'max'],
+    supportsMessageEditing: false,
+    supportsSessionForking: false,
+  },
 };
 
 /**

@@ -1,4 +1,4 @@
-# Orchestrator: coding jobs over Claude, GPT, GLM and Gemini Flash
+# Orchestrator: coding jobs over Claude, GPT, GLM, ZCode and Gemini Flash
 
 The orchestrating session (any chat in CLI) hands coding tasks to `tjob new`. Each task becomes a **job**: a real CLI session, named `Claude · …`, `GPT · …`, `GLM Flash · …` `GLM · …` (the full GLM model) or `Gemini Flash · …` in the Sessions tab, running in its own git worktree (`~/Tribeira/.jobs/<repo>/<id>`, branch `job/<slug>-<id>`). Open it and talk to it like any other session.
 
@@ -10,6 +10,7 @@ The orchestrating session (any chat in CLI) hands coding tasks to `tjob new`. Ea
 | `codex` (GPT) | Codex | `gpt-6.1-sol` (medium) | 2 |
 | `agy` | agy CLI | `gemini-3.8-flash-medium` (medium effort) | 4 |
 | `glm` | OpenCode, Z.ai Coding Plan | `zai-coding-plan/glm-5.3-flash` · `zai-coding-plan/glm-5.3` | 3 |
+| `zcode` | ZCode CLI | `GLM-5.3-Flash` · `GLM-5.3` | 3 |
 
 - A job without a backend goes to whichever backend is working on the fewest jobs (under its cap); ties go to the cheapest (GLM, then GPT, then Claude).
 - A job that asks for a backend gets it while it is under its cap, and GLM when it is not.
@@ -27,19 +28,19 @@ The Coding Plan's week is 60,000 credits. Per 10,000 tokens, GLM-5.3 costs 6.9 (
 
 ### GLM quota fallback
 
-When a GLM turn reports Z.ai's `Usage limit reached for 5 hour` error (code 1308), GLM is marked quota-exhausted until its reported reset. Z.ai's unqualified reset times are interpreted as UTC+8; missing, invalid or past reset times use a one-hour cooldown. Ordinary HTTP 429/rate-limit errors do not trigger this fallback. The cooldown persists across server restarts.
+When a GLM or ZCode turn reports Z.ai's quota exhaustion errors (5-hour limit code 1308 or weekly/monthly limit code 1310), the backend is marked quota-exhausted until its reported reset. Z.ai's unqualified reset times are interpreted as UTC+8; missing, invalid or past reset times use a one-hour cooldown. Ordinary HTTP 429/rate-limit errors do not trigger this fallback. The cooldown persists across server restarts.
 
-While exhausted, jobs requested on GLM (including cap overflow to GLM) use agy with Gemini 3.8 Flash. A quota-stopped job keeps its worktree and branch and gets a new agy conversation. Its prompt includes the original task and an instruction to inspect `git log`, `git status` and the diff before continuing. The old GLM session remains available. Agy's cap is respected; when full, continuations wait in the queue. `tjob ls` shows the actual backend/model, the fallback, and the cooldown.
+While exhausted, jobs requested on GLM or ZCode (including cap overflow) use agy with Gemini 3.8 Flash. A quota-stopped job keeps its worktree and branch and gets a new agy conversation. Its prompt includes the original task and an instruction to inspect `git log`, `git status` and the diff before continuing. The old session remains available. Agy's cap is respected; when full, continuations wait in the queue. `tjob ls` shows the actual backend/model, the fallback, and the cooldown.
 
-Set `"glmQuotaFallback": "wait"` to queue GLM work until reset instead. The default is `"agy"`. Override `"backends": { "agy": { "cap": 4 } }` to change its cap. Explicit `tjob new --backend agy` works at any time; agy is otherwise used for quota fallback. Jobs run with `--dangerously-skip-permissions`; later turns resume with `--conversation <id>` and pass the configured `--effort`. Raw streams are recorded under `~/.cloudcli/agy/<app-session-id>.jsonl` for history replay.
+Set `"glmQuotaFallback": "wait"` to queue GLM/ZCode work until reset instead. The default is `"agy"`. Override `"backends": { "agy": { "cap": 4 } }` to change its cap. Explicit `tjob new --backend agy` or `tjob new --backend zcode` works at any time; agy is otherwise used for quota fallback. ZCode runs `GLM-5.3-Flash` by default (never full GLM-5.3 unless explicitly requested). Set `"glmProvider": "zcode"` in `orchestrator.json` to route default `glm` backend jobs through ZCode rather than OpenCode (default is `"opencode"`).
 
 ### Configuration
 
-Caps, models and the rest can be overridden in `~/.config/cli/orchestrator.json` (see `orchestrator-config.service.ts`), with no rebuild. For example, the full GLM model by default, and GLM even in its peak hours:
+Caps, models and the rest can be overridden in `~/.config/cli/orchestrator.json` (see `orchestrator-config.service.ts`), with no rebuild. For example, switching GLM jobs to ZCode, and setting GLM even in its peak hours:
 
 ```json
 {
-  "backends": { "glm": { "model": "zai-coding-plan/glm-5.3" } },
+  "glmProvider": "zcode",
   "glmPeakHours": { "avoid": false }
 }
 ```
@@ -66,7 +67,7 @@ While a session is busy, a message can still wait for it (the queue), or go to t
 ## `tjob`
 
 ```
-tjob new "<title>" [--repo PATH] [--backend auto|claude|codex|glm|agy] [--model ID] [--base BRANCH] [--prompt TEXT]   # else the prompt from stdin
+tjob new "<title>" [--repo PATH] [--backend auto|claude|codex|glm|agy|zcode] [--model ID] [--base BRANCH] [--prompt TEXT]   # else the prompt from stdin
 tjob ls | show <id> | done <id> | cancel <id> | retry <id> | resume <id>
 ```
 

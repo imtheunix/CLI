@@ -4,6 +4,7 @@ import { CodexProvider } from '@/modules/providers/list/codex/codex.provider.js'
 import { CursorProvider } from '@/modules/providers/list/cursor/cursor.provider.js';
 import { LabsProvider } from '@/modules/providers/list/labs/labs.provider.js';
 import { OpenCodeProvider } from '@/modules/providers/list/opencode/opencode.provider.js';
+import { ZcodeProvider } from '@/modules/providers/list/zcode/zcode.provider.js';
 import type { IProvider } from '@/shared/interfaces.js';
 import type { LLMProvider } from '@/shared/types.js';
 import { AppError } from '@/shared/utils.js';
@@ -15,6 +16,7 @@ const providers: Record<LLMProvider, IProvider> = {
   cursor: new CursorProvider(),
   labs: new LabsProvider(),
   opencode: new OpenCodeProvider(),
+  zcode: new ZcodeProvider(),
 };
 
 /**

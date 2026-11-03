@@ -55,9 +55,10 @@ const PROVIDER_NAMES: Record<SkillsProvider, string> = {
   cursor: 'Cursor',
   opencode: 'OpenCode',
   agy: 'Antigravity',
+  zcode: 'ZCode',
 };
 
-const PROVIDER_SKILL_PATHS: Record<Exclude<SkillsProvider, 'opencode' | 'agy'>, string> = {
+const PROVIDER_SKILL_PATHS: Record<Exclude<SkillsProvider, 'opencode' | 'agy' | 'zcode'>, string> = {
   claude: '~/.claude/skills/<skill-name>/SKILL.md',
   codex: '~/.agents/skills/<skill-name>/SKILL.md',
   cursor: '~/.cursor/skills/<skill-name>/SKILL.md',
@@ -207,7 +208,7 @@ export default function ProviderSkills({ selectedProvider, currentProjects }: Pr
   const folderInputRef = useRef<HTMLInputElement | null>(null);
 
   const providerName = PROVIDER_NAMES[selectedProvider];
-  const providerPath = (selectedProvider === 'opencode' || selectedProvider === 'agy')
+  const providerPath = (selectedProvider === 'opencode' || selectedProvider === 'agy' || selectedProvider === 'zcode')
     ? null
     : PROVIDER_SKILL_PATHS[selectedProvider];
 

@@ -35,9 +35,10 @@ const FALLBACK_DEFAULT_MODEL: Record<LLMProvider, string> = {
   labs: '',
   opencode: 'anthropic/claude-sonnet-4-5',
   agy: 'gemini-3.8-flash-medium',
+  zcode: 'GLM-5.3-Flash',
 };
 
-const PROVIDERS: LLMProvider[] = ['claude', 'cursor', 'codex', 'opencode', 'agy', 'labs'];
+const PROVIDERS: LLMProvider[] = ['claude', 'cursor', 'codex', 'opencode', 'agy', 'labs', 'zcode'];
 
 /** localStorage key holding the user's default model for one provider. */
 const providerModelStorageKey = (provider: LLMProvider): string => `${provider}-model`;
@@ -55,6 +56,7 @@ const FALLBACK_PERMISSION_MODES: Record<LLMProvider, PermissionMode[]> = {
   labs: ['default'],
   opencode: ['default', 'acceptEdits', 'bypassPermissions', 'plan'],
   agy: ['default', 'auto', 'bypassPermissions', 'plan'],
+  zcode: ['default', 'bypassPermissions', 'plan'],
 };
 
 type ProviderCapabilities = {

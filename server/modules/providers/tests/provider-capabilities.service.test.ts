@@ -6,6 +6,7 @@ import { CLAUDE_PREDEFINED_MODELS } from '@/modules/providers/list/claude/claude
 import { CODEX_PREDEFINED_MODELS } from '@/modules/providers/list/codex/codex-models.provider.js';
 import { CURSOR_PREDEFINED_MODELS } from '@/modules/providers/list/cursor/cursor-models.provider.js';
 import { OPENCODE_PREDEFINED_MODELS } from '@/modules/providers/list/opencode/opencode-models.provider.js';
+import { ZcodeProvider } from '@/modules/providers/list/zcode/zcode.provider.js';
 import { providerCapabilitiesService } from '@/modules/providers/services/provider-capabilities.service.js';
 import type { LLMProvider, ProviderModelsDefinition } from '@/shared/types.js';
 
@@ -20,6 +21,7 @@ const CURATED_CATALOGS: Record<LLMProvider, ProviderModelsDefinition> = {
   cursor: CURSOR_PREDEFINED_MODELS,
   labs: { DEFAULT: '', OPTIONS: [] },
   opencode: OPENCODE_PREDEFINED_MODELS,
+  zcode: await new ZcodeProvider().models.getSupportedModels(),
 };
 
 test('capability effort levels cover every level a curated model declares', () => {

@@ -1035,6 +1035,20 @@ export function getAgyDatabasePath(): string {
   return path.join(os.homedir(), '.gemini', 'antigravity-cli', 'conversation_summaries.db');
 }
 
+//----------------- ZCODE SESSION STORAGE UTILITIES ------------
+/**
+ * Resolves the ZCode SQLite database path.
+ *
+ * zcode stores session summaries and message history in `db.sqlite` under
+ * `~/.zcode/cli/db/`. Provider readers and synchronizers should use this path
+ * for read-only access and should never store it as a deletable transcript path
+ * for an individual app session row.
+ * Consuming modules: ZcodeProvider, ZcodeSessionSynchronizer, SessionsWatcherService.
+ */
+export function getZcodeDatabasePath(): string {
+  return path.join(os.homedir(), '.zcode', 'cli', 'db', 'db.sqlite');
+}
+
 /**
  * Decodes an OpenCode text payload that was persisted as a JSON string literal.
  *

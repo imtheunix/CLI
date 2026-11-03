@@ -313,9 +313,10 @@ test('providerMcpService global adder writes supported providers and reports agy
       workspacePath,
     });
 
-    assert.equal(globalResult.length, 5);
-    assert.ok(globalResult.filter((entry) => entry.provider !== 'agy').every((entry) => entry.created === true));
+    assert.equal(globalResult.length, 6);
+    assert.ok(globalResult.filter((entry) => entry.provider !== 'agy' && entry.provider !== 'zcode').every((entry) => entry.created === true));
     assert.deepEqual(globalResult.find((entry) => entry.provider === 'agy'), { provider: 'agy', created: false, error: 'Manage agy MCP servers with agy mcp' });
+    assert.deepEqual(globalResult.find((entry) => entry.provider === 'zcode'), { provider: 'zcode', created: false, error: 'Manage zcode MCP servers with zcode' });
 
     const claudeProject = await readJson(path.join(workspacePath, '.mcp.json'));
     assert.ok((claudeProject.mcpServers as Record<string, unknown>)['global-http']);
