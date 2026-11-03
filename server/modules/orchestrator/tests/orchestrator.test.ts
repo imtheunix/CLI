@@ -1132,3 +1132,25 @@ test('a claude turn that goes on after its result is working again, and each of 
     await rm(logDir, { recursive: true, force: true });
   }
 });
+
+test('jobs with backend: zcode launch with GLM-5.3-Flash and participate in quota fallback', async () => {
+  await withWorkspace(async ({ repo, jobs, runtime, job }) => {
+    const created = await jobs.create({ title: 'zcode task', prompt: 'Do something with zcode', repoPath: repo, backend: 'zcode', baseBranch: null });
+    await eventually(() => runtime.turns.length === 1, 'zcode turn');
+    const before = job(created.id);
+    assert.equal(before.backend, 'zcode');
+    assert.equal(before.model, 'GLM-5.3-Flash');
+    assert.equal(runtime.turns[0].options.model, 'GLM-5.3-Flash');
+
+    // Quota exhaustion 1310 triggers agy fallback
+    const run = chatRunRegistry.getRun(before.session_id!)!;
+    run.writer.send({ kind: 'error', provider: 'zcode', content: '[1310][Weekly/Monthly Limit Exhausted. Your limit will reset at 2026-11-07 12:28:03]' });
+    runtime.finish(before.session_id!);
+    assert.equal(job(created.id).state, 'queued');
+
+    await jobs.tick();
+    await eventually(() => runtime.turns.length === 2, 'agy continuation from zcode');
+    const after = job(created.id);
+    assert.equal(after.backend, 'agy');
+  });
+});
