@@ -100,7 +100,8 @@ export async function prepareWorktree(input: {
 /**
  * A JavaScript project needs its dependencies before an agent can run checks.
  * The main checkout's are reused (a symlink) while the lockfiles match;
- * otherwise they are installed with `npm ci`.
+ * otherwise they are installed with `npm ci --include=dev` (the service runs with NODE_ENV=production,
+ * which would skip devDependencies such as husky and fail the `prepare` script).
  */
 async function linkNodeModules(repoPath: string, worktreePath: string): Promise<void> {
   const lockfile = 'package-lock.json';
@@ -117,7 +118,7 @@ async function linkNodeModules(repoPath: string, worktreePath: string): Promise<
     await excludeFromGit(worktreePath, '/node_modules');
     return;
   }
-  const install = await runCommand('npm', ['ci', '--no-audit', '--no-fund'], { cwd: worktreePath, timeoutMs: 15 * 60_000 });
+  const install = await runCommand('npm', ['ci', '--include=dev', '--no-audit', '--no-fund'], { cwd: worktreePath, timeoutMs: 15 * 60_000 });
   if (install.code !== 0) throw new Error(`npm ci failed: ${tail(install.stderr, 20)}`);
 }
 
