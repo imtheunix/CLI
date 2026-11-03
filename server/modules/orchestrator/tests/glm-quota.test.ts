@@ -12,6 +12,12 @@ for (const reset of ['2026-11-02 06:16:17', '2026-11-02 22:03:47']) {
   });
 }
 
+test('detects the observed Z.ai weekly/monthly limit (code 1310) and its reset days later', () => {
+  // Exact message from an OpenCode APIError on 2026-11-03.
+  const message = 'Weekly/Monthly Limit Exhausted. Your limit will reset at 2026-11-07 12:28:03';
+  assert.equal(detectGlmQuotaReset(message, new Date('2026-11-03T10:37:05Z'))?.toISOString(), new Date('2026-11-07T12:28:03+08:00').toISOString());
+});
+
 test('missing, invalid or expired reset gets a one-hour cooldown; explicit offsets are respected', () => {
   const now = new Date('2026-11-03T12:00:00Z');
   for (const suffix of ['', ' Your limit will reset at invalid', ' Your limit will reset at 2026-11-02 06:16:17']) {
