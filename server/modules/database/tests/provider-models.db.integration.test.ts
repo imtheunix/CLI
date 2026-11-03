@@ -223,6 +223,10 @@ test('migrations add effort columns to an existing provider model table and keep
     assert.equal(legacy?.modelId, 'legacy-model');
     assert.equal(legacy?.effort, null);
 
+    const agy = providerModelsDb.createCustomProviderModel('agy', { model: 'Gemini Flash', id: 'gemini-3.8-flash-medium' });
+    assert.equal(agy.modelId, 'gemini-3.8-flash-medium');
+    assert.ok(agy.recordId > legacy.recordId);
+
     // Running the migrations again is a no-op.
     runMigrations(getConnection());
     assert.equal(providerModelsDb.listCustomProviderModels('codex')[0]?.effort, null);

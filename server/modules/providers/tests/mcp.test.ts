@@ -298,7 +298,7 @@ test('providerMcpService handles cursor MCP JSON config formats', { concurrency:
  * This test covers the global MCP adder requirement: only http/stdio are allowed and
  * one payload is written to all providers.
  */
-test('providerMcpService global adder writes to all providers and rejects unsupported transports', { concurrency: false }, async () => {
+test('providerMcpService global adder writes supported providers and reports agy CLI management', { concurrency: false }, async () => {
   const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'llm-mcp-global-'));
   const workspacePath = path.join(tempRoot, 'workspace');
   await fs.mkdir(workspacePath, { recursive: true });
@@ -313,8 +313,9 @@ test('providerMcpService global adder writes to all providers and rejects unsupp
       workspacePath,
     });
 
-    assert.equal(globalResult.length, 4);
-    assert.ok(globalResult.every((entry) => entry.created === true));
+    assert.equal(globalResult.length, 5);
+    assert.ok(globalResult.filter((entry) => entry.provider !== 'agy').every((entry) => entry.created === true));
+    assert.deepEqual(globalResult.find((entry) => entry.provider === 'agy'), { provider: 'agy', created: false, error: 'Manage agy MCP servers with agy mcp' });
 
     const claudeProject = await readJson(path.join(workspacePath, '.mcp.json'));
     assert.ok((claudeProject.mcpServers as Record<string, unknown>)['global-http']);

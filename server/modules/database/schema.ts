@@ -133,7 +133,7 @@ CREATE TABLE IF NOT EXISTS orchestrator_jobs (
     -- The main checkout the worktree is made from, and the branch merged into.
     repo_path TEXT NOT NULL,
     base_branch TEXT NOT NULL,
-    -- claude | codex | glm. requested_backend is what the caller asked for,
+    -- claude | codex | glm | agy. requested_backend is what the caller asked for,
     -- backend what the balancer gave it (NULL while queued).
     requested_backend TEXT,
     backend TEXT,
@@ -227,7 +227,7 @@ CREATE TABLE IF NOT EXISTS app_config (
 export const PROVIDER_MODELS_TABLE_SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS provider_models (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    provider TEXT NOT NULL CHECK (provider IN ('claude', 'cursor', 'codex', 'opencode')),
+    provider TEXT NOT NULL CHECK (provider IN ('claude', 'cursor', 'codex', 'opencode', 'agy')),
     model_id TEXT NOT NULL,
     model_name TEXT NOT NULL,
     sort_order INTEGER NOT NULL DEFAULT 0,

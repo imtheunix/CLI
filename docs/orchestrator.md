@@ -1,6 +1,6 @@
-# Orchestrator: coding jobs over Claude, GPT and GLM
+# Orchestrator: coding jobs over Claude, GPT, GLM and Gemini Flash
 
-The orchestrating session (any chat in CLI) hands coding tasks to `tjob new`. Each task becomes a **job**: a real CLI session, named `Claude · …`, `GPT · …`, `GLM Flash · …` or `GLM · …` (the full GLM model) in the Sessions tab, running in its own git worktree (`~/Tribeira/.jobs/<repo>/<id>`, branch `job/<slug>-<id>`). Open it and talk to it like any other session.
+The orchestrating session (any chat in CLI) hands coding tasks to `tjob new`. Each task becomes a **job**: a real CLI session, named `Claude · …`, `GPT · …`, `GLM Flash · …` `GLM · …` (the full GLM model) or `Gemini Flash · …` in the Sessions tab, running in its own git worktree (`~/Tribeira/.jobs/<repo>/<id>`, branch `job/<slug>-<id>`). Open it and talk to it like any other session.
 
 ## Balancing
 
@@ -48,7 +48,7 @@ A backend's `models` maps the models a job may ask for to the label of its sessi
 
 ## CI/CD queue
 
-Optional local symbol/dependency maps for Claude, Codex and GLM jobs are documented in [Graphify project maps](graphify.md). They are disabled by default and use one bounded shell interface without changing model selection or job completion rules.
+Optional local symbol/dependency maps for Claude, Codex, GLM and agy jobs are documented in [Graphify project maps](graphify.md). They are disabled by default and use one bounded shell interface without changing model selection or job completion rules.
 
 `tjob done` puts the branch in the queue. Per repository, one job at a time goes through:
 

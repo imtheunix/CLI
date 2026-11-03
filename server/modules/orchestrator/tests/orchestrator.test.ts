@@ -193,11 +193,15 @@ test('the default model per backend and the peak-hours rule come from orchestrat
   try {
     const file = path.join(dir, 'orchestrator.json');
     assert.equal(loadOrchestratorConfig(file).backends.glm.model, 'zai-coding-plan/glm-5.3-flash');
-    writeFileSync(file, JSON.stringify({ backends: { glm: { model: 'zai-coding-plan/glm-5.3' } }, glmPeakHours: { avoid: false } }));
+    assert.equal(loadOrchestratorConfig(file).backends.agy.cap, 4);
+    assert.equal(loadOrchestratorConfig(file).glmQuotaFallback, 'agy');
+    writeFileSync(file, JSON.stringify({ backends: { glm: { model: 'zai-coding-plan/glm-5.3' }, agy: { cap: 2 } }, glmQuotaFallback: 'wait', glmPeakHours: { avoid: false } }));
     const config = loadOrchestratorConfig(file);
     assert.equal(config.backends.glm.model, 'zai-coding-plan/glm-5.3');
     assert.equal(config.backends.glm.models['zai-coding-plan/glm-5.3-flash'], 'GLM Flash');
     assert.equal(config.backends.glm.cap, 3);
+    assert.equal(config.backends.agy.cap, 2);
+    assert.equal(config.glmQuotaFallback, 'wait');
     assert.deepEqual(config.glmPeakHours, { avoid: false, utcOffsetHours: 8, fromHour: 14, toHour: 18 });
   } finally {
     await rm(dir, { recursive: true, force: true });
@@ -632,7 +636,7 @@ test('map preparation stays in preparing and gives the same optional query guida
         return new Promise<string>((resolve) => { releases.push(resolve); });
       },
     });
-    for (const [index, backend] of (['claude', 'codex', 'glm'] as const).entries()) {
+    for (const [index, backend] of (['claude', 'codex', 'glm', 'agy'] as const).entries()) {
       const job = await jobs.create({ title: `map ${backend}`, prompt: 'investigate', repoPath: repo, backend, baseBranch: null });
       await eventually(() => releases.length === index + 1, 'map preparation');
       assert.equal(jobs.get(job.id)?.state, 'preparing');
@@ -813,6 +817,11 @@ test('quota-stopped GLM work continues in a new agy session on the same dirty br
     // A service recreation sees the persisted cooldown, too.
     const recovered = createJobsService({ runtime: runtime.gateway, config: () => config });
     assert.equal(recovered.backendStatus().glm, jobs.backendStatus().glm);
+    config.backends.agy.cap = 0;
+    await recovered.tick();
+    assert.equal(job(created.id).state, 'queued');
+    assert.equal(runtime.turns.length, 1);
+    config.backends.agy.cap = 4;
     await recovered.tick();
     await eventually(() => runtime.turns.length === 2, 'agy continuation');
     const after = job(created.id);

@@ -1,4 +1,4 @@
-import { spawn, spawnSync } from 'node:child_process';
+import { spawn, execFile } from 'node:child_process';
 import { appendFileSync, mkdirSync, readFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -28,11 +28,20 @@ function normalize(raw: unknown, sessionId: string | null): NormalizedMessage[] 
   if (!event) return [];
   const base = { provider: 'agy' as const, sessionId, id: event.id, timestamp: event.timestamp };
   if (event.event === 'user') return [createNormalizedMessage({ ...base, kind: 'text', role: 'user', content: event.content })];
-  if (event.event === 'error') return [createNormalizedMessage({ ...base, kind: 'error', content: event.content })];
+  if (event.event === 'error') return [createNormalizedMessage({ ...base, kind: 'error', content: event.content ?? event.error?.message ?? event.message ?? JSON.stringify(event.error ?? 'agy turn failed') })];
   const step = readObjectRecord(event.step_update);
   if (event.event === 'step_update' && step) {
     if (step.step_type === 'agent_response' && typeof step.text_delta === 'string') {
       return [createNormalizedMessage({ ...base, kind: 'stream_delta', content: step.text_delta })];
+    }
+    if (step.step_type === 'agent_response') return [];
+    if (step.step_type === 'tool') {
+      const tool = readObjectRecord(step.tool_info) ?? {};
+      return [createNormalizedMessage({
+        ...base, kind: 'tool_use', toolId: `${event.turnId ?? step.conversation_id}:${step.step_index}`,
+        toolName: step.tool_name ?? tool.name ?? 'Tool', toolInput: tool.parameters ?? {},
+        ...((step.state === 'DONE' || step.state === 'ERROR') ? { toolResult: { content: String(tool.output ?? ''), isError: step.state === 'ERROR' || Boolean(tool.error) } } : {}),
+      })];
     }
     if (step.step_type !== 'user_input') {
       // Retain tool/reasoning steps for transcript inspection even when agy's
@@ -53,20 +62,22 @@ export class AgyProvider extends AbstractProvider {
   };
 
   readonly auth: IProviderAuth = {
-    getStatus: async () => {
+    getStatus: () => new Promise((resolve) => {
       // Probe the CLI itself; never open credential files. `models` requires
       // the user's existing agy login and reports failure when unavailable.
-      const result = spawnSync('agy', ['models'], { encoding: 'utf8', timeout: 20_000 });
-      return { provider: 'agy', installed: !result.error || (result.error as NodeJS.ErrnoException).code !== 'ENOENT', authenticated: result.status === 0, email: null, method: 'cli' };
-    },
+      execFile('agy', ['models'], { timeout: 20_000 }, (error) => {
+        resolve({ provider: 'agy', installed: (error as NodeJS.ErrnoException | null)?.code !== 'ENOENT', authenticated: !error, email: null, method: 'cli' });
+      });
+    }),
   };
 
   readonly sessions: IProviderSessions = {
     normalizeMessage: normalize,
     fetchHistory: async (sessionId, options = {}) => {
-      let messages: NormalizedMessage[] = [];
+      const messages: NormalizedMessage[] = [];
       try {
         let textMessage: NormalizedMessage | null = null;
+        const toolMessages = new Map<string, NormalizedMessage>();
         for (const line of readFileSync(transcriptPath(sessionId), 'utf8').split('\n').filter(Boolean)) {
           let event: AnyRecord;
           try { event = JSON.parse(line); } catch { continue; }
@@ -80,7 +91,12 @@ export class AgyProvider extends AbstractProvider {
               textMessage.content = String(textMessage.content ?? '') + String(message.content ?? '');
             } else {
               textMessage = null;
-              messages.push(message);
+              const toolMessage = message.toolId ? toolMessages.get(message.toolId) : null;
+              if (toolMessage) Object.assign(toolMessage, message);
+              else {
+                messages.push(message);
+                if (message.toolId) toolMessages.set(message.toolId, message);
+              }
             }
           }
         }
@@ -128,8 +144,9 @@ export class AgyProvider extends AbstractProvider {
       else args.push('--mode', 'auto');
       const file = transcriptPath(sessionId);
       mkdirSync(path.dirname(file), { recursive: true });
+      const turnId = randomUUID();
       const record = (event: AnyRecord) => {
-        const row = { ...event, id: randomUUID(), timestamp: new Date().toISOString() };
+        const row = { ...event, turnId, id: randomUUID(), timestamp: new Date().toISOString() };
         appendFileSync(file, JSON.stringify(row) + '\n', { mode: 0o600 });
         for (const message of normalize(row, sessionId)) writer.send(message);
       };
@@ -158,6 +175,7 @@ export class AgyProvider extends AbstractProvider {
           try { event = JSON.parse(value); } catch { record({ event: 'error', content: value }); failed = true; return; }
           const id = event.conversation_id ?? event.init?.conversation_id ?? event.result?.conversation_id;
           if (typeof id === 'string') writer.setSessionId?.(id);
+          if (event.event === 'error') failed = true;
           if (event.event === 'result' && event.result?.status !== 'SUCCESS') {
             failed = true;
             record({ event: 'error', content: event.result?.error ?? event.result?.response ?? 'agy turn failed' });

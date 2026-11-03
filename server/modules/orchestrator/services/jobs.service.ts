@@ -117,7 +117,7 @@ export function createJobsService(deps: {
     const session = job.session_id ? sessionsDb.getSessionById(job.session_id) : null;
     return {
       ...job,
-      quotaFallback: job.backend === 'agy' && (job.requested_backend === 'glm' || Boolean(job.last_error?.startsWith('GLM quota-exhausted'))),
+      quotaFallback: job.backend === 'agy' && Boolean(job.last_error?.startsWith('GLM quota-exhausted')),
       activity: job.state === 'active' ? (processing ? 'working' : 'waiting') : null,
       model: job.model ?? (session as { model?: string | null } | null)?.model ?? null,
     };
@@ -449,9 +449,13 @@ export function createJobsService(deps: {
       const config = deps.config();
       const peak = config.glmPeakHours.avoid && isInGlmPeakHours(config.glmPeakHours, now());
       const avoid: OrchestratorBackend[] = peak ? ['glm'] : [];
+      const quota = { glmExhausted: Boolean(getGlmQuotaReset(now())), fallback: config.glmQuotaFallback };
       for (const job of orchestratorJobsDb.listByState(['queued'])) {
-        const backend = pickBackend(job.last_error?.startsWith('GLM quota-exhausted') ? (config.glmQuotaFallback === 'agy' ? 'agy' : 'glm') : job.requested_backend, loads(), caps(config), config.fallbackBackend, avoid, { glmExhausted: Boolean(getGlmQuotaReset(now())), fallback: config.glmQuotaFallback });
-        if (!backend || (job.last_error?.startsWith('GLM quota-exhausted') && config.glmQuotaFallback === 'agy' && backend !== 'agy')) continue;
+        const continuation = Boolean(job.session_id && job.last_error?.startsWith('GLM quota-exhausted'));
+        const requested = continuation ? (config.glmQuotaFallback === 'agy' ? 'agy' : 'glm') : job.requested_backend;
+        const backend = pickBackend(requested, loads(), caps(config), config.fallbackBackend, avoid, quota);
+        // A planned handoff waits for agy rather than overflowing back to GLM.
+        if (!backend || (continuation && config.glmQuotaFallback === 'agy' && backend !== 'agy')) continue;
         void start(job, backend);
       }
     },

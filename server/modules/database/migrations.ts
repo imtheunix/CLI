@@ -491,6 +491,21 @@ const addProviderModelEffortColumns = (db: Database): void => {
   addColumnToTableIfNotExists(db, 'provider_models', columnNames, 'effort_default', 'TEXT DEFAULT NULL');
 };
 
+/** Upgrade the model catalog's provider CHECK while retaining user models and their ids. */
+const allowAgyProviderModels = (db: Database): void => {
+  const row = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'provider_models'").get() as { sql: string };
+  if (row.sql.includes("'agy'")) return;
+  db.transaction(() => {
+    db.exec(PROVIDER_MODELS_TABLE_SCHEMA_SQL.replace('provider_models', 'provider_models_with_agy'));
+    db.exec(`
+      INSERT INTO provider_models_with_agy (id, provider, model_id, model_name, sort_order, created_at, updated_at, effort_values, effort_default)
+      SELECT id, provider, model_id, model_name, sort_order, created_at, updated_at, effort_values, effort_default FROM provider_models;
+      DROP TABLE provider_models;
+      ALTER TABLE provider_models_with_agy RENAME TO provider_models;
+    `);
+  })();
+};
+
 const ensureProjectsForSessionPaths = (db: Database): void => {
   if (!tableExists(db, 'sessions')) {
     return;
@@ -534,11 +549,12 @@ export const runMigrations = (db: Database) => {
     db.exec('CREATE INDEX IF NOT EXISTS idx_notification_channel_endpoints_user_channel ON notification_channel_endpoints(user_id, channel)');
     db.exec('CREATE INDEX IF NOT EXISTS idx_notification_channel_endpoints_enabled ON notification_channel_endpoints(enabled)');
     db.exec(PROVIDER_MODELS_TABLE_SCHEMA_SQL);
+    addProviderModelEffortColumns(db);
+    allowAgyProviderModels(db);
     db.exec(`
       CREATE INDEX IF NOT EXISTS idx_provider_models_provider_order
       ON provider_models(provider, sort_order, id)
     `);
-    addProviderModelEffortColumns(db);
     db.exec(USER_PREFERENCES_TABLE_SCHEMA_SQL);
     db.exec(SESSION_DRAFTS_TABLE_SCHEMA_SQL);
     db.exec(SUPERSEDED_PROVIDER_SESSIONS_TABLE_SCHEMA_SQL);

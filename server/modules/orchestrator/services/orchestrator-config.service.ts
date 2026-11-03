@@ -59,7 +59,7 @@ export type OrchestratorConfig = {
   review: boolean;
 };
 
-/** The order a tie between equally loaded backends is broken in: cheapest first. */
+/** Jobs/balancer services: ordinary auto-selection ties, cheapest first. Agy is reserved for quota fallback or explicit requests. */
 export const BACKEND_TIE_ORDER: OrchestratorBackend[] = ['glm', 'codex', 'claude'];
 
 function defaults(): OrchestratorConfig {

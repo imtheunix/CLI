@@ -24,6 +24,8 @@ export function isInGlmPeakHours(window: OrchestratorConfig['glmPeakHours'], now
  * - Any other job goes to whichever backend is working on the fewest jobs,
  *   among those under their cap; ties go to the cheapest. A backend in
  *   `avoid` (GLM in its peak hours) is picked only when no other has room.
+ * - Exhausted GLM is excluded even for explicit requests; quota fallback uses
+ *   agy within its cap, or waits. Ordinary auto selection does not use agy.
  */
 export function pickBackend(
   requested: OrchestratorBackend | null,

@@ -540,3 +540,19 @@ test('the workflow agent route reads an agent\'s timeline and status from its ru
     assert.equal(missing.error.code, 'WORKFLOW_AGENT_NOT_FOUND');
   });
 });
+
+test('agy provider routes expose its model catalog and create a resumable app session', async () => {
+  await withProviderServer(async (baseUrl, workspacePath) => {
+    const catalog = await fetch(`${baseUrl}/api/providers/agy/models`);
+    assert.equal(catalog.status, 200);
+    const models = await catalog.json() as { data: { models: { DEFAULT: string } } };
+    assert.equal(models.data.models.DEFAULT, 'gemini-3.8-flash-medium');
+    const created = await fetch(`${baseUrl}/api/providers/sessions`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ provider: 'agy', projectPath: workspacePath, initialMessage: 'Continue the job' }),
+    });
+    assert.equal(created.status, 201);
+    const session = await created.json() as { data: { sessionId: string } };
+    assert.equal(sessionsDb.getSessionById(session.data.sessionId)?.provider, 'agy');
+  });
+});
