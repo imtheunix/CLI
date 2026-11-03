@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # tjob: the CLI orchestrator's jobs, from a shell (the orchestrating session and each job's agent).
-#   tjob new "<title>" [--repo PATH] [--backend auto|claude|codex|glm|agy] [--model ID] [--base BRANCH] [--kind feature|bugfix] [--prompt TEXT]   (else the prompt is read from stdin)
+#   tjob new "<title>" [--repo PATH] [--backend auto|claude|codex|glm|agy|zcode] [--model ID] [--base BRANCH] [--kind feature|bugfix] [--prompt TEXT]   (else the prompt is read from stdin)
 #                           --kind: the branch family, feature/<slug>-<id> (default) or bugfix/<slug>-<id>
 #                           --model: one the backend offers; GLM runs glm-5.3-flash unless asked for glm-5.3; with --backend auto, the model picks the backend
 #   tjob ls                 every job: backend, state, what its session is doing, where it is in the CI/CD queue
@@ -42,7 +42,7 @@ def line(j):
     return "%s  %-6s %-14s %-11s%-13s %s%s" % (j["id"], j.get("backend") or "-", model or "-", doing, merge, j["title"][:60], err + fallback)
 if mode == "ls":
     loads, caps = data["loads"], data["caps"]
-    print("  ".join("%s: %s/%s" % (b, loads.get(b, 0), caps.get(b, 0)) for b in ("claude", "codex", "glm", "agy")))
+    print("  ".join("%s: %s/%s" % (b, loads.get(b, 0), caps.get(b, 0)) for b in ("claude", "codex", "glm", "agy", "zcode")))
     for backend, status in data.get("backendStatus", {}).items():
         if status: print("%s: quota-exhausted until %s" % (backend, status))
     for j in data["jobs"]: print(line(j))

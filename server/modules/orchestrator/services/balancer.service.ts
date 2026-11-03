@@ -35,11 +35,12 @@ export function pickBackend(
   avoid: OrchestratorBackend[] = [],
   quota: { glmExhausted: boolean; fallback: 'agy' | 'wait' } = { glmExhausted: false, fallback: 'agy' },
 ): OrchestratorBackend | null {
-  const hasRoom = (backend: OrchestratorBackend) => !(backend === 'glm' && quota.glmExhausted)
+  const isGlmExhausted = (backend: OrchestratorBackend) => (backend === 'glm' || backend === 'zcode') && quota.glmExhausted;
+  const hasRoom = (backend: OrchestratorBackend) => !isGlmExhausted(backend)
     && (loads[backend] ?? 0) < (caps[backend] ?? 0);
-  const effectiveFallback = quota.glmExhausted && fallback === 'glm'
+  const effectiveFallback = quota.glmExhausted && (fallback === 'glm' || fallback === 'zcode')
     ? (quota.fallback === 'agy' ? 'agy' : null) : fallback;
-  if (requested === 'glm' && quota.glmExhausted) {
+  if ((requested === 'glm' || requested === 'zcode') && quota.glmExhausted) {
     return quota.fallback === 'agy' && hasRoom('agy') ? 'agy' : null;
   }
 

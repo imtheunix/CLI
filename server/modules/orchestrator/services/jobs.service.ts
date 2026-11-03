@@ -32,7 +32,7 @@ import {
 /** Jobs that hold a backend's slot: being set up, or with an agent on them (working or waiting for an answer). */
 const SLOT_STATES = ['preparing', 'active'] as const;
 
-const BACKENDS: OrchestratorBackend[] = ['claude', 'codex', 'glm', 'agy'];
+const BACKENDS: OrchestratorBackend[] = ['claude', 'codex', 'glm', 'agy', 'zcode'];
 
 /** What a job looks like to its callers: the row, plus what its session is doing right now. */
 
@@ -101,7 +101,7 @@ export function createJobsService(deps: {
   const preparing = new Set<string>();
 
   function loads(): Record<OrchestratorBackend, number> {
-    const counts: Record<OrchestratorBackend, number> = { claude: 0, codex: 0, glm: 0, agy: 0 };
+    const counts: Record<OrchestratorBackend, number> = { claude: 0, codex: 0, glm: 0, agy: 0, zcode: 0 };
     for (const job of orchestratorJobsDb.listByState([...SLOT_STATES])) {
       if (job.backend) counts[job.backend] += 1;
     }
@@ -159,7 +159,7 @@ export function createJobsService(deps: {
     const label = modelLabel(backendConfig, model);
     preparing.add(job.id);
     const continuation = Boolean(job.session_id && job.last_error?.startsWith('GLM quota-exhausted'));
-    const quotaFallback = backend === 'agy' && (continuation || (job.requested_backend === 'glm' && getGlmQuotaReset(now())));
+    const quotaFallback = backend === 'agy' && (continuation || ((job.requested_backend === 'glm' || job.requested_backend === 'zcode') && getGlmQuotaReset(now())));
     orchestratorJobsDb.update(job.id, { backend, model, state: 'preparing', last_error: quotaFallback ? job.last_error ?? 'GLM quota-exhausted; using agy' : null });
     try {
       await prepareWorktree({
@@ -194,8 +194,9 @@ export function createJobsService(deps: {
     loads,
 
     /** Routes and CLI display the backend cooldown independently of job errors. */
-    backendStatus(): { glm: string | null } {
-      return { glm: getGlmQuotaReset(now()) };
+    backendStatus(): { glm: string | null; zcode: string | null } {
+      const status = getGlmQuotaReset(now());
+      return { glm: status, zcode: status };
     },
 
     list(): OrchestratorJobView[] {
@@ -414,7 +415,7 @@ export function createJobsService(deps: {
     handleRunCompleted(completion: { appSessionId: string; exitCode: number; aborted: boolean }): void {
       const job = orchestratorJobsDb.getBySessionId(completion.appSessionId);
       if (!job) return;
-      if (job.backend === 'glm' && !completion.aborted && job.state === 'active') {
+      if ((job.backend === 'glm' || job.backend === 'zcode') && !completion.aborted && job.state === 'active') {
         const errors = chatRunRegistry.getRun(completion.appSessionId)?.events
           .filter((event) => event.kind === 'error').map((event) => String(event.content ?? '')).join('\n') ?? '';
         const until = detectGlmQuotaReset(errors, now());
@@ -448,11 +449,11 @@ export function createJobsService(deps: {
 
       const config = deps.config();
       const peak = config.glmPeakHours.avoid && isInGlmPeakHours(config.glmPeakHours, now());
-      const avoid: OrchestratorBackend[] = peak ? ['glm'] : [];
+      const avoid: OrchestratorBackend[] = peak ? ['glm', 'zcode'] : [];
       const quota = { glmExhausted: Boolean(getGlmQuotaReset(now())), fallback: config.glmQuotaFallback };
       for (const job of orchestratorJobsDb.listByState(['queued'])) {
         const continuation = Boolean(job.session_id && job.last_error?.startsWith('GLM quota-exhausted'));
-        const requested = continuation ? (config.glmQuotaFallback === 'agy' ? 'agy' : 'glm') : job.requested_backend;
+        const requested = continuation ? (config.glmQuotaFallback === 'agy' ? 'agy' : (job.requested_backend ?? 'glm')) : job.requested_backend;
         const backend = pickBackend(requested, loads(), caps(config), config.fallbackBackend, avoid, quota);
         // A planned handoff waits for agy rather than overflowing back to GLM.
         if (!backend || (continuation && config.glmQuotaFallback === 'agy' && backend !== 'agy')) continue;

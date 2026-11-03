@@ -195,6 +195,14 @@ test('the default model per backend and the peak-hours rule come from orchestrat
     assert.equal(loadOrchestratorConfig(file).backends.glm.model, 'zai-coding-plan/glm-5.3-flash');
     assert.equal(loadOrchestratorConfig(file).backends.agy.cap, 4);
     assert.equal(loadOrchestratorConfig(file).glmQuotaFallback, 'agy');
+    assert.equal(loadOrchestratorConfig(file).glmProvider, 'opencode');
+    assert.equal(loadOrchestratorConfig(file).backends.zcode.model, 'GLM-5.3-Flash');
+    assert.equal(loadOrchestratorConfig(file).backends.zcode.cap, 3);
+    writeFileSync(file, JSON.stringify({ glmProvider: 'zcode' }));
+    const zcodeConfig = loadOrchestratorConfig(file);
+    assert.equal(zcodeConfig.glmProvider, 'zcode');
+    assert.equal(zcodeConfig.backends.glm.provider, 'zcode');
+    assert.equal(zcodeConfig.backends.glm.model, 'GLM-5.3-Flash');
     writeFileSync(file, JSON.stringify({ backends: { glm: { model: 'zai-coding-plan/glm-5.3' }, agy: { cap: 2 } }, glmQuotaFallback: 'wait', glmPeakHours: { avoid: false } }));
     const config = loadOrchestratorConfig(file);
     assert.equal(config.backends.glm.model, 'zai-coding-plan/glm-5.3');
@@ -863,5 +871,27 @@ test('wait mode keeps quota-stopped jobs queued until reset and ignores aborted 
     await eventually(() => runtime.turns.length === 2, 'GLM after reset');
     assert.equal(job(created.id).backend, 'glm');
     assert.equal(job(created.id).session_id, sessionId);
+  });
+});
+
+test('jobs with backend: zcode launch with GLM-5.3-Flash and participate in quota fallback', async () => {
+  await withWorkspace(async ({ repo, jobs, runtime, job }) => {
+    const created = await jobs.create({ title: 'zcode task', prompt: 'Do something with zcode', repoPath: repo, backend: 'zcode', baseBranch: null });
+    await eventually(() => runtime.turns.length === 1, 'zcode turn');
+    const before = job(created.id);
+    assert.equal(before.backend, 'zcode');
+    assert.equal(before.model, 'GLM-5.3-Flash');
+    assert.equal(runtime.turns[0].options.model, 'GLM-5.3-Flash');
+
+    // Quota exhaustion 1310 triggers agy fallback
+    const run = chatRunRegistry.getRun(before.session_id!)!;
+    run.writer.send({ kind: 'error', provider: 'zcode', content: '[1310][Weekly/Monthly Limit Exhausted. Your limit will reset at 2026-11-07 12:28:03]' });
+    runtime.finish(before.session_id!);
+    assert.equal(job(created.id).state, 'queued');
+
+    await jobs.tick();
+    await eventually(() => runtime.turns.length === 2, 'agy continuation from zcode');
+    const after = job(created.id);
+    assert.equal(after.backend, 'agy');
   });
 });

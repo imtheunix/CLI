@@ -53,4 +53,11 @@ test('GLM quota routes requested and overflow jobs to agy, respecting its cap an
   assert.equal(pickBackend('glm', loads, caps, 'glm', [], { ...quota, fallback: 'wait' }), null);
   assert.equal(pickBackend('glm', loads, caps, 'glm', [], { ...quota, glmExhausted: false }), 'glm');
   assert.equal(pickBackend('agy', loads, caps, 'glm'), 'agy');
+
+  // zcode participates in GLM quota fallback as well
+  const zloads = { claude: 2, codex: 2, zcode: 0, agy: 0 };
+  const zcaps = { ...CAPS, zcode: 3, agy: 4 };
+  assert.equal(pickBackend('zcode', zloads, zcaps, 'zcode', [], quota), 'agy');
+  assert.equal(pickBackend('zcode', zloads, zcaps, 'zcode', [], { ...quota, fallback: 'wait' }), null);
+  assert.equal(pickBackend('zcode', zloads, zcaps, 'zcode', [], { ...quota, glmExhausted: false }), 'zcode');
 });

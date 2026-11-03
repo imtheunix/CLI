@@ -44,6 +44,13 @@ const providerCards = [
     iconContainerClassName: 'bg-amber-100 dark:bg-amber-800',
     loginButtonClassName: 'bg-amber-800 hover:bg-amber-900 dark:bg-amber-700 dark:hover:bg-amber-600',
   },
+  {
+    provider: 'zcode' as const,
+    title: 'ZCode',
+    connectedClassName: 'bg-indigo-100 dark:bg-indigo-800/50 border-indigo-300 dark:border-indigo-600',
+    iconContainerClassName: 'bg-indigo-100 dark:bg-indigo-800',
+    loginButtonClassName: 'bg-indigo-800 hover:bg-indigo-900 dark:bg-indigo-700 dark:hover:bg-indigo-600',
+  },
 ];
 
 /** Rendered by Onboarding as its second step, listing every CLI provider the user can log into. */
