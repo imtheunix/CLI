@@ -47,9 +47,11 @@ const stubServer = () => {
         ? { user: { id: 1, username: 'triage' } }
         : url === '/api/auth/login'
           ? { token: makeToken(nowSeconds()), user: { id: 1, username: 'triage' } }
-          : url === '/api/user/onboarding-status'
-            ? { hasCompletedOnboarding }
-            : {};
+          : url === '/api/auth/refresh'
+            ? { token: makeToken(nowSeconds()) }
+            : url === '/api/user/onboarding-status'
+              ? { hasCompletedOnboarding }
+              : {};
     return new Response(JSON.stringify(body), { status: 200, headers });
   }));
 };
@@ -136,14 +138,16 @@ test('a refreshed token on the initial auth check does not run a second loading 
 });
 
 test('tokens refreshed while the workspace is open do not remount it', async () => {
-  localStorage.setItem('auth-token', makeToken(nowSeconds() - 4 * 86400));
+  // Keep the scheduled refresh in the future: this case isolates response-header
+  // rotations from the legitimate immediate refresh of an overdue token.
+  localStorage.setItem('auth-token', makeToken(nowSeconds() - 86400));
 
   renderApp();
   await screen.findByText('workspace');
   assert.equal(workspaceMounts, 1);
   const bootstrapRequests = requestedPaths.length;
 
-  // In-flight requests that still carried the aged token each come back with
+  // In-flight requests that still carried the previous token each come back with
   // their own refreshed token (a new string every second on the server).
   const rotations = [makeToken(nowSeconds()), makeToken(nowSeconds() + 1), makeToken(nowSeconds() + 2)];
   for (const token of rotations) {
@@ -160,6 +164,25 @@ test('tokens refreshed while the workspace is open do not remount it', async () 
     requestedPaths.slice(bootstrapRequests).filter((path) => path.startsWith('/api/auth/')),
     [],
   );
+});
+
+test('an overdue scheduled refresh preserves the workspace and does not repeat auth bootstrap', async () => {
+  const agedToken = makeToken(nowSeconds() - 4 * 86400);
+  localStorage.setItem('auth-token', agedToken);
+
+  renderApp();
+  await screen.findByText('workspace');
+  await waitFor(() => {
+    assert.equal(requestedPaths.filter((path) => path === '/api/auth/refresh').length, 1);
+    assert.notEqual(seenToken, agedToken);
+    assert.equal(seenToken, localStorage.getItem('auth-token'));
+  });
+
+  assert.equal(requestedPaths.filter((path) => path === '/api/auth/status').length, 1);
+  assert.equal(requestedPaths.filter((path) => path === '/api/auth/user').length, 1);
+  assert.equal(workspaceMounts, 1);
+  assert.equal(loadingPasses, 1);
+  assert.ok(screen.getByText('workspace'));
 });
 
 test('signing out after a token rotation still shows the login screen without a loading pass', async () => {
