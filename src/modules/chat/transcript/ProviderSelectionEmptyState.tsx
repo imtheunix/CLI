@@ -325,6 +325,7 @@ export default function ProviderSelectionEmptyState({
                 codex: t("providerSelection.readyPrompt.codex", {
                   model: providerModels.codex,
                 }),
+                labs: "Ready with LABS",
                 opencode: t("providerSelection.readyPrompt.opencode", {
                   model: providerModels.opencode,
                   defaultValue: "Ready with OpenCode {{model}}",

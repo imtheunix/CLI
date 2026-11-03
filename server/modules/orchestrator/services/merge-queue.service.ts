@@ -96,7 +96,10 @@ export function createMergeQueueService(deps: {
       if (!await rebaseInProgress(job.worktree_path)) return null;
       const conflicted = (await git(job.worktree_path, 'diff', '--name-only', '--diff-filter=U')).stdout.trim();
       if (!conflicted) {
-        const proceed = await run('git', ['-c', 'core.editor=true', 'rebase', '--continue'], { cwd: job.worktree_path });
+        const proceed = await run('git', ['-c', 'core.editor=true', 'rebase', '--continue'], {
+          cwd: job.worktree_path,
+          env: { ...process.env, GIT_EDITOR: 'true' },
+        });
         if (proceed.code !== 0 && !(await git(job.worktree_path, 'diff', '--name-only', '--diff-filter=U')).stdout.trim()) {
           return `git rebase --continue failed: ${tail(proceed.stderr, 20)}`;
         }

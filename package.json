@@ -49,7 +49,7 @@
     "preview": "vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p server/tsconfig.json",
     "test": "tsx --tsconfig server/tsconfig.json --test \"server/**/*.test.ts\" \"server/**/*.test.js\"",
-    "test:client": "vitest run",
+    "test:client": "cross-env NODE_ENV=development vitest run",
     "graphify:setup": "python3 -I scripts/graphify/setup.py",
     "test:graphify": "python3 -I -m unittest discover -s scripts/graphify/tests -v",
     "graphify:benchmark": "python3 -I scripts/graphify/benchmark.py",

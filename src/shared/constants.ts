@@ -207,6 +207,7 @@ export const PROVIDER_PERMISSION_PREFERENCE_KEYS: Record<LLMProvider, UserPrefer
   claude: 'claudePermissions',
   cursor: 'cursorPermissions',
   codex: 'codexPermissions',
+  labs: 'labsPermissions',
   opencode: 'opencodePermissions',
   agy: 'agyPermissions',
 };

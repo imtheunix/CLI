@@ -4,7 +4,7 @@ import type { NavigateFunction } from 'react-router-dom';
 //----------------- LLM PROVIDER MODEL CATALOG ------------
 
 /** Identifies which coding-agent CLI backs a session, project selection or model list. */
-export type LLMProvider = 'claude' | 'cursor' | 'codex' | 'opencode' | 'agy';
+export type LLMProvider = 'claude' | 'cursor' | 'codex' | 'opencode' | 'agy' | 'labs';
 
 /** One selectable model in a provider's model menu, including its optional reasoning-effort choices. */
 export type ProviderModelOption = {
@@ -1179,7 +1179,7 @@ export type CommitGraphRow = {
 //----------------- MCP SERVERS ------------
 
 /** The LLM provider whose MCP server configuration is being read or written; use it to key provider-specific MCP capabilities such as supported scopes and transports. */
-export type McpProvider = LLMProvider;
+export type McpProvider = Exclude<LLMProvider, 'labs'>;
 
 /** Where an MCP server definition is stored - the user's global provider config, Claude's project-local config, or a project workspace config - and therefore which config file a read or write targets. */
 export type McpScope = 'user' | 'local' | 'project';
@@ -1393,7 +1393,7 @@ export type AgentContext = {
 export type SettingsMainTab = 'agents' | 'appearance' | 'api' | 'voice' | 'tasks' | 'browser' | 'notifications' | 'plugins' | 'about';
 
 /** The coding-agent CLI a settings screen is configuring, aliasing LLMProvider so agent-scoped settings read as being about an agent rather than a chat model. */
-export type AgentProvider = LLMProvider;
+export type AgentProvider = Exclude<LLMProvider, 'labs'>;
 
 /** One category of per-agent configuration in the agents settings tab (account, permissions, MCP servers or skills); use it to key which panel the tab renders. */
 export type AgentCategory = 'account' | 'permissions' | 'mcp' | 'skills';
@@ -1732,7 +1732,7 @@ type SnippetHighlight = {
 //----------------- PROVIDER SKILLS ------------
 
 /** The LLM provider whose skills are being listed, uploaded or deleted; use it to target the provider-specific skills endpoints. */
-export type SkillsProvider = LLMProvider;
+export type SkillsProvider = Exclude<LLMProvider, 'labs'>;
 
 /** Where a skill was discovered - the user's home directory, a project, a plugin, the repository, an admin location, or the built-in system set - used to group, order and label skills and to decide whether one can be deleted. */
 export type SkillsScope = 'user' | 'project' | 'plugin' | 'repo' | 'admin' | 'system';

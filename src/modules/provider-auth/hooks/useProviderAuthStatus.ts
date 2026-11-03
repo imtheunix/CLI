@@ -14,6 +14,7 @@ const createInitialProviderAuthStatusMap = (loading = true): ProviderAuthStatusM
   claude: { authenticated: false, email: null, method: null, error: null, loading },
   cursor: { authenticated: false, email: null, method: null, error: null, loading },
   codex: { authenticated: false, email: null, method: null, error: null, loading },
+  labs: { authenticated: false, email: null, method: null, error: null, loading },
   opencode: { authenticated: false, email: null, method: null, error: null, loading },
   agy: { authenticated: false, email: null, method: null, error: null, loading },
 });

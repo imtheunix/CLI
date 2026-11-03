@@ -443,8 +443,12 @@ function ChatInterface({
         : provider === 'opencode'
             ? t('messageTypes.opencode', { defaultValue: 'OpenCode' })
             : provider === 'agy'
-                ? t('messageTypes.agy', { defaultValue: 'Antigravity' })
+              ? t('messageTypes.agy', { defaultValue: 'Antigravity' })
+              : provider === 'labs'
+                ? 'LABS'
                 : t('messageTypes.claude');
+
+  const isReadOnly = provider === 'labs' || selectedSession?.__provider === 'labs';
 
   if (!selectedProject) {
     return (
@@ -622,6 +626,7 @@ function ChatInterface({
           placeholder={t('input.placeholder', { provider: selectedProviderLabel })}
           isTextareaExpanded={isTextareaExpanded}
           sendByCtrlEnter={sendByCtrlEnter}
+          isReadOnly={isReadOnly}
         />
         </div>
       </div>

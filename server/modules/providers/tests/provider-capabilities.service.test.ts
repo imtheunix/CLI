@@ -18,6 +18,7 @@ const CURATED_CATALOGS: Record<LLMProvider, ProviderModelsDefinition> = {
   claude: CLAUDE_PREDEFINED_MODELS,
   codex: CODEX_PREDEFINED_MODELS,
   cursor: CURSOR_PREDEFINED_MODELS,
+  labs: { DEFAULT: '', OPTIONS: [] },
   opencode: OPENCODE_PREDEFINED_MODELS,
 };
 

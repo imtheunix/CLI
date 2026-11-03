@@ -3,6 +3,7 @@ import AgyLogo from '@/shared/ui/AgyLogo';
 import ClaudeLogo from '@/shared/ui/ClaudeLogo';
 import CodexLogo from '@/shared/ui/CodexLogo';
 import CursorLogo from '@/shared/ui/CursorLogo';
+import LabsLogo from '@/shared/ui/LabsLogo';
 import OpenCodeLogo from '@/shared/ui/OpenCodeLogo';
 
 type LLMProviderLogoProps = {
@@ -29,6 +30,10 @@ export function LLMProviderLogo({
 
   if (provider === 'agy') {
     return <AgyLogo className={className} />;
+  }
+
+  if (provider === 'labs') {
+    return <LabsLogo className={className} />;
   }
 
   return <ClaudeLogo className={className} />;

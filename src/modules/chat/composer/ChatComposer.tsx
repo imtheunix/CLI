@@ -133,6 +133,7 @@ type ChatComposerProps = {
   placeholder: string;
   isTextareaExpanded: boolean;
   sendByCtrlEnter?: boolean;
+  isReadOnly?: boolean;
 };
 
 /**
@@ -217,6 +218,7 @@ export default function ChatComposer({
   placeholder,
   isTextareaExpanded,
   sendByCtrlEnter,
+  isReadOnly = false,
 }: ChatComposerProps) {
   const { t } = useTranslation('chat');
   const fileDropdownRef = useRef<HTMLDivElement | null>(null);
@@ -476,6 +478,11 @@ export default function ChatComposer({
           <input {...getInputProps()} />
 
           <PromptInputBody>
+            {isReadOnly && (
+              <div className="border-b border-border/40 py-1.5 text-center text-xs font-medium text-muted-foreground select-none" data-testid="metadata-only-note">
+                metadata only
+              </div>
+            )}
             <div ref={inputHighlightRef} aria-hidden="true" className="pointer-events-none absolute inset-0 overflow-hidden rounded-xl">
               <div className="chat-input-placeholder block w-full whitespace-pre-wrap break-words px-4 py-2 text-sm leading-6 text-transparent">
                 {renderInputWithMentions(input)}
@@ -485,6 +492,7 @@ export default function ChatComposer({
             <PromptInputTextarea
               ref={textareaRef}
               dir="auto"
+              disabled={isReadOnly}
               value={input}
               onChange={onInputChange}
               onClick={onTextareaClick}
@@ -494,7 +502,7 @@ export default function ChatComposer({
               onFocus={() => onInputFocusChange?.(true)}
               onBlur={() => onInputFocusChange?.(false)}
               onInput={onTextareaInput}
-              placeholder={placeholder}
+              placeholder={isReadOnly ? 'metadata only' : placeholder}
             />
         </PromptInputBody>
 
@@ -545,7 +553,7 @@ export default function ChatComposer({
 
             <div className="ml-auto flex shrink-0 flex-nowrap items-center gap-1 sm:gap-2">
               <ScheduleMessagePopover
-                disabled={!input.trim()}
+                disabled={isReadOnly || !input.trim()}
                 onSchedule={onScheduleMessage}
               />
 
@@ -580,7 +588,9 @@ export default function ChatComposer({
 
               <PromptInputSubmit
                 onClick={
-                  canQueueDraft
+                  isReadOnly
+                    ? undefined
+                    : canQueueDraft
                     ? (e: MouseEvent<HTMLButtonElement>) => {
                         e.preventDefault();
                         onSubmit(e);
@@ -595,6 +605,7 @@ export default function ChatComposer({
                         : undefined
                 }
                 disabled={
+                  isReadOnly || (
                   isLoading
                     ? false
                     : isRecording
@@ -602,9 +613,10 @@ export default function ChatComposer({
                       : isTranscribing
                         ? true
                         : !input.trim() && attachedFiles.length === 0
+                  )
                 }
-                aria-label={submitAriaLabel}
-                title={submitAriaLabel}
+                aria-label={isReadOnly ? 'metadata only' : submitAriaLabel}
+                title={isReadOnly ? 'metadata only' : submitAriaLabel}
                 className="h-10 w-10 sm:h-10 sm:w-10"
               >
                 {isTranscribing ? (

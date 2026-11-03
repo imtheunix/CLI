@@ -2,6 +2,7 @@ import { AgyProvider } from '@/modules/providers/list/agy/agy.provider.js';
 import { ClaudeProvider } from '@/modules/providers/list/claude/claude.provider.js';
 import { CodexProvider } from '@/modules/providers/list/codex/codex.provider.js';
 import { CursorProvider } from '@/modules/providers/list/cursor/cursor.provider.js';
+import { LabsProvider } from '@/modules/providers/list/labs/labs.provider.js';
 import { OpenCodeProvider } from '@/modules/providers/list/opencode/opencode.provider.js';
 import type { IProvider } from '@/shared/interfaces.js';
 import type { LLMProvider } from '@/shared/types.js';
@@ -12,6 +13,7 @@ const providers: Record<LLMProvider, IProvider> = {
   claude: new ClaudeProvider(),
   codex: new CodexProvider(),
   cursor: new CursorProvider(),
+  labs: new LabsProvider(),
   opencode: new OpenCodeProvider(),
 };
 

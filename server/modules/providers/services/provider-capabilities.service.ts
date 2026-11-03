@@ -124,6 +124,20 @@ const PROVIDER_CAPABILITIES: Record<LLMProvider, ProviderCapabilities> = {
     supportsMessageEditing: false,
     supportsSessionForking: false,
   },
+  labs: {
+    provider: 'labs',
+    permissionModes: ['default'],
+    defaultPermissionMode: 'default',
+    supportsImages: false,
+    supportsFiles: false,
+    supportsAbort: false,
+    supportsPermissionRequests: false,
+    supportsTokenUsage: true,
+    supportsEffort: false,
+    effortLevels: [],
+    supportsMessageEditing: false,
+    supportsSessionForking: false,
+  },
 };
 
 /**

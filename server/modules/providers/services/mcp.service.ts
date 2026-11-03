@@ -64,7 +64,7 @@ export const providerMcpService = {
 
     const scope = input.scope ?? 'project';
     const results: Array<{ provider: LLMProvider; created: boolean; error?: string }> = [];
-    const providers = providerRegistry.listProviders();
+    const providers = providerRegistry.listProviders().filter((provider) => provider.id !== 'labs');
     for (const provider of providers) {
       try {
         await provider.mcp.upsertServer({ ...input, scope });
@@ -90,7 +90,7 @@ export const providerMcpService = {
     input: { name: string; scope?: McpScope; workspacePath?: string },
   ): Promise<Array<{ provider: LLMProvider; removed: boolean; error?: string }>> {
     const results: Array<{ provider: LLMProvider; removed: boolean; error?: string }> = [];
-    const providers = providerRegistry.listProviders();
+    const providers = providerRegistry.listProviders().filter((provider) => provider.id !== 'labs');
     for (const provider of providers) {
       try {
         const result = await provider.mcp.removeServer(input);
