@@ -1,4 +1,5 @@
 import type { LLMProvider } from '@/shared/types';
+import AgyLogo from '@/shared/ui/AgyLogo';
 import ClaudeLogo from '@/shared/ui/ClaudeLogo';
 import CodexLogo from '@/shared/ui/CodexLogo';
 import CursorLogo from '@/shared/ui/CursorLogo';
@@ -24,6 +25,10 @@ export function LLMProviderLogo({
 
   if (provider === 'opencode') {
     return <OpenCodeLogo className={className} />;
+  }
+
+  if (provider === 'agy') {
+    return <AgyLogo className={className} />;
   }
 
   return <ClaudeLogo className={className} />;

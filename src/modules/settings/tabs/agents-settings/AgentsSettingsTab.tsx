@@ -34,13 +34,13 @@ export default function AgentsSettingsTab({
   const [selectedAgent, setSelectedAgent] = useState<AgentProvider>('claude');
   const [selectedCategory, setSelectedCategory] = useState<AgentCategory>('account');
   const visibleCategories = useMemo<AgentCategory[]>(() => (
-    selectedAgent === 'opencode'
+    selectedAgent === 'opencode' || selectedAgent === 'agy'
       ? ['account', 'permissions', 'mcp']
       : ['account', 'permissions', 'mcp', 'skills']
   ), [selectedAgent]);
 
   const visibleAgents = useMemo<AgentProvider[]>(() => {
-    return ['claude', 'cursor', 'codex', 'opencode'];
+    return ['claude', 'cursor', 'codex', 'opencode', 'agy'];
   }, []);
 
   const agentContextById = useMemo<AgentContextByProvider>(() => ({
@@ -60,8 +60,13 @@ export default function AgentsSettingsTab({
       authStatus: providerAuthStatus.opencode,
       onLogin: () => onProviderLogin('opencode'),
     },
+    agy: {
+      authStatus: providerAuthStatus.agy,
+      onLogin: () => onProviderLogin('agy'),
+    },
   }), [
     onProviderLogin,
+    providerAuthStatus.agy,
     providerAuthStatus.claude,
     providerAuthStatus.codex,
     providerAuthStatus.cursor,

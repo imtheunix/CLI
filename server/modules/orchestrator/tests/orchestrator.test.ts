@@ -351,7 +351,7 @@ test('conflicts are handed to the resolver model, then the merge goes on', async
       const cwd = options!.cwd;
       writeFileSync(path.join(cwd, 'app.txt'), 'one\nTWO (2)\nthree\n');
       await runCommand('git', ['add', 'app.txt'], { cwd });
-      return runCommand('git', ['-c', 'core.editor=true', '-c', 'user.name=t', '-c', 'user.email=t@t', 'rebase', '--continue'], { cwd });
+      return runCommand('git', ['-c', 'core.editor=true', '-c', 'user.name=t', '-c', 'user.email=t@t', 'rebase', '--continue'], { cwd, env: { ...process.env, GIT_EDITOR: 'true' } });
     };
     const queue = createMergeQueueService({ jobs: ctx.jobs, config: () => ctx.config, run });
     await drain(queue, () => ctx.job(id), ['deploy', 'blocked', 'none']);

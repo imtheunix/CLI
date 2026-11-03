@@ -1021,6 +1021,20 @@ export function getOpenCodeDatabasePath(): string {
   return path.join(os.homedir(), '.local', 'share', 'opencode', 'opencode.db');
 }
 
+// ---------------------------
+//----------------- AGY SESSION STORAGE UTILITIES ------------
+/**
+ * Resolves the Antigravity / Gemini CLI SQLite conversation summaries database path.
+ *
+ * agy stores conversation summaries in `conversation_summaries.db` under its
+ * configuration directory `~/.gemini/antigravity-cli`. Provider readers and
+ * synchronizers should use this path for read-only access and should never store
+ * it as a deletable transcript path for an individual app session row.
+ */
+export function getAgyDatabasePath(): string {
+  return path.join(os.homedir(), '.gemini', 'antigravity-cli', 'conversation_summaries.db');
+}
+
 /**
  * Decodes an OpenCode text payload that was persisted as a JSON string literal.
  *

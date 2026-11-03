@@ -329,6 +329,10 @@ export default function ProviderSelectionEmptyState({
                   model: providerModels.opencode,
                   defaultValue: "Ready with OpenCode {{model}}",
                 }),
+                agy: t("providerSelection.readyPrompt.agy", {
+                  model: providerModels.agy,
+                  defaultValue: "Ready with Antigravity {{model}}",
+                }),
               }[provider]
             }
           </p>

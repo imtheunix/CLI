@@ -37,6 +37,13 @@ const providerCards = [
     iconContainerClassName: 'bg-zinc-100 dark:bg-zinc-800',
     loginButtonClassName: 'bg-zinc-800 hover:bg-zinc-900 dark:bg-zinc-700 dark:hover:bg-zinc-600',
   },
+  {
+    provider: 'agy' as const,
+    title: 'Antigravity',
+    connectedClassName: 'bg-amber-100 dark:bg-amber-800/50 border-amber-300 dark:border-amber-600',
+    iconContainerClassName: 'bg-amber-100 dark:bg-amber-800',
+    loginButtonClassName: 'bg-amber-800 hover:bg-amber-900 dark:bg-amber-700 dark:hover:bg-amber-600',
+  },
 ];
 
 /** Rendered by Onboarding as its second step, listing every CLI provider the user can log into. */

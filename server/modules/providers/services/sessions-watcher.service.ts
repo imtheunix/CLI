@@ -10,7 +10,11 @@ import type { LLMProvider } from '@/shared/types.js';
 
 type WatcherEventType = 'add' | 'change';
 
-const PROVIDER_WATCH_PATHS: Array<{ provider: LLMProvider; rootPath: string }> = [
+/**
+ * Root directory configuration watched for session updates for each supported provider.
+ * Used by initializeSessionsWatcher and tests.
+ */
+export const PROVIDER_WATCH_PATHS: Array<{ provider: LLMProvider; rootPath: string }> = [
   {
     provider: 'claude',
     rootPath: path.join(os.homedir(), '.claude', 'projects'),
@@ -26,6 +30,10 @@ const PROVIDER_WATCH_PATHS: Array<{ provider: LLMProvider; rootPath: string }> =
   {
     provider: 'opencode',
     rootPath: path.join(os.homedir(), '.local', 'share', 'opencode'),
+  },
+  {
+    provider: 'agy',
+    rootPath: path.join(os.homedir(), '.gemini', 'antigravity-cli'),
   },
 ];
 
@@ -65,10 +73,15 @@ let watcherRescheduleAfterRefresh = false;
 
 /**
  * Filters watcher events to provider-specific session artifact file types.
+ * Used by onUpdate and unit tests to verify provider-specific artifact matching.
  */
-function isWatcherTargetFile(provider: LLMProvider, filePath: string): boolean {
+export function isWatcherTargetFile(provider: LLMProvider, filePath: string): boolean {
   if (provider === 'opencode') {
     return path.basename(filePath) === 'opencode.db';
+  }
+
+  if (provider === 'agy') {
+    return path.basename(filePath) === 'conversation_summaries.db';
   }
 
   return filePath.endsWith('.jsonl');
