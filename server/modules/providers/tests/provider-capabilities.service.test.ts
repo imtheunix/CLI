@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import { AgyProvider } from '@/modules/providers/list/agy/agy.provider.js';
 import { CLAUDE_PREDEFINED_MODELS } from '@/modules/providers/list/claude/claude-models.provider.js';
 import { CODEX_PREDEFINED_MODELS } from '@/modules/providers/list/codex/codex-models.provider.js';
 import { CURSOR_PREDEFINED_MODELS } from '@/modules/providers/list/cursor/cursor-models.provider.js';
@@ -13,6 +14,7 @@ import type { LLMProvider, ProviderModelsDefinition } from '@/shared/types.js';
  * providers a machine has connected.
  */
 const CURATED_CATALOGS: Record<LLMProvider, ProviderModelsDefinition> = {
+  agy: await new AgyProvider().models.getSupportedModels(),
   claude: CLAUDE_PREDEFINED_MODELS,
   codex: CODEX_PREDEFINED_MODELS,
   cursor: CURSOR_PREDEFINED_MODELS,

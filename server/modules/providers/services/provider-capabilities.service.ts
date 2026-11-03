@@ -99,6 +99,12 @@ const PROVIDER_CAPABILITIES: Record<LLMProvider, ProviderCapabilities> = {
     supportsMessageEditing: true,
     supportsSessionForking: true,
   },
+  agy: {
+    provider: 'agy', permissionModes: ['default', 'bypassPermissions', 'plan'], defaultPermissionMode: 'default',
+    supportsImages: false, supportsFiles: false, supportsAbort: true, supportsPermissionRequests: false,
+    supportsTokenUsage: false, supportsEffort: true, effortLevels: ['low', 'medium', 'high', 'xhigh', 'max'],
+    supportsMessageEditing: false, supportsSessionForking: false,
+  },
   opencode: {
     provider: 'opencode',
     // Mapped by the runtime onto OpenCode's controls: `--agent plan` (plan),

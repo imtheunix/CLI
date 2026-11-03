@@ -27,25 +27,33 @@ export function isInGlmPeakHours(window: OrchestratorConfig['glmPeakHours'], now
  */
 export function pickBackend(
   requested: OrchestratorBackend | null,
-  loads: Record<OrchestratorBackend, number>,
-  caps: Record<OrchestratorBackend, number>,
+  loads: Partial<Record<OrchestratorBackend, number>>,
+  caps: Partial<Record<OrchestratorBackend, number>>,
   fallback: OrchestratorBackend,
   avoid: OrchestratorBackend[] = [],
+  quota: { glmExhausted: boolean; fallback: 'agy' | 'wait' } = { glmExhausted: false, fallback: 'agy' },
 ): OrchestratorBackend | null {
-  const hasRoom = (backend: OrchestratorBackend) => loads[backend] < caps[backend];
+  const hasRoom = (backend: OrchestratorBackend) => !(backend === 'glm' && quota.glmExhausted)
+    && (loads[backend] ?? 0) < (caps[backend] ?? 0);
+  const effectiveFallback = quota.glmExhausted && fallback === 'glm'
+    ? (quota.fallback === 'agy' ? 'agy' : null) : fallback;
+  if (requested === 'glm' && quota.glmExhausted) {
+    return quota.fallback === 'agy' && hasRoom('agy') ? 'agy' : null;
+  }
 
   if (requested) {
     if (hasRoom(requested)) return requested;
-    return hasRoom(fallback) ? fallback : null;
+    return effectiveFallback && hasRoom(effectiveFallback) ? effectiveFallback : null;
   }
 
   const leastLoaded = (backends: OrchestratorBackend[]) => {
     let best: OrchestratorBackend | null = null;
     for (const backend of backends) {
       if (!hasRoom(backend)) continue;
-      if (best === null || loads[backend] < loads[best]) best = backend;
+      if (best === null || (loads[backend] ?? 0) < (loads[best] ?? 0)) best = backend;
     }
     return best;
   };
-  return leastLoaded(BACKEND_TIE_ORDER.filter((backend) => !avoid.includes(backend))) ?? leastLoaded(BACKEND_TIE_ORDER);
+  const order = quota.glmExhausted && quota.fallback === 'agy' ? ['agy', ...BACKEND_TIE_ORDER] as OrchestratorBackend[] : BACKEND_TIE_ORDER;
+  return leastLoaded(order.filter((backend) => !avoid.includes(backend))) ?? leastLoaded(order);
 }

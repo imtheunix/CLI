@@ -8,6 +8,7 @@ The orchestrating session (any chat in CLI) hands coding tasks to `tjob new`. Ea
 |---|---|---|---|
 | `claude` | Claude Agent SDK | `claude-opus-5-5` (high) | 2 |
 | `codex` (GPT) | Codex | `gpt-6.1-sol` (medium) | 2 |
+| `agy` | agy CLI | `gemini-3.8-flash-medium` (medium effort) | 4 |
 | `glm` | OpenCode, Z.ai Coding Plan | `zai-coding-plan/glm-5.3-flash` · `zai-coding-plan/glm-5.3` | 3 |
 
 - A job without a backend goes to whichever backend is working on the fewest jobs (under its cap); ties go to the cheapest (GLM, then GPT, then Claude).
@@ -23,6 +24,14 @@ The Codex runtime runs `$CODEX_PATH` when set, else the first `codex` on the ser
 The Coding Plan's week is 60,000 credits. Per 10,000 tokens, GLM-5.3 costs 6.9 (input), 1.7 (cached) and 24 (output); GLM-5.3-Flash 2.3, 0.56 and 8, about a third. A long OpenCode session re-reads its whole context every step (one job: 267 steps, 37M cached tokens, ~3,700 credits), and most jobs do not need the full model, so GLM jobs run Flash unless `tjob new --model glm-5.3` asks for the full one. A job keeps its model on every later turn: CI/CD queue messages, `tjob resume`, and the "continue" after a restart. A job that asked for another backend's model and was sent to GLM (its backend at its cap) runs GLM's default.
 
 **Peak hours:** Z.ai reportedly charges more on weekdays 14:00-18:00 UTC+8 (03:00-07:00 in São Paulo, `glmPeakHours` in the config). In that window, jobs without a backend go to Claude or GPT while they have room.
+
+### GLM quota fallback
+
+When a GLM turn reports Z.ai's `Usage limit reached for 5 hour` error (code 1308), GLM is marked quota-exhausted until its reported reset. Z.ai's unqualified reset times are interpreted as UTC+8; missing, invalid or past reset times use a one-hour cooldown. Ordinary HTTP 429/rate-limit errors do not trigger this fallback. The cooldown persists across server restarts.
+
+While exhausted, jobs requested on GLM (including cap overflow to GLM) use agy with Gemini 3.8 Flash. A quota-stopped job keeps its worktree and branch and gets a new agy conversation. Its prompt includes the original task and an instruction to inspect `git log`, `git status` and the diff before continuing. The old GLM session remains available. Agy's cap is respected; when full, continuations wait in the queue. `tjob ls` shows the actual backend/model, the fallback, and the cooldown.
+
+Set `"glmQuotaFallback": "wait"` to queue GLM work until reset instead. The default is `"agy"`. Override `"backends": { "agy": { "cap": 4 } }` to change its cap. Explicit `tjob new --backend agy` works at any time; agy is otherwise used for quota fallback. Jobs run with `--dangerously-skip-permissions`; later turns resume with `--conversation <id>` and pass the configured `--effort`. Raw streams are recorded under `~/.cloudcli/agy/<app-session-id>.jsonl` for history replay.
 
 ### Configuration
 
@@ -57,7 +66,7 @@ While a session is busy, a message can still wait for it (the queue), or go to t
 ## `tjob`
 
 ```
-tjob new "<title>" [--repo PATH] [--backend auto|claude|codex|glm] [--model ID] [--base BRANCH] [--prompt TEXT]   # else the prompt from stdin
+tjob new "<title>" [--repo PATH] [--backend auto|claude|codex|glm|agy] [--model ID] [--base BRANCH] [--prompt TEXT]   # else the prompt from stdin
 tjob ls | show <id> | done <id> | cancel <id> | retry <id> | resume <id>
 ```
 

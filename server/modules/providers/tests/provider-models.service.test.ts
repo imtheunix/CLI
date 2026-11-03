@@ -391,6 +391,7 @@ test('allowed effort levels come from the provider, not from the built-in models
     claude: ['low', 'medium', 'high', 'xhigh', 'max', 'ultracode'],
     codex: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
     cursor: [],
+    agy: ['low', 'medium', 'high', 'xhigh', 'max'],
     opencode: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'thinking'],
   };
   for (const [provider, levels] of Object.entries(expectedLevels) as Array<[LLMProvider, string[]]>) {

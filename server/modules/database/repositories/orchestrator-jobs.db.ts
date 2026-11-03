@@ -1,6 +1,6 @@
 import { getConnection } from '@/modules/database/connection.js';
 
-export type OrchestratorBackend = 'claude' | 'codex' | 'glm';
+export type OrchestratorBackend = 'claude' | 'codex' | 'glm' | 'agy';
 
 export type OrchestratorJobState = 'queued' | 'preparing' | 'active' | 'done' | 'cancelled' | 'failed';
 

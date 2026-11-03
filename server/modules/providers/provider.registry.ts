@@ -6,7 +6,10 @@ import type { IProvider } from '@/shared/interfaces.js';
 import type { LLMProvider } from '@/shared/types.js';
 import { AppError } from '@/shared/utils.js';
 
+import { AgyProvider } from '@/modules/providers/list/agy/agy.provider.js';
+
 const providers: Record<LLMProvider, IProvider> = {
+  agy: new AgyProvider(),
   claude: new ClaudeProvider(),
   codex: new CodexProvider(),
   cursor: new CursorProvider(),

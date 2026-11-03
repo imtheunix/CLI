@@ -29,6 +29,8 @@ export type OrchestratorConfig = {
   backends: Record<OrchestratorBackend, BackendConfig>;
   /** Where a backend whose cap is reached sends the job instead. */
   fallbackBackend: OrchestratorBackend;
+  /** Jobs service: continue quota-stopped GLM jobs on agy, or wait for reset. */
+  glmQuotaFallback: 'agy' | 'wait';
   /** Where job worktrees are created, one folder per job. */
   worktreesRoot: string;
   /** Only repositories under this folder can be given jobs. */
@@ -65,6 +67,7 @@ function defaults(): OrchestratorConfig {
   const workspacesRoot = process.env.WORKSPACES_ROOT || path.join(home, 'Tribeira');
   return {
     backends: {
+      agy: { provider: 'agy', model: 'gemini-3.8-flash-medium', models: { 'gemini-3.8-flash-medium': 'Gemini Flash' }, effort: 'medium', cap: 4, label: 'Gemini Flash' },
       claude: { provider: 'claude', model: 'claude-opus-5-5', models: { 'claude-opus-5-5': 'Claude' }, effort: 'high', cap: 2, label: 'Claude' },
       codex: { provider: 'codex', model: 'gpt-6.1-sol', models: { 'gpt-6.1-sol': 'GPT' }, effort: 'medium', cap: 2, label: 'GPT' },
       // Flash costs about a third of the full model's Coding Plan credits; most jobs do not need more.
@@ -78,6 +81,7 @@ function defaults(): OrchestratorConfig {
       },
     },
     fallbackBackend: 'glm',
+    glmQuotaFallback: 'agy',
     worktreesRoot: path.join(workspacesRoot, '.jobs'),
     workspacesRoot,
     conflictResolver: { command: 'agy', model: 'gemini-3.8-flash-medium' },
@@ -115,6 +119,7 @@ export function loadOrchestratorConfig(file = path.join(os.homedir(), '.config/c
   if (typeof override.fallbackBackend === 'string' && override.fallbackBackend in config.backends) {
     config.fallbackBackend = override.fallbackBackend as OrchestratorBackend;
   }
+  if (override.glmQuotaFallback === 'agy' || override.glmQuotaFallback === 'wait') config.glmQuotaFallback = override.glmQuotaFallback;
   if (typeof override.worktreesRoot === 'string') config.worktreesRoot = override.worktreesRoot;
   config.conflictResolver = { ...config.conflictResolver, ...(override.conflictResolver as object ?? {}) };
   config.checks = { ...config.checks, ...(override.checks as Record<string, string> ?? {}) };

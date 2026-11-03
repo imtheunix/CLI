@@ -798,3 +798,61 @@ test('disabling deploy waiting releases an already pushed job without watching C
     assert.equal(ctx.job(id).last_error, `pushed ${ctx.job(id).pushed_sha}; CI runs after merge, not awaited`);
   });
 });
+
+test('quota-stopped GLM work continues in a new agy session on the same dirty branch', async () => {
+  await withWorkspace(async ({ repo, jobs, runtime, job, config }) => {
+    const created = await jobs.create({ title: 'quota', prompt: 'Implement the original task', repoPath: repo, backend: 'glm', baseBranch: null });
+    await eventually(() => runtime.turns.length === 1, 'GLM turn');
+    const before = job(created.id);
+    writeFileSync(path.join(before.worktree_path, 'unfinished.txt'), 'keep this work');
+    const run = chatRunRegistry.getRun(before.session_id!)!;
+    run.writer.send({ kind: 'error', provider: 'opencode', content: 'Usage limit reached for 5 hour.' });
+    runtime.finish(before.session_id!); // OpenCode may exit zero even after APIError.
+    assert.equal(job(created.id).state, 'queued');
+    assert.ok(jobs.backendStatus().glm);
+    // A service recreation sees the persisted cooldown, too.
+    const recovered = createJobsService({ runtime: runtime.gateway, config: () => config });
+    assert.equal(recovered.backendStatus().glm, jobs.backendStatus().glm);
+    await recovered.tick();
+    await eventually(() => runtime.turns.length === 2, 'agy continuation');
+    const after = job(created.id);
+    assert.equal(after.backend, 'agy');
+    assert.equal(after.model, 'gemini-3.8-flash-medium');
+    assert.notEqual(after.session_id, before.session_id);
+    assert.equal(after.worktree_path, before.worktree_path);
+    assert.equal(after.branch, before.branch);
+    assert.equal(readFileSync(path.join(after.worktree_path, 'unfinished.txt'), 'utf8'), 'keep this work');
+    assert.equal(sessionsDb.getSessionById(after.session_id!)?.provider, 'agy');
+    assert.ok(sessionsDb.getSessionById(before.session_id!));
+    assert.match(runtime.turns[1].command, /Implement the original task/);
+    assert.match(runtime.turns[1].command, /Another model started this job and stopped at its quota; read `git log`, `git status` and the diff, then continue from where it stopped/);
+    assert.equal(runtime.turns[1].options.permissionMode, 'bypassPermissions');
+    const next = await recovered.create({ title: 'next', prompt: 'next task', repoPath: repo, backend: 'glm', baseBranch: null });
+    await eventually(() => job(next.id).state === 'active', 'new fallback job');
+    assert.equal(job(next.id).backend, 'agy');
+    assert.equal(recovered.get(next.id)?.quotaFallback, true);
+  });
+});
+
+test('wait mode keeps quota-stopped jobs queued until reset and ignores aborted errors', async () => {
+  await withWorkspace(async ({ repo, jobs, runtime, job, config }) => {
+    config.glmQuotaFallback = 'wait';
+    const created = await jobs.create({ title: 'wait', prompt: 'task', repoPath: repo, backend: 'glm', baseBranch: null });
+    await eventually(() => runtime.turns.length === 1, 'GLM turn');
+    const sessionId = job(created.id).session_id!;
+    chatRunRegistry.getRun(sessionId)!.writer.send({ kind: 'error', provider: 'opencode', content: 'Usage limit reached for 5 hour.' });
+    runtime.finish(sessionId, { aborted: true });
+    assert.equal(jobs.backendStatus().glm, null);
+    jobs.handleRunCompleted({ appSessionId: sessionId, exitCode: 1, aborted: false });
+    assert.equal(job(created.id).state, 'queued');
+    await jobs.tick();
+    assert.equal(job(created.id).state, 'queued');
+    assert.equal(runtime.turns.length, 1);
+    const afterReset = createJobsService({ runtime: runtime.gateway, config: () => config, now: () => new Date(Date.now() + 3_700_000) });
+    assert.equal(afterReset.backendStatus().glm, null);
+    await afterReset.tick();
+    await eventually(() => runtime.turns.length === 2, 'GLM after reset');
+    assert.equal(job(created.id).backend, 'glm');
+    assert.equal(job(created.id).session_id, sessionId);
+  });
+});

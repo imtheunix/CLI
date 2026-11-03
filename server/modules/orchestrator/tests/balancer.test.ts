@@ -40,3 +40,17 @@ test("GLM's peak hours are weekdays 14:00-18:00 UTC+8", () => {
   // Saturday in UTC+8.
   assert.equal(isInGlmPeakHours(window, new Date('2026-10-24T07:00:00Z')), false);
 });
+
+test('GLM quota routes requested and overflow jobs to agy, respecting its cap and wait switch', () => {
+  const loads = { claude: 2, codex: 2, glm: 0, agy: 0 };
+  const caps = { ...CAPS, agy: 4 };
+  const quota = { glmExhausted: true, fallback: 'agy' as const };
+  assert.equal(pickBackend('glm', loads, caps, 'glm', [], quota), 'agy');
+  assert.equal(pickBackend('claude', loads, caps, 'glm', [], quota), 'agy');
+  assert.equal(pickBackend(null, loads, caps, 'glm', [], quota), 'agy');
+  assert.equal(pickBackend('glm', { ...loads, agy: 4 }, caps, 'glm', [], quota), null);
+  assert.equal(pickBackend('agy', { ...loads, agy: 4 }, caps, 'glm', [], quota), null);
+  assert.equal(pickBackend('glm', loads, caps, 'glm', [], { ...quota, fallback: 'wait' }), null);
+  assert.equal(pickBackend('glm', loads, caps, 'glm', [], { ...quota, glmExhausted: false }), 'glm');
+  assert.equal(pickBackend('agy', loads, caps, 'glm'), 'agy');
+});

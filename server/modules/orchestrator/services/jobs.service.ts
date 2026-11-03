@@ -14,6 +14,7 @@ import { chatRunRegistry, runDetachedChatTurn } from '@/modules/websocket/index.
 import type { ProviderRuntimeGateway } from '@/modules/websocket/index.js';
 import { AppError } from '@/shared/index.js';
 
+import { detectGlmQuotaReset, getGlmQuotaReset, recordGlmQuotaReset } from './glm-quota.service.js';
 import { isInGlmPeakHours, pickBackend } from './balancer.service.js';
 import { modelLabel, resolveRequestedModel } from './orchestrator-config.service.js';
 import type { OrchestratorConfig } from './orchestrator-config.service.js';
@@ -31,7 +32,7 @@ import {
 /** Jobs that hold a backend's slot: being set up, or with an agent on them (working or waiting for an answer). */
 const SLOT_STATES = ['preparing', 'active'] as const;
 
-const BACKENDS: OrchestratorBackend[] = ['claude', 'codex', 'glm'];
+const BACKENDS: OrchestratorBackend[] = ['claude', 'codex', 'glm', 'agy'];
 
 /** What a job looks like to its callers: the row, plus what its session is doing right now. */
 
@@ -41,6 +42,8 @@ export const JOB_KINDS: readonly OrchestratorJobKind[] = ['feature', 'bugfix'];
 export type OrchestratorJobView = OrchestratorJobRow & {
   /** working while its session has a turn going, waiting when the agent stopped for an answer. */
   activity: 'working' | 'waiting' | null;
+  /** CLI job line: this job moved from GLM after quota exhaustion. */
+  quotaFallback: boolean;
 };
 
 function slugify(title: string): string {
@@ -60,12 +63,13 @@ function firstUserId(): number | null {
 }
 
 /** The first turn of a job: the task, plus how a job ends. */
-function buildJobPrompt(job: OrchestratorJobRow, label: string, projectMapGuidance: string): string {
+function buildJobPrompt(job: OrchestratorJobRow, label: string, projectMapGuidance: string, continuation = false): string {
   return [
     `You are ${label}, working on job ${job.id} — "${job.title}".`,
     `You are in your own git worktree (${job.worktree_path}), on branch ${job.branch}, made from origin/${job.base_branch} of ${job.repo_path}.`,
     '',
     job.prompt.trim(),
+    ...(continuation ? ['', 'Another model started this job and stopped at its quota; read `git log`, `git status` and the diff, then continue from where it stopped.'] : []),
     ...(projectMapGuidance ? ['', projectMapGuidance] : []),
     '',
     'How this job works:',
@@ -97,7 +101,7 @@ export function createJobsService(deps: {
   const preparing = new Set<string>();
 
   function loads(): Record<OrchestratorBackend, number> {
-    const counts: Record<OrchestratorBackend, number> = { claude: 0, codex: 0, glm: 0 };
+    const counts: Record<OrchestratorBackend, number> = { claude: 0, codex: 0, glm: 0, agy: 0 };
     for (const job of orchestratorJobsDb.listByState([...SLOT_STATES])) {
       if (job.backend) counts[job.backend] += 1;
     }
@@ -113,6 +117,7 @@ export function createJobsService(deps: {
     const session = job.session_id ? sessionsDb.getSessionById(job.session_id) : null;
     return {
       ...job,
+      quotaFallback: job.backend === 'agy' && (job.requested_backend === 'glm' || Boolean(job.last_error?.startsWith('GLM quota-exhausted'))),
       activity: job.state === 'active' ? (processing ? 'working' : 'waiting') : null,
       model: job.model ?? (session as { model?: string | null } | null)?.model ?? null,
     };
@@ -153,7 +158,9 @@ export function createJobsService(deps: {
     const model = offered ? job.model as string : backendConfig.model;
     const label = modelLabel(backendConfig, model);
     preparing.add(job.id);
-    orchestratorJobsDb.update(job.id, { backend, model, state: 'preparing', last_error: null });
+    const continuation = Boolean(job.session_id && job.last_error?.startsWith('GLM quota-exhausted'));
+    const quotaFallback = backend === 'agy' && (continuation || (job.requested_backend === 'glm' && getGlmQuotaReset(now())));
+    orchestratorJobsDb.update(job.id, { backend, model, state: 'preparing', last_error: quotaFallback ? job.last_error ?? 'GLM quota-exhausted; using agy' : null });
     try {
       await prepareWorktree({
         repoPath: job.repo_path,
@@ -164,6 +171,7 @@ export function createJobsService(deps: {
       const projectMapGuidance = await prepareProjectMap(job.worktree_path);
 
       let sessionId = job.session_id;
+      if (sessionId && sessionsDb.getSessionById(sessionId)?.provider !== backendConfig.provider) sessionId = null;
       if (!sessionId) {
         projectsDb.createProjectPath(job.worktree_path, `${path.basename(job.repo_path)} · ${job.title}`);
         sessionId = sessionsService.createAppSession(backendConfig.provider, job.worktree_path, job.title).sessionId;
@@ -172,7 +180,7 @@ export function createJobsService(deps: {
         if (backendConfig.effort) sessionsDb.setSessionEffort(sessionId, backendConfig.effort);
       }
       const ready = orchestratorJobsDb.update(job.id, { session_id: sessionId, state: 'active' }) as OrchestratorJobRow;
-      await sendTurn(ready, buildJobPrompt(ready, label, projectMapGuidance));
+      await sendTurn(ready, buildJobPrompt(ready, label, projectMapGuidance, continuation));
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.error(`[Orchestrator] Job ${job.id} could not start`, message);
@@ -184,6 +192,11 @@ export function createJobsService(deps: {
 
   return {
     loads,
+
+    /** Routes and CLI display the backend cooldown independently of job errors. */
+    backendStatus(): { glm: string | null } {
+      return { glm: getGlmQuotaReset(now()) };
+    },
 
     list(): OrchestratorJobView[] {
       return orchestratorJobsDb.list().map(view);
@@ -401,6 +414,18 @@ export function createJobsService(deps: {
     handleRunCompleted(completion: { appSessionId: string; exitCode: number; aborted: boolean }): void {
       const job = orchestratorJobsDb.getBySessionId(completion.appSessionId);
       if (!job) return;
+      if (job.backend === 'glm' && !completion.aborted && job.state === 'active') {
+        const errors = chatRunRegistry.getRun(completion.appSessionId)?.events
+          .filter((event) => event.kind === 'error').map((event) => String(event.content ?? '')).join('\n') ?? '';
+        const until = detectGlmQuotaReset(errors, now());
+        if (until) {
+          recordGlmQuotaReset(until);
+          // Queue the existing branch. A backend change creates a new session,
+          // keeping the stopped GLM transcript available for inspection.
+          orchestratorJobsDb.update(job.id, { state: 'queued', in_turn: 0, last_error: `GLM quota-exhausted until ${until.toISOString()}` });
+          return;
+        }
+      }
       orchestratorJobsDb.update(job.id, {
         in_turn: 0,
         ...(completion.exitCode !== 0 && !completion.aborted ? { last_error: `The last turn ended with exit code ${completion.exitCode}` } : {}),
@@ -425,8 +450,8 @@ export function createJobsService(deps: {
       const peak = config.glmPeakHours.avoid && isInGlmPeakHours(config.glmPeakHours, now());
       const avoid: OrchestratorBackend[] = peak ? ['glm'] : [];
       for (const job of orchestratorJobsDb.listByState(['queued'])) {
-        const backend = pickBackend(job.requested_backend, loads(), caps(config), config.fallbackBackend, avoid);
-        if (!backend) continue;
+        const backend = pickBackend(job.last_error?.startsWith('GLM quota-exhausted') ? (config.glmQuotaFallback === 'agy' ? 'agy' : 'glm') : job.requested_backend, loads(), caps(config), config.fallbackBackend, avoid, { glmExhausted: Boolean(getGlmQuotaReset(now())), fallback: config.glmQuotaFallback });
+        if (!backend || (job.last_error?.startsWith('GLM quota-exhausted') && config.glmQuotaFallback === 'agy' && backend !== 'agy')) continue;
         void start(job, backend);
       }
     },
