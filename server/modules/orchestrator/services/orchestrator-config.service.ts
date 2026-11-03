@@ -24,7 +24,7 @@ type BackendConfig = {
   label: string;
 };
 
-/** Everything the orchestrator can be tuned with; see `loadOrchestratorConfig`. */
+/** Configuration consumed by the orchestrator jobs, balancer, and merge queue services. */
 export type OrchestratorConfig = {
   backends: Record<OrchestratorBackend, BackendConfig>;
   /** Where a backend whose cap is reached sends the job instead. */
@@ -37,6 +37,8 @@ export type OrchestratorConfig = {
   conflictResolver: { command: string; model: string };
   /** Per-repository check commands (keyed by the repository folder's name), run before a push. */
   checks: Record<string, string>;
+  /** Per-repository deploy waiting, keyed by folder name; absent entries default to true. */
+  waitForDeploy: Record<string, boolean>;
   /** Per-repository branch jobs merge into, when it is not origin's default branch. */
   baseBranches: Record<string, string>;
   forgejo: { apiUrl: string; tokenFile: string };
@@ -82,6 +84,7 @@ function defaults(): OrchestratorConfig {
     checks: {
       tribeiracli: 'npm run typecheck && npm run lint && npm test && npm run test:client',
     },
+    waitForDeploy: {},
     baseBranches: { tribeira: 'develop' },
     forgejo: {
       apiUrl: 'http://127.0.0.1:3000/api/v1',
@@ -115,6 +118,7 @@ export function loadOrchestratorConfig(file = path.join(os.homedir(), '.config/c
   if (typeof override.worktreesRoot === 'string') config.worktreesRoot = override.worktreesRoot;
   config.conflictResolver = { ...config.conflictResolver, ...(override.conflictResolver as object ?? {}) };
   config.checks = { ...config.checks, ...(override.checks as Record<string, string> ?? {}) };
+  config.waitForDeploy = { ...config.waitForDeploy, ...(override.waitForDeploy as Record<string, boolean> ?? {}) };
   config.baseBranches = { ...config.baseBranches, ...(override.baseBranches as Record<string, string> ?? {}) };
   config.forgejo = { ...config.forgejo, ...(override.forgejo as object ?? {}) };
   config.glmPeakHours = { ...config.glmPeakHours, ...(override.glmPeakHours as object ?? {}) };

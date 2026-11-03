@@ -1,4 +1,5 @@
 import { readFile } from 'node:fs/promises';
+import path from 'node:path';
 
 import { orchestratorJobsDb } from '@/modules/database/index.js';
 import type { OrchestratorJobRow, OrchestratorMergeStep } from '@/modules/database/index.js';
@@ -36,7 +37,7 @@ const FINISHED_RUN_STATUSES = new Set(['success', 'failure', 'cancelled', 'skipp
 /**
  * Used by the Orchestrator module. Takes a finished job's branch to its base
  * branch: rebase onto the latest base (Gemini Flash resolves conflicts),
- * the project's checks, push, then the deploy Forgejo runs for it.
+ * the project's checks, push, then (by default) the deploy Forgejo runs for it.
  *
  * Every step is recorded before it runs, and each can be run again: a server
  * restart, a push rejected because another job got there first, or a deploy
@@ -171,14 +172,32 @@ export function createMergeQueueService(deps: {
     setStep(job, 'push');
   }
 
+  function waitsForDeploy(job: OrchestratorJobRow): boolean {
+    return deps.config().waitForDeploy[path.basename(job.repo_path)] !== false;
+  }
+
+  /** Both a new push and recovery of an unrecorded push honor the repository policy. */
+  function recordPush(job: OrchestratorJobRow, head: string): void {
+    if (!waitsForDeploy(job)) {
+      setStep(job, 'merged', {
+        pushed_sha: head,
+        deploy_waiting_since: null,
+        last_error: `pushed ${head}; CI runs after merge, not awaited`,
+      });
+      return;
+    }
+    setStep(job, 'deploy', { pushed_sha: head, deploy_waiting_since: new Date(now()).toISOString(), last_error: null });
+  }
+
   async function stepPush(job: OrchestratorJobRow): Promise<void> {
     const cwd = job.worktree_path;
     const head = await revParse(cwd, 'HEAD');
+    if (!head) throw new Error('Cannot resolve HEAD before pushing');
     const fetch = await git(cwd, 'fetch', '--quiet', 'origin', job.base_branch);
     if (fetch.code !== 0) throw new Error(`git fetch failed: ${tail(fetch.stderr, 10)}`);
     // Pushed already (a restart came between the push and recording it).
-    if (head && (await git(cwd, 'merge-base', '--is-ancestor', head, `origin/${job.base_branch}`)).code === 0) {
-      setStep(job, 'deploy', { pushed_sha: head, deploy_waiting_since: new Date(now()).toISOString() });
+    if ((await git(cwd, 'merge-base', '--is-ancestor', head, `origin/${job.base_branch}`)).code === 0) {
+      recordPush(job, head);
       return;
     }
     const rebaseAgain = (reason: string) => {
@@ -202,7 +221,7 @@ export function createMergeQueueService(deps: {
       await backToAgent(job, `git push to ${job.base_branch} failed:\n\n\`\`\`\n${tail(push.stderr, 40)}\n\`\`\``);
       return;
     }
-    setStep(job, 'deploy', { pushed_sha: head, deploy_waiting_since: new Date(now()).toISOString(), last_error: null });
+    recordPush(job, head);
   }
 
   /** A green descendant on the base branch deployed this job's changes too. */
@@ -229,6 +248,11 @@ export function createMergeQueueService(deps: {
   }
 
   async function stepDeploy(job: OrchestratorJobRow): Promise<void> {
+    // A policy change also releases jobs already watching a pushed commit.
+    if (!waitsForDeploy(job) && job.pushed_sha) {
+      recordPush(job, job.pushed_sha);
+      return;
+    }
     const since = Date.parse(job.deploy_waiting_since ?? '') || now();
     const origin = await readOriginRepository(job.repo_path);
     const { apiUrl, tokenFile } = deps.config().forgejo;
@@ -271,8 +295,8 @@ export function createMergeQueueService(deps: {
       case 'rebase': return stepRebase(job);
       case 'check': return stepCheck(job);
       case 'push': {
-        // Waits for the deploy of the previous push in this repository.
-        const deploying = orchestratorJobsDb.listInMergeQueue().some((other) =>
+        // Repositories that await CI serialize pushes on the previous deploy.
+        const deploying = waitsForDeploy(job) && orchestratorJobsDb.listInMergeQueue().some((other) =>
           other.id !== job.id && other.repo_path === job.repo_path && other.merge_step === 'deploy');
         if (!deploying) await stepPush(job);
         return;

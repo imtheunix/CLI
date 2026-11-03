@@ -677,3 +677,124 @@ test('job branches are feature/… by default and bugfix/… on request', async 
     await eventually(() => ctx.job(feature.id).state === 'active' && ctx.job(bugfix.id).state === 'active', 'start');
   });
 });
+
+test('waitForDeploy overrides are keyed by repository and default to waiting', async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'orchestrator-config-'));
+  try {
+    const file = path.join(dir, 'orchestrator.json');
+    assert.deepEqual(loadOrchestratorConfig(file).waitForDeploy, {});
+    writeFileSync(file, '{invalid');
+    assert.deepEqual(loadOrchestratorConfig(file).waitForDeploy, {});
+    writeFileSync(file, JSON.stringify({ waitForDeploy: { tsge: false, tribeira: true } }));
+    const config = loadOrchestratorConfig(file);
+    assert.equal(config.waitForDeploy.tripam ?? true, true);
+    assert.deepEqual(config.waitForDeploy, { tsge: false, tribeira: true });
+    assert.ok(config.checks.tribeiracli);
+    writeFileSync(file, JSON.stringify({ waitForDeploy: { tsge: true } }));
+    assert.deepEqual(loadOrchestratorConfig(file).waitForDeploy, { tsge: true });
+    writeFileSync(file, JSON.stringify({ waitForDeploy: null }));
+    assert.deepEqual(loadOrchestratorConfig(file).waitForDeploy, {});
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('a no-wait repository pushes two queued jobs and immediately merges both without watching CI', async () => {
+  await withWorkspace(async (ctx) => {
+    const first = await finishedJob(ctx, (worktree) => commitFile(worktree, 'a.txt', 'a', 'a'));
+    const second = await finishedJob(ctx, (worktree) => commitFile(worktree, 'b.txt', 'b', 'b'));
+    let pushes = 0;
+    let requests = 0;
+    const queue = createMergeQueueService({
+      jobs: ctx.jobs, config: () => ctx.config,
+      run: async (command, args, options) => {
+        if (command === 'git' && args[0] === 'push') pushes += 1;
+        return runCommand(command, args, options);
+      },
+      fetchJson: async () => { requests += 1; throw new Error('CI must not be watched'); },
+    });
+    for (let i = 0; i < 20 && [first, second].some((id) => ctx.job(id).merge_step !== 'merged'); i += 1) {
+      await queue.tick();
+      assert.ok([first, second].every((id) => ctx.job(id).merge_step !== 'deploy'));
+    }
+    assert.equal(pushes, 2);
+    assert.equal(requests, 0);
+    for (const id of [first, second]) {
+      const job = ctx.job(id);
+      assert.equal(job.state, 'done'); // tjob displays done + merged as ci:merged
+      assert.equal(job.merge_step, 'merged');
+      assert.equal(job.last_error, `pushed ${job.pushed_sha}; CI runs after merge, not awaited`);
+      assert.equal(job.deploy_waiting_since, null);
+    }
+    git(ctx.upstream, 'pull', '-q', 'origin', 'main');
+    assert.ok(existsSync(path.join(ctx.upstream, 'a.txt')));
+    assert.ok(existsSync(path.join(ctx.upstream, 'b.txt')));
+  }, (config) => { config.waitForDeploy = { demo: false }; });
+});
+
+for (const explicit of [false, true]) {
+  test(`a waiting repository serializes pushes until deploy completes (${explicit ? 'explicit' : 'default'})`, async () => {
+    await withWorkspace(async (ctx) => {
+      const first = await finishedJob(ctx, (worktree) => commitFile(worktree, 'a.txt', 'a', 'a'));
+      const second = await finishedJob(ctx, (worktree) => commitFile(worktree, 'b.txt', 'b', 'b'));
+      writeFileSync(ctx.config.forgejo.tokenFile, 'test-token');
+      let status = 'running';
+      const queue = createMergeQueueService({
+        jobs: ctx.jobs, config: () => ctx.config,
+        fetchJson: async () => ({ workflow_runs: [{ commit_sha: ctx.job(first).pushed_sha, status }] }),
+      });
+      await drain(queue, () => ctx.job(first), ['deploy']);
+      await drain(queue, () => ctx.job(second), ['push']);
+      assert.equal(ctx.job(first).merge_step, 'deploy');
+      assert.equal(ctx.job(second).merge_step, 'push');
+      const firstSha = ctx.job(first).pushed_sha;
+      await queue.tick();
+      assert.equal(ctx.job(first).merge_step, 'deploy');
+      assert.equal(ctx.job(second).merge_step, 'push');
+      assert.equal(ctx.job(second).pushed_sha, null);
+      assert.equal(git(ctx.upstream, 'ls-remote', 'origin', 'refs/heads/main').split(/\s/)[0], firstSha);
+      status = 'success';
+      await queue.tick();
+      assert.equal(ctx.job(first).merge_step, 'merged');
+      await queue.tick();
+      assert.equal(ctx.job(second).merge_step, 'deploy');
+      assert.notEqual(ctx.job(second).pushed_sha, firstSha);
+    }, (config) => { config.waitForDeploy = { tsge: false, ...(explicit ? { demo: true } : {}) }; });
+  });
+}
+
+test('a no-wait repository recovers an unrecorded push without pushing twice', async () => {
+  await withWorkspace(async (ctx) => {
+    const id = await finishedJob(ctx, (worktree) => commitFile(worktree, 'feature.txt', 'f', 'feature'));
+    const worktree = ctx.job(id).worktree_path;
+    git(worktree, 'push', '-q', 'origin', 'HEAD:refs/heads/main');
+    orchestratorJobsDb.update(id, { merge_step: 'push' });
+    const queue = createMergeQueueService({
+      jobs: ctx.jobs, config: () => ctx.config,
+      run: async (command, args, options) => {
+        assert.ok(command !== 'git' || args[0] !== 'push');
+        return runCommand(command, args, options);
+      },
+    });
+    await queue.tick();
+    assert.equal(ctx.job(id).merge_step, 'merged');
+    assert.equal(ctx.job(id).pushed_sha, git(worktree, 'rev-parse', 'HEAD'));
+    assert.equal(ctx.job(id).last_error, `pushed ${ctx.job(id).pushed_sha}; CI runs after merge, not awaited`);
+  }, (config) => { config.waitForDeploy = { demo: false }; });
+});
+
+test('disabling deploy waiting releases an already pushed job without watching CI', async () => {
+  await withWorkspace(async (ctx) => {
+    const id = await finishedJob(ctx, (worktree) => commitFile(worktree, 'a.txt', 'a', 'a'));
+    const queue = createMergeQueueService({
+      jobs: ctx.jobs, config: () => ctx.config,
+      fetchJson: async () => { throw new Error('CI must not be watched'); },
+    });
+    await drain(queue, () => ctx.job(id), ['deploy']);
+    assert.equal(ctx.job(id).merge_step, 'deploy');
+    ctx.config.waitForDeploy.demo = false;
+    await queue.tick();
+    assert.equal(ctx.job(id).merge_step, 'merged');
+    assert.equal(ctx.job(id).last_error, `pushed ${ctx.job(id).pushed_sha}; CI runs after merge, not awaited`);
+  });
+});
