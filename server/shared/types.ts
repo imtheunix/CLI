@@ -658,6 +658,17 @@ export type ProviderRuntimeContext = {
     interrupt(): Promise<void>;
     stopTask?(taskId: string): Promise<void>;
   };
+  /**
+   * Spawns the CLI process for a run. Production leaves this unset and the
+   * runtime spawns the CLI itself; tests supply a fake child so retiring a
+   * superseded process can be observed without a real one.
+   */
+  spawnProcess?: (options: AnyRecord) => {
+    pid?: number;
+    exitCode: number | null;
+    kill(signal: NodeJS.Signals): boolean;
+    once(event: 'exit', listener: (...args: unknown[]) => void): unknown;
+  };
 };
 
 export type ProviderRunFunction = (
