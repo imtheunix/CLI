@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-export type HubEventState = 'review' | 'blocked' | 'merge_failed' | 'turn_ended' | 'merged';
+export type HubEventState = 'review' | 'blocked' | 'merge_failed' | 'turn_ended' | 'merged' | 'stalled';
 
 export type HubEventInput = {
   jobId: string;
@@ -11,6 +11,17 @@ export type HubEventInput = {
   reason: string;
   timestamp?: string;
 };
+
+type HubEventListener = (event: HubEventInput) => void;
+const hubEventListeners = new Set<HubEventListener>();
+
+/** Used by HubWakeService to subscribe to state change events as they are emitted. */
+export function onHubEvent(listener: HubEventListener): () => void {
+  hubEventListeners.add(listener);
+  return () => {
+    hubEventListeners.delete(listener);
+  };
+}
 
 /** Used by Orchestrator and tests to resolve the destination log for hub state events. */
 export function getHubEventsLogPath(): string {
@@ -41,6 +52,14 @@ export function appendHubEvent(event: HubEventInput): void {
 
     const line = `${ts}\t${jobId}\t${state}\t${title}\t${reason}\n`;
     fs.appendFileSync(filePath, line, { mode: 0o600 });
+
+    for (const listener of hubEventListeners) {
+      try {
+        listener({ ...event, timestamp: ts });
+      } catch (listenerError) {
+        console.error('[Orchestrator] Hub event listener error:', listenerError);
+      }
+    }
   } catch (error) {
     console.error('[Orchestrator] Could not append hub event:', error);
   }
