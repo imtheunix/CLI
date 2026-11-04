@@ -10,6 +10,7 @@
 #   tjob retry <id>         a blocked merge goes on from where it stopped
 #   tjob cancel <id>        the person does not want the job anymore: frees its slot, leaves the CI/CD queue
 #   tjob resume <id>        a cancelled or failed job takes a slot again
+#   tjob hub-wake [--test]  wake the orchestrating session (the hub) on job events
 set -euo pipefail
 
 marker="$HOME/.cloudcli/local-server.json"
@@ -90,5 +91,15 @@ case "$cmd" in
   ls) api GET "" | render ls ;;
   show) api GET "/${1:?id}" | render show ;;
   done|approve|retry|resume|cancel) api POST "/${1:?id}/$cmd" '{}' | render "$cmd" ;;
-  *) sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+  hub-wake)
+    test_arg="false"
+    if [ "${1:-}" = "--test" ]; then test_arg="true"; fi
+    api POST "/hub-wake" "$(json_body test "$test_arg")" | python3 -c '
+import json, sys
+body = json.load(sys.stdin)
+if not body.get("success", False):
+    sys.exit("tjob: " + str((body.get("error") or {}).get("message") if isinstance(body.get("error"), dict) else body.get("error") or body))
+print(body.get("data", {}).get("message", "wake sent"))
+' ;;
+  *) sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac

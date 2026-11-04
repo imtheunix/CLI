@@ -59,6 +59,20 @@ export type OrchestratorConfig = {
    * to hand it to the CI/CD queue. Off, `tjob done` queues it at once.
    */
   review: boolean;
+  /**
+   * Hub session notification configuration. When present and wake is true,
+   * the orchestrator wakes the hub session on job events (reviews, waiting turns,
+   * blocked merges, merges, stalls) via chat turns.
+   */
+  hub?: HubWakeConfig;
+};
+
+/** Hub notification configuration options. */
+export type HubWakeConfig = {
+  sessionId: string;
+  wake?: boolean;
+  debounceSec?: number;
+  stallMin?: number;
 };
 
 /** Jobs/balancer services: ordinary auto-selection ties, cheapest first. Agy is reserved for quota fallback or explicit requests. */
@@ -134,6 +148,17 @@ export function loadOrchestratorConfig(file = path.join(os.homedir(), '.config/c
   config.forgejo = { ...config.forgejo, ...(override.forgejo as object ?? {}) };
   config.glmPeakHours = { ...config.glmPeakHours, ...(override.glmPeakHours as object ?? {}) };
   if (typeof override.review === 'boolean') config.review = override.review;
+  if (override.hub && typeof override.hub === 'object') {
+    const hub = override.hub as Record<string, unknown>;
+    if (typeof hub.sessionId === 'string' && hub.sessionId.trim()) {
+      config.hub = {
+        sessionId: hub.sessionId.trim(),
+        wake: typeof hub.wake === 'boolean' ? hub.wake : true,
+        debounceSec: typeof hub.debounceSec === 'number' && hub.debounceSec >= 0 ? hub.debounceSec : 90,
+        stallMin: typeof hub.stallMin === 'number' && hub.stallMin >= 0 ? hub.stallMin : 30,
+      };
+    }
+  }
   return config;
 }
 

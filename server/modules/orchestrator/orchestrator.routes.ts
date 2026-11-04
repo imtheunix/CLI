@@ -6,6 +6,7 @@ import { AppError, asyncHandler, createApiSuccessResponse } from '@/shared/utils
 
 import { JOB_KINDS, type JobsService, type OrchestratorJobKind } from './services/jobs.service.js';
 import type { createMergeQueueService } from './services/merge-queue.service.js';
+import type { HubWakeService } from './services/hub-wake.service.js';
 import { isOrchestratorToken } from './services/orchestrator-token.service.js';
 
 const BACKENDS = ['claude', 'codex', 'glm', 'agy'];
@@ -44,6 +45,7 @@ function readBackend(value: unknown): OrchestratorBackend | null {
 export function createOrchestratorRouter(services: {
   jobs: JobsService;
   mergeQueue: ReturnType<typeof createMergeQueueService>;
+  hubWake: HubWakeService;
   caps: () => Record<OrchestratorBackend, number>;
   authenticate: RequestHandler;
 }): express.Router {
@@ -99,6 +101,12 @@ export function createOrchestratorRouter(services: {
       sessionId: readString(req.query.sessionId, 'sessionId', true),
     });
     res.set('Cache-Control', 'no-store').json(createApiSuccessResponse(context));
+  }));
+
+  // Before `/:id`, which would otherwise read "hub-wake" as a job id.
+  router.post('/hub-wake', asyncHandler(async (_req, res) => {
+    const result = await services.hubWake.triggerTestWake();
+    res.json(createApiSuccessResponse(result));
   }));
 
   router.get('/:id', asyncHandler(async (req, res) => {

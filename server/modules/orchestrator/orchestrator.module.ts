@@ -8,6 +8,7 @@ import type { ProviderRuntimeGateway } from '@/modules/websocket/index.js';
 import { createOrchestratorRouter } from './orchestrator.routes.js';
 import { createJobsService } from './services/jobs.service.js';
 import { createMergeQueueService } from './services/merge-queue.service.js';
+import { createHubWakeService } from './services/hub-wake.service.js';
 import { loadOrchestratorConfig } from './services/orchestrator-config.service.js';
 import { getOrchestratorToken } from './services/orchestrator-token.service.js';
 
@@ -24,6 +25,7 @@ export function createOrchestratorModule(input: { runtime: ProviderRuntimeGatewa
   const config = () => loadOrchestratorConfig();
   const jobs = createJobsService({ runtime: input.runtime, config });
   const mergeQueue = createMergeQueueService({ jobs, config });
+  const hubWake = createHubWakeService({ runtime: input.runtime, config });
   let timer: ReturnType<typeof setInterval> | null = null;
   let unsubscribe: (() => void) | null = null;
   let ticking = false;
@@ -34,6 +36,7 @@ export function createOrchestratorModule(input: { runtime: ProviderRuntimeGatewa
     try {
       await jobs.tick();
       void mergeQueue.tick();
+      await hubWake.tick();
     } catch (error) {
       console.error('[Orchestrator] Tick failed', error);
     } finally {
@@ -45,6 +48,7 @@ export function createOrchestratorModule(input: { runtime: ProviderRuntimeGatewa
     router: createOrchestratorRouter({
       jobs,
       mergeQueue,
+      hubWake,
       authenticate: input.authenticate,
       caps: () => {
         const { backends } = config();
@@ -54,6 +58,7 @@ export function createOrchestratorModule(input: { runtime: ProviderRuntimeGatewa
 
     async start(): Promise<void> {
       getOrchestratorToken();
+      hubWake.start();
       unsubscribe = chatRunRegistry.onRunCompleted((completion) => jobs.handleRunCompleted(completion));
       await reattachActiveTurns({
         onTurnCompleted: (turn, exitCode) => {
@@ -70,6 +75,7 @@ export function createOrchestratorModule(input: { runtime: ProviderRuntimeGatewa
     stop(): void {
       if (timer) clearInterval(timer);
       timer = null;
+      hubWake.stop();
       unsubscribe?.();
       unsubscribe = null;
     },
