@@ -8,6 +8,9 @@ export type OrchestratorJobState = 'queued' | 'preparing' | 'active' | 'done' | 
 // review: a finished job waits for the orchestrating session's `tjob approve` before the queue (hub-and-spoke)
 export type OrchestratorMergeStep = 'none' | 'review' | 'queued' | 'rebase' | 'check' | 'push' | 'deploy' | 'merged' | 'blocked';
 
+/** One entry of a job's CI/CD queue history: a step (or `check:run`, its check starting) and when it began. */
+export type OrchestratorMergeStepEvent = { step: OrchestratorMergeStep | 'check:run'; at: string };
+
 export type OrchestratorJobRow = {
   id: string;
   title: string;
@@ -27,6 +30,8 @@ export type OrchestratorJobRow = {
   merge_attempts: number;
   pushed_sha: string | null;
   deploy_waiting_since: string | null;
+  /** JSON array of OrchestratorMergeStepEvent; read it with `readMergeStepHistory`. */
+  merge_step_history: string | null;
   last_error: string | null;
   created_at: string;
   updated_at: string;
@@ -40,6 +45,16 @@ const PATCHABLE_COLUMNS: Array<keyof JobPatch> = [
   'backend', 'model', 'session_id', 'state', 'in_turn', 'merge_step', 'merge_attempts',
   'pushed_sha', 'deploy_waiting_since', 'last_error',
 ];
+
+/** Used by the Orchestrator's views: a job's CI/CD queue history, oldest first. */
+export function readMergeStepHistory(job: Pick<OrchestratorJobRow, 'merge_step_history'>): OrchestratorMergeStepEvent[] {
+  try {
+    const parsed = JSON.parse(job.merge_step_history ?? '[]') as unknown;
+    return Array.isArray(parsed) ? parsed as OrchestratorMergeStepEvent[] : [];
+  } catch {
+    return [];
+  }
+}
 
 /** Used by the Orchestrator module to persist jobs, so balancing and the CI/CD queue survive restarts. */
 export const orchestratorJobsDb = {
@@ -104,7 +119,12 @@ export const orchestratorJobsDb = {
       .all() as OrchestratorJobRow[];
   },
 
+  /** A new merge step is also recorded in the job's step history, with when it began. */
   update(id: string, patch: JobPatch): OrchestratorJobRow | null {
+    if (patch.merge_step) {
+      const current = this.get(id);
+      if (current && current.merge_step !== patch.merge_step) this.recordMergeStep(id, patch.merge_step);
+    }
     const columns = PATCHABLE_COLUMNS.filter((column) => column in patch);
     if (columns.length > 0) {
       const assignments = columns.map((column) => `${column} = ?`).join(', ');
@@ -113,5 +133,13 @@ export const orchestratorJobsDb = {
         .run(...columns.map((column) => patch[column] ?? null), id);
     }
     return this.get(id);
+  },
+
+  /** Appends to the step history without changing the step (`check:run`: the check got its slot). */
+  recordMergeStep(id: string, step: OrchestratorMergeStepEvent['step'], at = new Date().toISOString()): void {
+    const current = this.get(id);
+    if (!current) return;
+    const history = [...readMergeStepHistory(current), { step, at }];
+    getConnection().prepare('UPDATE orchestrator_jobs SET merge_step_history = ? WHERE id = ?').run(JSON.stringify(history), id);
   },
 };

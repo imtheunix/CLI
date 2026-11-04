@@ -5,10 +5,11 @@ import path from 'node:path';
 import {
   orchestratorJobsDb,
   projectsDb,
+  readMergeStepHistory,
   sessionsDb,
   userDb,
 } from '@/modules/database/index.js';
-import type { OrchestratorBackend, OrchestratorJobRow } from '@/modules/database/index.js';
+import type { OrchestratorBackend, OrchestratorJobRow, OrchestratorMergeStepEvent } from '@/modules/database/index.js';
 import { sessionsService } from '@/modules/providers/index.js';
 import { chatRunRegistry, runDetachedChatTurn } from '@/modules/websocket/index.js';
 import type { ProviderRuntimeGateway } from '@/modules/websocket/index.js';
@@ -45,7 +46,27 @@ export type OrchestratorJobView = OrchestratorJobRow & {
   activity: 'working' | 'waiting' | null;
   /** CLI job line: this job moved from GLM after quota exhaustion. */
   quotaFallback: boolean;
+  /** `tjob show`: each CI/CD queue step, when it began and how long it took (so far, for the current one). */
+  mergeSteps: OrchestratorMergeStepTiming[];
 };
+
+export type OrchestratorMergeStepTiming = OrchestratorMergeStepEvent & { durationMs: number | null };
+
+/** Steps with nothing after them: their duration is not counted. */
+const RESTING_MERGE_STEPS = new Set<string>(['none', 'review', 'merged', 'blocked']);
+
+/**
+ * Used by the job view: a step lasts until the next one began; the job's current step until now, unless it is a
+ * resting one (merged, blocked...), which has no duration.
+ */
+export function mergeStepTimings(history: OrchestratorMergeStepEvent[], nowMs: number): OrchestratorMergeStepTiming[] {
+  return history.map((event, index) => {
+    const next = history[index + 1];
+    const end = next ? Date.parse(next.at) : (RESTING_MERGE_STEPS.has(event.step) ? Number.NaN : nowMs);
+    const duration = end - Date.parse(event.at);
+    return { ...event, durationMs: Number.isFinite(duration) ? Math.max(0, duration) : null };
+  });
+}
 
 function slugify(title: string): string {
   return title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || 'job';
@@ -120,6 +141,7 @@ export function createJobsService(deps: {
       ...job,
       quotaFallback: job.backend === 'agy' && Boolean(job.last_error?.startsWith('GLM quota-exhausted')),
       activity: job.state === 'active' ? (processing ? 'working' : 'waiting') : null,
+      mergeSteps: mergeStepTimings(readMergeStepHistory(job), now().getTime()),
       model: job.model ?? (session as { model?: string | null } | null)?.model ?? null,
     };
   }

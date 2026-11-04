@@ -314,6 +314,8 @@ export function spawnDetachedTurn(input: {
       `--working-directory=${input.cwd}`,
       `-pStandardOutput=file:${logPath}`,
       `-pStandardError=append:${logPath}`,
+      // Below the default weight (100): the server, the hub and merge checks keep their share while agents build.
+      '-pCPUWeight=50',
     ];
 
     for (const [key, val] of Object.entries(mergedEnv)) {

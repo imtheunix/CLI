@@ -153,6 +153,8 @@ CREATE TABLE IF NOT EXISTS orchestrator_jobs (
     merge_attempts INTEGER NOT NULL DEFAULT 0,
     pushed_sha TEXT,
     deploy_waiting_since DATETIME,
+    -- JSON [{step, at}]: when each CI/CD queue step began ("check:run" when a check slot was free).
+    merge_step_history TEXT,
     last_error TEXT,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP

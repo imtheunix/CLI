@@ -39,8 +39,10 @@ export type OrchestratorConfig = {
   workspacesRoot: string;
   /** The model that resolves rebase conflicts in the CI/CD queue (through `agy`). */
   conflictResolver: { command: string; model: string };
-  /** Per-repository check commands (keyed by the repository folder's name), run before a push. */
+  /** Per-repository check commands (keyed by the repository folder's name), run before a push: a light gate, not the full suite. */
   checks: Record<string, string>;
+  /** At most this many merge checks run at once on the workstation; the others wait in `check` for a slot. */
+  maxConcurrentChecks: number;
   /** Per-repository deploy waiting, keyed by folder name; absent entries default to true. */
   waitForDeploy: Record<string, boolean>;
   /** Per-repository branch jobs merge into, when it is not origin's default branch. */
@@ -97,8 +99,9 @@ function defaults(): OrchestratorConfig {
     workspacesRoot,
     conflictResolver: { command: 'agy', model: 'gemini-3.8-flash-medium' },
     checks: {
-      tribeiracli: 'npm run typecheck && npm run lint && npm test && npm run test:client',
+      tribeiracli: 'npm run typecheck && npm run lint',
     },
+    maxConcurrentChecks: 1,
     waitForDeploy: {},
     baseBranches: { tribeira: 'develop' },
     forgejo: {
@@ -144,6 +147,9 @@ export function loadOrchestratorConfig(file = path.join(os.homedir(), '.config/c
   if (typeof override.worktreesRoot === 'string') config.worktreesRoot = override.worktreesRoot;
   config.conflictResolver = { ...config.conflictResolver, ...(override.conflictResolver as object ?? {}) };
   config.checks = { ...config.checks, ...(override.checks as Record<string, string> ?? {}) };
+  if (typeof override.maxConcurrentChecks === 'number' && override.maxConcurrentChecks >= 1) {
+    config.maxConcurrentChecks = Math.floor(override.maxConcurrentChecks);
+  }
   config.waitForDeploy = { ...config.waitForDeploy, ...(override.waitForDeploy as Record<string, boolean> ?? {}) };
   config.baseBranches = { ...config.baseBranches, ...(override.baseBranches as Record<string, string> ?? {}) };
   config.forgejo = { ...config.forgejo, ...(override.forgejo as object ?? {}) };

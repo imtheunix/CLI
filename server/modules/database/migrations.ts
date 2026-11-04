@@ -479,6 +479,12 @@ const addOrchestratorJobModelColumn = (db: Database): void => {
   addColumnToTableIfNotExists(db, 'orchestrator_jobs', columnNames, 'model', 'TEXT');
 };
 
+/** Jobs queued before step timing have no history; NULL reads as an empty one. */
+const addOrchestratorJobMergeStepHistoryColumn = (db: Database): void => {
+  const columnNames = getTableInfo(db, 'orchestrator_jobs').map((column) => column.name);
+  addColumnToTableIfNotExists(db, 'orchestrator_jobs', columnNames, 'merge_step_history', 'TEXT');
+};
+
 /**
  * Adds the reasoning-effort metadata columns to the custom-model library.
  *
@@ -608,6 +614,7 @@ export const runMigrations = (db: Database) => {
     db.exec(SCHEDULED_MESSAGES_TABLE_SCHEMA_SQL);
     db.exec(ORCHESTRATOR_JOBS_TABLE_SCHEMA_SQL);
     addOrchestratorJobModelColumn(db);
+    addOrchestratorJobMergeStepHistoryColumn(db);
     db.exec(RUNNING_TURNS_TABLE_SCHEMA_SQL);
     db.exec('CREATE INDEX IF NOT EXISTS idx_running_turns_status ON running_turns(status)');
     db.exec('CREATE INDEX IF NOT EXISTS idx_running_turns_session ON running_turns(session_id)');
