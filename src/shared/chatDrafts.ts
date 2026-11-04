@@ -297,6 +297,11 @@ export function replaceQueuedMessages(scope: string, items: StoredQueuedMessage[
 
 /** Used by the queue's socket action to order delivery after pending durable edits. */
 export async function persistQueuedMessages(scope: string): Promise<boolean> {
+  const stored = drafts.get(scope)?.queuedMessage;
+  if (stored && ('items' in stored ? stored.items.some((item) => !item.id) : !stored.id)) {
+    // Upgrade legacy drafts before the socket addresses an item by id.
+    replaceQueuedMessages(scope, readQueuedMessages(scope));
+  }
   if (failedScopes.has(scope)) pendingScopes.add(scope);
   flushServerWritesNow();
   await serverWrites.get(scope);

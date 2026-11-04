@@ -19,7 +19,8 @@ import { promises as fs } from 'fs';
 import os from 'os';
 import path from 'path';
 
-import type { BackgroundTaskSummary } from '@/shared/types.js';
+import type { SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
+import type { AnyRecord, BackgroundTaskSummary } from '@/shared/types.js';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 
 import {
@@ -986,18 +987,18 @@ async function buildPromptMessages(command, images, files, cwd) {
  * @param {Array<Object>} messages - SDKUserMessage records to send
  * @returns {{ stream: AsyncIterable, release: () => void, isReleased: () => boolean }} Stream, its closer, and whether it was closed
  */
-function createHeldPromptStream(messages) {
+function createHeldPromptStream(messages: SDKUserMessage[]) {
   const pending = [...messages];
-  let wake;
+  let wake: (() => void) | undefined;
   let released = false;
   const stream = (async function* () {
     while (!released || pending.length) {
-      if (pending.length) yield pending.shift();
+      if (pending.length) yield pending.shift()!;
       else await new Promise((resolve) => { wake = resolve; });
     }
   })();
   const release = () => { released = true; wake?.(); };
-  const push = (message) => {
+  const push = (message: SDKUserMessage) => {
     if (released) return false;
     pending.push(message);
     wake?.();
@@ -1768,7 +1769,7 @@ function reconnectSessionWriter(sessionId, newRawWs) {
 export const claudeRuntime = {
   run: queryClaudeSDK,
   abort: abortClaudeSDKSession,
-  inject: async (sessionId, command, options) => {
+  inject: async (sessionId: string, command: string, options: AnyRecord) => {
     const session = getSession(sessionId);
     return Boolean(await session?.inject?.(command, options));
   },

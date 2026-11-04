@@ -1,3 +1,4 @@
+import type { LLMProvider } from '@/shared/types.js';
 import { sessionDraftsDb } from '@/modules/database/index.js';
 import type { QueuedSessionMessageRecord } from '@/modules/database/index.js';
 import { sessionsDb } from '@/modules/database/index.js';
@@ -68,10 +69,10 @@ async function sendClaimedQueuedMessage(
     sessionDraftsDb.restoreQueuedMessage(candidate);
     return false;
   }
-  if (!result.started || result.error) {
-    sessionDraftsDb.restoreQueuedMessage(candidate);
-    sessionDraftsDb.pauseQueue(candidate.sessionId);
-  }
+  if (!result.started) sessionDraftsDb.restoreQueuedMessage(candidate);
+  // A run that already started owns its prompt even when it fails later.
+  // Only unsent input is restored; retrying a partial turn would duplicate it.
+  if (!result.started || result.error) sessionDraftsDb.pauseQueue(candidate.sessionId);
   sessionDraftsDb.deleteEmptyDraft(candidate.userId, candidate.sessionId);
   return result.started;
 }
@@ -93,7 +94,7 @@ export async function dispatchQueuedChatMessage(
   const provider = sessionsDb.getSessionById(candidate.sessionId)?.provider;
   if (!messageId && !queue.forceId && !chatRunRegistry.isProcessing(candidate.sessionId) && runtime.hasBackgroundWork(candidate.sessionId)) return false;
   const busy = chatRunRegistry.isProcessing(candidate.sessionId) || runtime.hasBackgroundWork(candidate.sessionId);
-  const supportsInjection = provider && (runtime.supportsInjection?.(provider) ?? provider === 'claude');
+  const supportsInjection = provider && (runtime.supportsInjection?.(provider as LLMProvider) ?? provider === 'claude');
   if (busy && !supportsInjection && !((messageId || queue.forceId) && allowInterrupt)) return false;
   if (!sessionDraftsDb.claimQueuedMessage(candidate)) return false;
   preparingQueuedSessions.add(candidate.sessionId);

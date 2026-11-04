@@ -114,6 +114,7 @@ export const sessionDraftsDb = {
     let remaining: string | null = null;
     if (Array.isArray(stored?.items)) {
       const index = stored.forceId ? stored.items.findIndex((item) => (item as { id?: string })?.id === stored.forceId) : 0;
+      if (index < 0) return false;
       const items = stored.items.filter((_, position) => position !== index);
       remaining = items.length ? JSON.stringify({ items, paused: false }) : null;
     }
@@ -141,16 +142,25 @@ export const sessionDraftsDb = {
       const items = stored.items.filter((_, position) => position !== index);
       expected = items.length ? JSON.stringify({ items, paused: false }) : null;
     }
-    const restored = getConnection().prepare(
-      `UPDATE session_drafts SET queued_message = ?, updated_at = CURRENT_TIMESTAMP
-       WHERE user_id = ? AND draft_scope = ? AND queued_message IS ?`
-    ).run(candidate.claimToken, candidate.userId, candidate.sessionId, expected);
-    if (restored.changes) {
-      const items = Array.isArray(stored?.items) ? stored.items : [stored];
-      const selected = items.find((item, index) => stored?.forceId ? (item as { id?: string })?.id === stored.forceId : index === 0) as { id?: string } | undefined;
-      if (selected?.id) getConnection().prepare('DELETE FROM queued_message_receipts WHERE user_id = ? AND session_id = ? AND message_id = ?')
+    const originalItems = Array.isArray(stored?.items) ? stored.items : [stored];
+    const selected = originalItems.find((item, index) => stored?.forceId ? (item as { id?: string })?.id === stored.forceId : index === 0) as { id?: string } | undefined;
+    if (!selected) return;
+    const db = getConnection();
+    db.transaction(() => {
+      const current = this.getDrafts(candidate.userId).find((draft) => draft.scope === candidate.sessionId);
+      if (selected.id) db.prepare('DELETE FROM queued_message_receipts WHERE user_id = ? AND session_id = ? AND message_id = ?')
         .run(candidate.userId, candidate.sessionId, selected.id);
-    }
+      const rawCurrent = current?.queuedMessage == null ? null : JSON.stringify(current.queuedMessage);
+      if (rawCurrent === expected) {
+        this.saveDraft(candidate.userId, candidate.sessionId, { text: current?.text ?? '', queuedMessage: JSON.parse(candidate.claimToken) });
+      } else {
+        // Preserve edits to the other messages while returning the unsent item.
+        const queue = current?.queuedMessage as { id?: string; items?: Array<{ id?: string }>; paused?: boolean } | undefined;
+        const currentItems = Array.isArray(queue?.items) ? queue.items : queue ? [queue] : [];
+        const items = selected.id && currentItems.some((item) => item.id === selected.id) ? currentItems : [selected, ...currentItems];
+        this.saveDraft(candidate.userId, candidate.sessionId, { text: current?.text ?? '', queuedMessage: { items, paused: queue?.paused ?? false } });
+      }
+    })();
   },
 
   /** Stops automatic consumption while retaining every pending item, including across restarts. */
@@ -191,13 +201,18 @@ export const sessionDraftsDb = {
   ): void {
     const db = getConnection();
 
-    const stored = draft.queuedMessage as { items?: Array<{ id?: string }>; id?: string } | null;
+    const stored = draft.queuedMessage as { items?: Array<{ id?: string }>; id?: string; forceId?: string; forceInterrupt?: boolean } | null;
     if (stored) {
       const receipt = db.prepare('SELECT 1 FROM queued_message_receipts WHERE user_id = ? AND session_id = ? AND message_id = ?');
       const items = (Array.isArray(stored.items) ? stored.items : [stored])
         .filter((item) => !item.id || !receipt.get(userId, scope, item.id));
       if (Array.isArray(stored.items) || items.length === 0) {
-        draft = { ...draft, queuedMessage: items.length ? { ...stored, items } : null };
+        const next = { ...stored, items };
+        if (!items.some((item) => item.id === next.forceId)) {
+          delete next.forceId;
+          delete next.forceInterrupt;
+        }
+        draft = { ...draft, queuedMessage: items.length ? next : null };
       }
     }
     if (!draft.text && draft.queuedMessage === null) {

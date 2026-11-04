@@ -89,7 +89,11 @@ for (const provider of ['codex', 'opencode', 'agy'] as LLMProvider[]) {
       hasRuntime: () => true, hasBackgroundWork: () => false,
       getPendingApprovalsForSession: () => [], resolveToolApproval: () => {},
       stopBackgroundTask: async () => false,
-      abort: async () => { assert.equal(oldSignal?.aborted, false, 'interrupt precedes signal shutdown'); return true; },
+      abort: async () => {
+        assert.equal(oldSignal?.aborted, false, 'interrupt precedes signal shutdown');
+        if (provider === 'opencode') throw new Error('Query closed before response received');
+        return true;
+      },
       run: async (_provider, command, options, writer) => {
         started.push(command);
         if (command === 'old') {
@@ -103,9 +107,9 @@ for (const provider of ['codex', 'opencode', 'agy'] as LLMProvider[]) {
     try {
       const user = userDb.createUser('fallback-test', 'hash');
       sessionsDb.createAppSession('fallback', provider, directory);
-      const first = runDetachedChatTurn({ sessionId: 'fallback', userId: user.id, content: 'old' }, { runtime });
+      const first = runDetachedChatTurn({ sessionId: 'fallback', userId: Number(user.id), content: 'old' }, { runtime });
       await settle();
-      const replacement = runDetachedChatTurn({ sessionId: 'fallback', userId: user.id, content: 'new', steerActiveRun: true, interruptActiveRun: true }, { runtime });
+      const replacement = runDetachedChatTurn({ sessionId: 'fallback', userId: Number(user.id), content: 'new', steerActiveRun: true, interruptActiveRun: true }, { runtime });
       await settle();
       assert.equal(oldSignal?.aborted, true);
       assert.deepEqual(started, ['old'], 'replacement waits for runtime settlement');

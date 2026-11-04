@@ -302,3 +302,11 @@ its existing immediate cancellation behavior.
 
 Regression milestone: 43 focused server tests and 15 queue/load-balancer client
 tests passed. Mem0 tools were unavailable in this job session.
+
+Final validation (2026-11-03): 875 server tests passed, one skipped; all 808
+client tests passed; the focused steering/fallback suite passed 45 tests.
+`npm run check` covers both TypeScript projects, lint, and production builds.
+Recovery must only await a settlement still owned by the current registry
+entry: a recovered session has no entry for its abandoned pre-restart query.
+Failed admission merges the unsent item back into concurrent queue edits;
+a prompt already admitted to a run is never automatically requeued on error.

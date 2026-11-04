@@ -5,7 +5,7 @@ import QueuedMessageList from '@/modules/chat/composer/QueuedMessageList';
 import { api } from '@/shared/api';
 import { readQueuedMessages, replaceQueuedMessages, resetChatDrafts, writeQueuedMessage } from '@/shared/chatDrafts';
 
-const socket = vi.hoisted(() => ({ sendMessage: vi.fn(() => true), subscribe: vi.fn(() => () => {}) }));
+const socket = vi.hoisted(() => ({ sendMessage: vi.fn(() => true), subscribe: vi.fn((_listener: (event: unknown) => void) => () => {}) }));
 vi.mock('@/shared/context/WebSocketContext', () => ({ useWebSocket: () => socket }));
 
 vi.mock('@/shared/api', () => ({ api: { user: {
@@ -77,4 +77,36 @@ test('a paused queue remains editable and can be explicitly resumed', () => {
   expect(screen.getByText(/Queue paused/)).toBeTruthy();
   fireEvent.click(screen.getByText('Resume queue'));
   expect(JSON.parse(localStorage.getItem('chat-drafts')!).a.queuedMessage.paused).toBe(false);
+});
+
+test('a disconnected socket keeps the item and reports that delivery did not happen', async () => {
+  await act(async () => { seed(); });
+  socket.sendMessage.mockReturnValueOnce(false);
+  render(<QueuedMessageList scope="a" busy />);
+  fireEvent.click(screen.getAllByRole('button', { name: 'Send now' })[0]);
+  expect((await screen.findByRole('status')).textContent).toContain('Not connected');
+  expect(readQueuedMessages('a')).toHaveLength(2);
+});
+
+test('only an interrupt fallback request prompts for confirmation', async () => {
+  await act(async () => { seed(); });
+  const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
+  render(<QueuedMessageList scope="a" busy />);
+  const listener = socket.subscribe.mock.calls.at(-1)![0] as (event: unknown) => void;
+  act(() => listener({ kind: 'queue_interrupt_required', sessionId: 'a', messageId: 'second' }));
+  expect(confirm).toHaveBeenCalledOnce();
+  expect(socket.sendMessage).not.toHaveBeenCalled();
+  confirm.mockReturnValue(true);
+  act(() => listener({ kind: 'queue_interrupt_required', sessionId: 'a', messageId: 'second' }));
+  expect(socket.sendMessage).toHaveBeenCalledWith({ type: 'chat.queue-send', sessionId: 'a', messageId: 'second', allowInterrupt: true });
+});
+
+test('a legacy item receives a persisted address before socket delivery', async () => {
+  await act(async () => { replaceQueuedMessages('a', [{ content: 'legacy draft' }]); });
+  render(<QueuedMessageList scope="a" busy />);
+  fireEvent.click(screen.getByRole('button', { name: 'Send now' }));
+  await waitFor(() => expect(socket.sendMessage).toHaveBeenCalledWith({ type: 'chat.queue-send', sessionId: 'a', messageId: 'legacy-0' }));
+  expect(api.user.saveDraft).toHaveBeenLastCalledWith('a', expect.objectContaining({
+    queuedMessage: expect.objectContaining({ items: [expect.objectContaining({ id: 'legacy-0', content: 'legacy draft' })] }),
+  }));
 });
