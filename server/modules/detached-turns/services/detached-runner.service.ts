@@ -32,7 +32,35 @@ export type DetachedTurnExecution = {
   promise: Promise<{ exitCode: number }>;
 };
 
-export type LineHandler = (line: string, writer?: ProviderRuntimeWriter, sessionId?: string | null) => void;
+export type LineHandler = ((line: string, writer?: ProviderRuntimeWriter, sessionId?: string | null) => void) & {
+  /** On reattach: the lines the previous server already delivered, for the parser's state only. */
+  prime?: (lines: string[], writer?: ProviderRuntimeWriter, sessionId?: string | null) => void;
+  /** The turn's process is gone: drop what the parser tracked for it. */
+  finish?: (sessionId?: string | null) => void;
+};
+
+/** How much of an already-delivered log a reattach reads back to prime its parser. */
+const MAX_PRIME_BYTES = 8 * 1024 * 1024;
+
+/** The complete lines in the first `endOffset` bytes of a log (at most MAX_PRIME_BYTES). */
+function readDeliveredLines(logPath: string, endOffset: number): string[] {
+  const limit = Math.min(endOffset, MAX_PRIME_BYTES);
+  if (limit <= 0) return [];
+  let fd: number | null = null;
+  try {
+    fd = fs.openSync(logPath, 'r');
+    const buffer = Buffer.alloc(limit);
+    const bytesRead = fs.readSync(fd, buffer, 0, limit, 0);
+    const text = new StringDecoder('utf8').write(buffer.subarray(0, bytesRead));
+    const lines = text.split('\n');
+    lines.pop(); // a line cut at the limit is not complete
+    return lines.filter((line) => line.trim());
+  } catch {
+    return [];
+  } finally {
+    if (fd !== null) fs.closeSync(fd);
+  }
+}
 
 /** Line parser factories registered per backend; each turn gets its own parser (they keep per-turn state). */
 const backendLineParsers = new Map<string, () => LineHandler>();
@@ -711,12 +739,17 @@ export async function reattachActiveTurns(options: {
         orchestratorJobsDb.update(turn.job_id, { in_turn: 1, state: 'active' });
       }
 
+      // The server that went down delivered the log up to its offset: what
+      // came before it only re-establishes the parser's state (session id,
+      // model, background tasks, a turn already complete).
+      const startOffset = readDeliveredOffset(turn.log_path);
+      parser.prime?.(readDeliveredLines(turn.log_path, startOffset), run?.writer, turn.session_id);
+
       void (async () => {
         try {
-          // The server that went down delivered the log up to its offset.
           await tailLogFile(turn.log_path, {
             isAlive: () => isTurnAlive(turn.unit_name),
-            startOffset: readDeliveredOffset(turn.log_path),
+            startOffset,
             onLine: (line) => {
               if (run) {
                 parser(line, run.writer, turn.session_id);
@@ -724,6 +757,7 @@ export async function reattachActiveTurns(options: {
             },
           });
 
+          parser.finish?.(turn.session_id);
           const exitCode = getUnitExitCode(turn.unit_name, turn.log_path);
           runningTurnsDb.completeTurn(turn.unit_name, exitCode);
           if (run) {
@@ -732,6 +766,7 @@ export async function reattachActiveTurns(options: {
           options.onTurnCompleted?.(turn, exitCode);
         } catch (error) {
           console.error(`[DetachedTurns] Reattached turn ${turn.unit_name} stream error:`, error);
+          parser.finish?.(turn.session_id);
           runningTurnsDb.completeTurn(turn.unit_name, 1);
           if (run) {
             registry.completeRunIfCurrent(run as never, { exitCode: 1, aborted: false });
@@ -752,6 +787,7 @@ export async function reattachActiveTurns(options: {
             isAlive: () => false,
             onLine: (line) => parser(line, writer, turn.session_id),
           });
+          parser.finish?.(turn.session_id);
         } catch (err) {
           console.warn(`[DetachedTurns] Could not read log for completed turn ${turn.unit_name}:`, err);
         }

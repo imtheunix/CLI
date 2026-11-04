@@ -90,23 +90,29 @@ export function createCodexTurnLineParser(
 ): LineHandler {
   // One parser per turn: it keeps the thread id the turn reported.
   let capturedSessionId: string | null = null;
-  return (line, writer, sessionId = null) => {
-    let event: AnyRecord;
+  const parse = (line: string): AnyRecord | null => {
     try {
-      event = JSON.parse(line);
+      const event = JSON.parse(line);
+      return event && typeof event === 'object' && typeof event.type === 'string' ? event : null;
     } catch {
-      return;
+      return null;
     }
-    if (!event || typeof event !== 'object' || typeof event.type !== 'string') return;
-    if (event.type === 'thread.started' && typeof event.thread_id === 'string' && event.thread_id && !capturedSessionId) {
-      capturedSessionId = event.thread_id;
-      // A brand-new session has no provider id on its writer yet.
-      const isNewSession = !writer?.getSessionId?.();
-      writer?.setSessionId?.(event.thread_id);
-      if (isNewSession) {
-        writer?.send(createNormalizedMessage({ kind: 'session_created', newSessionId: event.thread_id, sessionId: event.thread_id, provider: 'codex' }));
-      }
+  };
+  // `thread.started` is the only event that carries the thread id.
+  const captureThread = (event: AnyRecord, writer?: ProviderRuntimeWriter) => {
+    if (event.type !== 'thread.started' || typeof event.thread_id !== 'string' || !event.thread_id || capturedSessionId) return;
+    capturedSessionId = event.thread_id;
+    // A brand-new session has no provider id on its writer yet.
+    const isNewSession = !writer?.getSessionId?.();
+    writer?.setSessionId?.(event.thread_id);
+    if (isNewSession) {
+      writer?.send(createNormalizedMessage({ kind: 'session_created', newSessionId: event.thread_id, sessionId: event.thread_id, provider: 'codex' }));
     }
+  };
+  const handleLine: LineHandler = (line, writer, sessionId = null) => {
+    const event = parse(line);
+    if (!event) return;
+    captureThread(event, writer);
     if (
       (event.type === 'item.started' || event.type === 'item.updated')
       && !PROGRESSIVE_CODEX_ITEM_TYPES.has(event.item?.type)
@@ -124,6 +130,15 @@ export function createCodexTurnLineParser(
       }
     }
   };
+  // The part of the log delivered before a restart: only the thread id is taken from it.
+  handleLine.prime = (lines, writer) => {
+    for (const line of lines) {
+      const event = parse(line);
+      if (event) captureThread(event, writer);
+      if (capturedSessionId) return;
+    }
+  };
+  return handleLine;
 }
 
 export function transformCodexEvent(event: AnyRecord): AnyRecord {
