@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-import { closeConnection } from '@/modules/database/connection.js';
+import { closeConnection, getConnection } from '@/modules/database/connection.js';
 import { initializeDatabase } from '@/modules/database/init-db.js';
 import { projectsDb } from '@/modules/database/repositories/projects.db.js';
 import { sessionsDb } from '@/modules/database/repositories/sessions.db.js';
@@ -16,6 +16,8 @@ async function withIsolatedDatabase(runTest: () => void | Promise<void>): Promis
 
   closeConnection();
   process.env.DATABASE_PATH = databasePath;
+  // An absent target triggers legacy-db migration; this fixture must start empty.
+  await writeFile(databasePath, '');
   await initializeDatabase();
 
   try {
@@ -128,11 +130,12 @@ test('repository reads normalize SQLite UTC timestamps to ISO strings', async ()
   await withIsolatedDatabase(() => {
     sessionsDb.createAppSession('session-timezone', 'claude', '/workspace/demo-project');
 
+    // Exercise SQLite's timezone-less UTC format with exact, clock-independent values.
+    getConnection().prepare('UPDATE sessions SET created_at = ?, updated_at = ? WHERE session_id = ?')
+      .run('2026-07-18 09:00:00', '2026-07-18 10:00:00', 'session-timezone');
     const row = sessionsDb.getSessionById('session-timezone');
-    assert.ok(row?.created_at.endsWith('Z'));
-    assert.ok(row?.updated_at.endsWith('Z'));
-    assert.match(row?.created_at ?? '', /^\d{4}-\d{2}-\d{2}T/);
-    assert.match(row?.updated_at ?? '', /^\d{4}-\d{2}-\d{2}T/);
+    assert.equal(row?.created_at, '2026-07-18T09:00:00.000Z');
+    assert.equal(row?.updated_at, '2026-07-18T10:00:00.000Z');
   });
 });
 
