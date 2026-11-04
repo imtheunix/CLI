@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
+import { closeConnection, initializeDatabase } from '@/modules/database/index.js';
 import type { NormalizedMessage, ProviderRuntimeContext } from '@/shared/types.js';
 
 import { AgyProvider } from '../list/agy/agy.provider.js';
@@ -13,11 +14,15 @@ async function withCli(run: (root: string, provider: AgyProvider) => Promise<voi
   const previousPath = process.env.PATH;
   const previousHome = process.env.HOME;
   const argsFile = process.env.AGY_TEST_ARGS;
+  const previousDatabase = process.env.DATABASE_PATH;
+  const previousTurns = process.env.CLI_TURNS_DIR;
+  const previousDisableSystemd = process.env.CLI_DISABLE_SYSTEMD_RUN;
   await mkdir(path.join(root, 'bin'));
   await writeFile(path.join(root, 'bin', 'agy'), `#!${process.execPath}
 const fs = require('node:fs');
 const args = process.argv.slice(2);
 fs.writeFileSync(process.env.AGY_TEST_ARGS, JSON.stringify(args));
+fs.writeFileSync(process.env.AGY_TEST_ARGS + '.pid', String(process.pid));
 if (args[1] === 'hang') { setInterval(() => {}, 1000); }
 else {
 const events = [
@@ -36,8 +41,23 @@ setTimeout(() => process.stdout.write(text.slice(23)), 10);
   process.env.HOME = root;
   process.env.PATH = path.join(root, 'bin') + path.delimiter + previousPath;
   process.env.AGY_TEST_ARGS = path.join(root, 'args.json');
-  try { await run(root, new AgyProvider()); }
+  // Provider tests exercise our fake executable through direct spawn. The
+  // detached-turns suite owns systemd coverage; never use the host manager here.
+  process.env.CLI_DISABLE_SYSTEMD_RUN = '1';
+  process.env.CLI_TURNS_DIR = path.join(root, 'turns');
+  closeConnection();
+  process.env.DATABASE_PATH = path.join(root, 'auth.db');
+  // An absent target would import the checkout's legacy database.
+  await writeFile(process.env.DATABASE_PATH, '');
+  try {
+    await initializeDatabase();
+    await run(root, new AgyProvider());
+  }
   finally {
+    closeConnection();
+    if (previousDatabase === undefined) delete process.env.DATABASE_PATH; else process.env.DATABASE_PATH = previousDatabase;
+    if (previousTurns === undefined) delete process.env.CLI_TURNS_DIR; else process.env.CLI_TURNS_DIR = previousTurns;
+    if (previousDisableSystemd === undefined) delete process.env.CLI_DISABLE_SYSTEMD_RUN; else process.env.CLI_DISABLE_SYSTEMD_RUN = previousDisableSystemd;
     if (previousPath === undefined) delete process.env.PATH; else process.env.PATH = previousPath;
     if (previousHome === undefined) delete process.env.HOME; else process.env.HOME = previousHome;
     if (argsFile === undefined) delete process.env.AGY_TEST_ARGS; else process.env.AGY_TEST_ARGS = argsFile;
@@ -97,19 +117,42 @@ test('agy reports a failed result even when the process exits zero', async () =>
   });
 });
 
-test('agy abort terminates the active process and frees its slot', async () => {
-  await withCli(async (root, provider) => {
-    const messages: NormalizedMessage[] = [];
-    const turn = provider.runtime.run('hang', { sessionId: 'app-hang', cwd: root }, { send: (message) => { messages.push(message as NormalizedMessage); } }, context(null));
-    for (let i = 0; i < 100; i++) {
-      try { await readFile(path.join(root, 'args.json')); break; } catch { await new Promise((resolve) => setTimeout(resolve, 10)); }
-    }
-    assert.equal(await provider.runtime.abort('app-hang'), true);
-    await turn;
-    assert.equal(messages.filter((message) => message.kind === 'complete').length, 1);
-    assert.equal(await provider.runtime.abort('app-hang'), false);
+for (const startupDelayMs of [0, 1200]) {
+  test(`agy abort terminates the active process and frees its slot${startupDelayMs ? ' after slow startup' : ''}`, { timeout: 15_000 }, async () => {
+    await withCli(async (root, provider) => {
+      const messages: NormalizedMessage[] = [];
+      const runtimeContext = context(null);
+      runtimeContext.resolveResumeModel = async () => {
+        // Cover startup longer than the former one-second readiness loop.
+        if (startupDelayMs) await new Promise((resolve) => setTimeout(resolve, startupDelayMs));
+        return undefined;
+      };
+      const turn = provider.runtime.run('hang', { sessionId: 'app-hang', cwd: root }, { send: (message) => { messages.push(message as NormalizedMessage); } }, runtimeContext);
+      try {
+        const deadline = Date.now() + 10_000;
+        let childPid: number | undefined;
+        while (Date.now() < deadline) {
+          try {
+            const pid = Number(await readFile(path.join(root, 'args.json.pid'), 'utf8'));
+            if (Number.isInteger(pid) && pid > 0) { childPid = pid; break; }
+          } catch { /* Wait for the fake child to acknowledge startup. */ }
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+        assert.ok(childPid, 'fake agy process did not acknowledge startup');
+        assert.equal(await provider.runtime.abort('app-hang'), true);
+        await turn;
+        assert.equal(messages.filter((message) => message.kind === 'complete').length, 1);
+        assert.throws(() => process.kill(childPid, 0), (error: NodeJS.ErrnoException) => error.code === 'ESRCH');
+        assert.equal(await provider.runtime.abort('app-hang'), false);
+      } finally {
+        // An assertion failure must not leave the fake child alive or let its
+        // cleanup run after the fixture closes the database and deletes logs.
+        await provider.runtime.abort('app-hang');
+        await turn;
+      }
+    });
   });
-});
+}
 
 test('agy spawn failures emit one error completion and unsupported effort is rejected', async () => {
   await withCli(async (root, provider) => {
