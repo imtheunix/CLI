@@ -1640,3 +1640,32 @@ export type SpawnLineageDependencies = {
   statSync?: typeof import('node:fs').statSync;
   getuid?: () => number;
 };
+
+//----------------- LIVE PROVIDER INPUT DISPATCH ------------
+
+/**
+ * Shared runtime contract for websocket turns and durable queued delivery.
+ * Injection accepts input into the current query without cancelling tools;
+ * false means the caller must retain it or start a normal turn after settlement.
+ * Capability discovery is independent of whether a session currently has a query.
+ */
+export type ProviderRuntimeGateway = {
+  hasRuntime(provider: string): boolean;
+  run(
+    provider: LLMProvider,
+    command: string,
+    options: AnyRecord,
+    writer: ProviderRuntimeWriter,
+  ): Promise<unknown>;
+  abort(provider: LLMProvider, sessionId: string): Promise<boolean>;
+  /** Whether this provider adapter implements streaming input. */
+  supportsInjection?(provider: LLMProvider): boolean;
+  inject?(provider: LLMProvider, sessionId: string, command: string, options: AnyRecord): Promise<boolean>;
+  stopBackgroundTask(provider: LLMProvider, sessionId: string, taskId: string): Promise<boolean>;
+  /** Whether a provider runtime still holds background work for the session after its turn ended. */
+  hasBackgroundWork(sessionId: string): boolean;
+  resolveToolApproval(requestId: string, payload: ProviderPermissionDecision): void;
+  getPendingApprovalsForSession(sessionId: string): unknown[];
+};
+
+// ---------------------------

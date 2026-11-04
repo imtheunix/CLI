@@ -1,3 +1,4 @@
+import type { ProviderRuntimeGateway } from '@/shared/index.js';
 import { dispatchQueuedChatMessage } from '@/modules/websocket/services/queued-chat.service.js';
 import { sessionDraftsDb } from '@/modules/database/index.js';
 import { randomUUID } from 'node:crypto';
@@ -66,25 +67,8 @@ export function filterImagesToUploadStore(
   return filterAttachmentsToUploadStore(images, assetsRootOverride);
 }
 
-/** Application boundary for dispatching provider runs and approvals. */
-export type ProviderRuntimeGateway = {
-  hasRuntime(provider: string): boolean;
-  run(
-    provider: LLMProvider,
-    command: string,
-    options: AnyRecord,
-    writer: ProviderRuntimeWriter,
-  ): Promise<unknown>;
-  abort(provider: LLMProvider, sessionId: string): Promise<boolean>;
-  /** Returns false when the runtime has no writable live query. */
-  supportsInjection?(provider: LLMProvider): boolean;
-  inject?(provider: LLMProvider, sessionId: string, command: string, options: AnyRecord): Promise<boolean>;
-  stopBackgroundTask(provider: LLMProvider, sessionId: string, taskId: string): Promise<boolean>;
-  /** Whether a provider runtime still holds background work for the session after its turn ended. */
-  hasBackgroundWork(sessionId: string): boolean;
-  resolveToolApproval(requestId: string, payload: ProviderPermissionDecision): void;
-  getPendingApprovalsForSession(sessionId: string): unknown[];
-};
+// Kept as a public type export for existing websocket and scheduler consumers.
+export type { ProviderRuntimeGateway } from '@/shared/index.js';
 
 // Provider promises outlive terminal stream events; replacements must wait for cleanup.
 const runtimeSettlements = new Map<string, Promise<void>>();
@@ -651,7 +635,7 @@ export async function runDetachedChatTurn(
      * Aborts a run already in progress instead of refusing to start. A
      * scheduled message sets this: the user picked the time knowing it might
      * land mid-run, so the timer outranks whatever is running. "Send now" on
-     * a queued message sets it too: the user asked for it to go right away.
+     * a queued message sets it only after the interrupt fallback is confirmed.
      */
     interruptActiveRun?: boolean;
     steerActiveRun?: boolean;
@@ -698,6 +682,9 @@ export async function runDetachedChatTurn(
       // query before its interrupt control response can arrive.
       try {
         await dependencies.runtime.abort(activeRun.provider, input.sessionId);
+      } catch {
+        // A query that exited during the control request cannot acknowledge
+        // it. The cancellation signal and settlement below still fence it.
       } finally {
         activeRun.abortController.abort();
       }
@@ -707,7 +694,8 @@ export async function runDetachedChatTurn(
   }
 
   const previousSettlement = runtimeSettlements.get(input.sessionId);
-  if (previousSettlement) await previousSettlement;
+  if (previousSettlement && activeRun && chatRunRegistry.getRun(input.sessionId) === activeRun
+    && !dependencies.runtime.hasBackgroundWork(input.sessionId)) await previousSettlement;
   return dispatchRun(
     null,
     input.userId,

@@ -540,3 +540,41 @@ test('Send now delivers a detached queued turn to browsers subscribed while idle
     }
   });
 });
+
+test('an injection that loses the turn-end race immediately becomes the next turn', async () => {
+  await withIsolatedDatabase(async (userId) => {
+    sessionDraftsDb.saveDraft(userId, SESSION_ID, { text: '', queuedMessage: { items: [{ id: 'race', content: 'next' }] } });
+    chatRunRegistry.startRun({ appSessionId: SESSION_ID, provider: 'claude', providerSessionId: null, connection: null, userId });
+    const runs: RunCall[] = [];
+    const aborts: string[] = [];
+    const runtime = {
+      ...createRuntime(runs, 'ok', aborts),
+      inject: async () => { chatRunRegistry.completeRun(SESSION_ID, { exitCode: 0 }); return false; },
+    };
+    assert.equal(await dispatchQueuedMessages(runtime), 1);
+    assert.deepEqual(runs.map((run) => run.command), ['next']);
+    assert.deepEqual(aborts, []);
+    assert.equal(await dispatchQueuedMessages(runtime), 0);
+  });
+});
+
+test('failed admission restores the unsent item while preserving concurrent edits', async () => {
+  await withIsolatedDatabase(async (userId) => {
+    const items = [{ id: 'first', content: 'deliver me' }, { id: 'second', content: 'old text' }];
+    sessionDraftsDb.saveDraft(userId, SESSION_ID, { text: '', queuedMessage: { items } });
+    chatRunRegistry.startRun({ appSessionId: SESSION_ID, provider: 'claude', providerSessionId: null, connection: null, userId });
+    assert.equal(await dispatchQueuedMessages({
+      ...createRuntime([]),
+      inject: async () => {
+        sessionDraftsDb.saveDraft(userId, SESSION_ID, { text: 'new draft', queuedMessage: { items: [{ ...items[1], content: 'edited text' }] } });
+        return false;
+      },
+    }), 0);
+    const draft = sessionDraftsDb.getDrafts(userId)[0];
+    assert.equal(draft.text, 'new draft');
+    assert.deepEqual((draft.queuedMessage as { items: unknown[] }).items, [items[0], { ...items[1], content: 'edited text' }]);
+    const delivered: string[] = [];
+    assert.equal(await dispatchQueuedMessages({ ...createRuntime([]), inject: async (_provider: string, _sessionId: string, content: string) => { delivered.push(content); return true; } }), 1);
+    assert.deepEqual(delivered, ['deliver me']);
+  });
+});

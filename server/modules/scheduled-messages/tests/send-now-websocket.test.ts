@@ -104,6 +104,14 @@ test('Send now over the socket steers a busy Claude session; Stop still interrup
         'user: do this instead',
       ], 'the injected message follows the active turn without a completion');
     }
+    // Repeat the socket action and replay a stale browser draft: neither can
+    // deliver the item a second time, including through the polling path.
+    sessionDraftsDb.saveDraft(Number(user.id), 'session', {
+      text: '', queuedMessage: { items: [{ id: 'q', content: 'do this instead' }] },
+    });
+    desktop.client.send(JSON.stringify({ type: 'chat.queue-send', sessionId: 'session', messageId: 'q' }));
+    assert.equal(await dispatchQueuedMessages(runtime), 0);
+    assert.equal(phone.frames.filter((frame) => frame.content === 'do this instead').length, 1);
     assert.deepEqual(started, ['long task']);
     assert.deepEqual(aborted, []);
     assert.equal(sessionDraftsDb.getDrafts(Number(user.id))[0]?.queuedMessage ?? null, null, 'the item left the queue');
