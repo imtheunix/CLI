@@ -618,6 +618,7 @@ export type SubagentInfo = {
 export type ProviderRuntimeWriter = {
   send(data: unknown): void;
   setSessionId?(sessionId: string): void;
+  getSessionId?(): string | null;
   userId?: string | number | null;
   isWebSocketWriter?: boolean;
 };

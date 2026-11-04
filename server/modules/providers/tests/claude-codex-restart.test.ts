@@ -8,11 +8,12 @@ import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-import { closeConnection, initializeDatabase, runningTurnsDb, userDb } from '@/modules/database/index.js';
+import { closeConnection, initializeDatabase, runningTurnsDb, sessionsDb, userDb } from '@/modules/database/index.js';
 import { createClaudeTurnLineParser, spawnDetachableClaudeProcess } from '@/modules/providers/list/claude/claude-runtime.provider.js';
 import type { NormalizedMessage } from '@/shared/types.js';
 
 import {
+  abortTurn,
   getTurnLogPath,
   isSystemdRunAvailable,
   isTurnAlive,
@@ -23,6 +24,7 @@ import {
   retireDetachedSessionTurns,
   readRelayExit,
   spawnRelayedTurn,
+  tailLogFile,
 } from '@/modules/detached-turns/index.js';
 
 const RELAY_CLIENT = fileURLToPath(new URL('../../detached-turns/relay/relay-process.js', import.meta.url));
@@ -83,6 +85,52 @@ process.stdin.on('data', (chunk) => {
 process.stdin.on('end', () => setTimeout(() => process.exit(0), 50));
 `;
 
+/** A fake `claude` that asks for a permission the moment it starts, before any client could have connected. */
+const FAKE_CLAUDE_EARLY_ASK = `#!/usr/bin/env node
+const say = (m) => process.stdout.write(JSON.stringify(m) + '\\n');
+say({ type: 'control_request', request_id: 'req-0', request: { subtype: 'can_use_tool', tool_name: 'Bash', input: {} } });
+let buffer = '';
+process.stdin.on('data', (chunk) => {
+  buffer += chunk;
+  const lines = buffer.split('\\n');
+  buffer = lines.pop();
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    const m = JSON.parse(line);
+    if (m.type === 'control_response' && m.response.request_id === 'req-0') {
+      say({ type: 'assistant', session_id: 'native-1', message: { role: 'assistant', content: [{ type: 'text', text: 'early ' + m.response.response.behavior }] } });
+      say({ type: 'result', subtype: 'success', session_id: 'native-1' });
+    }
+  }
+});
+process.stdin.on('end', () => setTimeout(() => process.exit(0), 50));
+`;
+
+/**
+ * A fake `claude` that starts a background task, reports `result`, and only
+ * later (FAKE_BG_MS) reports the task done and a follow-up turn. Like the real
+ * CLI it exits when stdin closes, so closing stdin early loses the follow-up.
+ */
+const FAKE_CLAUDE_BACKGROUND = `#!/usr/bin/env node
+const fs = require('node:fs');
+if (process.env.FAKE_PID_FILE) fs.writeFileSync(process.env.FAKE_PID_FILE, String(process.pid));
+const say = (m) => process.stdout.write(JSON.stringify(m) + '\\n');
+const text = (t) => say({ type: 'assistant', session_id: 'native-1', message: { role: 'assistant', content: [{ type: 'text', text: t }] } });
+process.stdin.once('data', () => {
+  say({ type: 'system', subtype: 'init', session_id: 'native-1' });
+  say({ type: 'assistant', session_id: 'native-1', message: { role: 'assistant', content: [{ type: 'tool_use', id: 'tu-1', name: 'Bash', input: { command: 'sleep 3', run_in_background: true } }] } });
+  say({ type: 'system', subtype: 'task_started', task_id: 'task-1', tool_use_id: 'tu-1', session_id: 'native-1' });
+  text('part 1');
+  say({ type: 'result', subtype: 'success', session_id: 'native-1' });
+  setTimeout(() => {
+    say({ type: 'system', subtype: 'task_notification', task_id: 'task-1', status: 'completed', session_id: 'native-1' });
+    text('background done');
+    say({ type: 'result', subtype: 'success', session_id: 'native-1' });
+  }, Number(process.env.FAKE_BG_MS || 3000));
+});
+process.stdin.on('end', () => setTimeout(() => process.exit(0), 50));
+`;
+
 /** A fake `codex exec`: reads the prompt from stdin, then prints JSONL events. */
 const FAKE_CODEX = `#!/usr/bin/env node
 let prompt = '';
@@ -109,13 +157,25 @@ child.stdout.on('data', (chunk) => { if (String(chunk).includes('part 1')) conso
 setInterval(() => {}, 1000);
 `;
 
+/** Registers the Claude line parser with a normalizer that keeps assistant text only. */
+function registerTextParser(): void {
+  registerBackendLineParser('claude', () => createClaudeTurnLineParser((raw, sessionId) => {
+    const message = raw as { type: string; message?: { content?: Array<{ text?: string }> } };
+    if (message.type !== 'assistant') return [];
+    return [{ kind: 'text', role: 'assistant', content: message.message?.content?.[0]?.text, sessionId } as NormalizedMessage];
+  }));
+}
+
 async function withScratchEnvironment(
   runTest: (ctx: { root: string; writeScript: (name: string, content: string) => string }) => Promise<void>,
 ): Promise<void> {
   const root = await mkdtemp(path.join(tmpdir(), 'relayed-turns-test-'));
   const prevDbPath = process.env.DATABASE_PATH;
   const prevTurnsDir = process.env.CLI_TURNS_DIR;
+  const prevHome = process.env.HOME;
   closeConnection();
+  // Never the real ~/.cloudcli: the relayed units inherit this HOME too.
+  process.env.HOME = path.join(root, 'home');
   process.env.DATABASE_PATH = path.join(root, 'test.db');
   process.env.CLI_TURNS_DIR = path.join(root, 'turns');
   await initializeDatabase();
@@ -136,6 +196,8 @@ async function withScratchEnvironment(
     else delete process.env.DATABASE_PATH;
     if (prevTurnsDir) process.env.CLI_TURNS_DIR = prevTurnsDir;
     else delete process.env.CLI_TURNS_DIR;
+    if (prevHome) process.env.HOME = prevHome;
+    else delete process.env.HOME;
     await rm(root, { recursive: true, force: true }).catch(() => {});
   }
 }
@@ -158,6 +220,8 @@ async function startTurnThenKillServer(root: string, fakeClaude: string, session
   let output = '';
   server.stdout.on('data', (chunk) => { output += chunk; });
   await eventually(() => output.includes('READY'), 'the turn to start', 15_000);
+  // Past one offset save (250 ms), so what the server delivered is recorded.
+  await new Promise((resolve) => setTimeout(resolve, 400));
   server.kill('SIGKILL');
   await new Promise((resolve) => server.once('exit', resolve));
   return { unitName, logPath };
@@ -183,11 +247,7 @@ test('reattach after a restart streams a live Claude turn through the Claude lin
     process.env.FAKE_TAIL_MS = '1500';
     try {
       const fakeClaude = writeScript('fake-claude.js', FAKE_CLAUDE);
-      registerBackendLineParser('claude', createClaudeTurnLineParser((raw, sessionId) => {
-        const message = raw as { type: string; message?: { content?: Array<{ text?: string }> } };
-        if (message.type !== 'assistant') return [];
-        return [{ kind: 'text', role: 'assistant', content: message.message?.content?.[0]?.text, sessionId } as NormalizedMessage];
-      }));
+      registerTextParser();
 
       const { unitName } = await startTurnThenKillServer(root, fakeClaude, 'session-reattach');
       assert.ok(isTurnAlive(unitName), 'still running after the server died');
@@ -207,7 +267,10 @@ test('reattach after a restart streams a live Claude turn through the Claude lin
       assert.equal(completion!.exitCode, 0);
       const texts = received.map((msg) => msg.content);
       assert.ok(texts.includes('part 2'), `streamed after reattach: ${JSON.stringify(texts)}`);
-      assert.ok(received.every((msg) => msg.sessionId === 'session-reattach'));
+      assert.ok(!texts.includes('part 1'), `output the old server delivered is not replayed: ${JSON.stringify(texts)}`);
+      assert.ok(received.every((msg) => msg.sessionId === 'native-1'));
+      const created = received.find((msg) => msg.kind === 'session_created') as { newSessionId?: string } | undefined;
+      assert.equal(created?.newSessionId, 'native-1', 'a brand-new session learns its provider id after reattach');
       assert.equal(runningTurnsDb.getTurn(unitName)?.exit_code, 0);
     } finally {
       delete process.env.FAKE_TAIL_MS;
@@ -218,6 +281,8 @@ test('reattach after a restart streams a live Claude turn through the Claude lin
 test('a Claude turn that finished while the server was down is finalized on startup', { skip: !systemd }, async () => {
   await withScratchEnvironment(async ({ root, writeScript }) => {
     const fakeClaude = writeScript('fake-claude.js', FAKE_CLAUDE);
+    registerTextParser();
+    sessionsDb.createAppSession('session-down', 'claude', root);
     const { unitName, logPath } = await startTurnThenKillServer(root, fakeClaude, 'session-down');
     await eventually(() => readRelayExit(logPath) !== null && !isTurnAlive(unitName), 'the turn to end while down');
 
@@ -230,6 +295,7 @@ test('a Claude turn that finished while the server was down is finalized on star
     const row = runningTurnsDb.getTurn(unitName);
     assert.equal(row?.status, 'completed');
     assert.equal(row?.exit_code, 0);
+    assert.equal(sessionsDb.getSessionById('session-down')?.provider_session_id, 'native-1', 'the provider session id is recorded');
   });
 });
 
@@ -254,6 +320,105 @@ test('a relayed Claude process is driven like a child: permission round trip, re
     assert.match(out, /tool allow/);
     await eventually(() => runningTurnsDb.getTurn(child.unitName)?.status === 'completed', 'the turn row to complete');
     assert.equal(runningTurnsDb.getTurn(child.unitName)?.exit_code, 0);
+  });
+});
+
+/**
+ * A server that launches the unit but attaches only once the CLI's request is
+ * already in the log, as a slow server start would. It answers `allow` and
+ * prints what the CLI reported.
+ */
+const LATE_ATTACH_CLIENT = `
+import { existsSync, readFileSync } from 'node:fs';
+import { attachRelayedProcess, launchRelayUnit } from ${JSON.stringify(RELAY_CLIENT)};
+const [unitName, logPath, command, cwd] = process.argv.slice(2);
+if (!launchRelayUnit({ unitName, logPath, command, args: [], cwd, env: process.env, protocol: 'claude' })) process.exit(3);
+while (!(existsSync(logPath) && readFileSync(logPath, 'utf8').includes('req-0'))) await new Promise((r) => setTimeout(r, 20));
+await new Promise((r) => setTimeout(r, 500));
+const child = attachRelayedProcess({ unitName, logPath });
+let out = '';
+child.stdout.on('data', (chunk) => {
+  out += chunk;
+  if (out.includes('"request_id":"req-0"') && !out.includes('early ')) {
+    child.stdin.write(JSON.stringify({ type: 'control_response', response: { subtype: 'success', request_id: 'req-0', response: { behavior: 'allow' } } }) + '\\n');
+  }
+  if (out.includes('"type":"result"')) child.stdin.end();
+});
+child.once('exit', (code) => { console.log(JSON.stringify({ code, out })); process.exit(0); });
+`;
+
+test('a permission asked before the server has connected waits for the server instead of being denied', { skip: !systemd }, async () => {
+  await withScratchEnvironment(async ({ root, writeScript }) => {
+    const fakeClaude = writeScript('fake-claude-early.js', FAKE_CLAUDE_EARLY_ASK);
+    const unitName = `cli-turn-test-${process.pid}-${Date.now()}`;
+    const logPath = getTurnLogPath(unitName);
+    const clientPath = path.join(root, 'late-attach-client.mjs');
+    writeFileSync(clientPath, LATE_ATTACH_CLIENT);
+    const server = spawn(process.execPath, [clientPath, unitName, logPath, fakeClaude, root], { stdio: ['ignore', 'pipe', 'inherit'] });
+    let output = '';
+    server.stdout.on('data', (chunk) => { output += chunk; });
+    await new Promise((resolve) => server.once('exit', resolve));
+
+    const { code, out } = JSON.parse(output.trim().split('\n').pop()!) as { code: number; out: string };
+    assert.equal(code, 0);
+    assert.match(out, /early allow/, 'the server answered the early request');
+    assert.doesNotMatch(out, /early deny/, 'the relay did not answer it for a server that had not connected yet');
+  });
+});
+
+test('a turn held open for background work keeps stdin open after the server dies, until the work reports back', { skip: !systemd }, async () => {
+  await withScratchEnvironment(async ({ root, writeScript }) => {
+    const fakeClaude = writeScript('fake-claude-bg.js', FAKE_CLAUDE_BACKGROUND);
+    process.env.FAKE_PID_FILE = path.join(root, 'bg.pid');
+    process.env.FAKE_BG_MS = '3000';
+    try {
+      const { unitName, logPath } = await startTurnThenKillServer(root, fakeClaude, 'session-bg');
+      const pid = Number(readFileSync(process.env.FAKE_PID_FILE, 'utf8'));
+
+      // Well past the relay's own reaction time: an orphaned turn without the hold would have exited by now.
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+      assert.ok(pidAlive(pid), 'the CLI still has its stdin while the background task runs');
+      assert.equal(readRelayExit(logPath), null);
+
+      await eventually(() => readRelayExit(logPath) !== null, 'the CLI to exit once the background work is done', 15_000);
+      assert.deepEqual(readRelayExit(logPath), { code: 0, signal: null });
+      assert.match(readFileSync(logPath, 'utf8'), /background done/, 'the follow-up turn was not lost');
+      await eventually(() => !isTurnAlive(unitName), 'the unit to be gone');
+    } finally {
+      delete process.env.FAKE_PID_FILE;
+      delete process.env.FAKE_BG_MS;
+    }
+  });
+});
+
+test('the log tail decodes a multi-byte character split across read chunks', async () => {
+  await withScratchEnvironment(async ({ root }) => {
+    const logPath = path.join(root, 'utf8.log');
+    // 'é' is two bytes; an odd-length prefix puts one straddling the 64 KiB chunk boundary.
+    const first = `${'a'.repeat(64 * 1024 - 1)}é`;
+    const second = 'ação 🙂 done';
+    writeFileSync(logPath, `${first}\n${second}\n`);
+    const lines: string[] = [];
+    await tailLogFile(logPath, { isAlive: () => false, onLine: (line) => lines.push(line) });
+    assert.deepEqual(lines, [first, second]);
+  });
+});
+
+test('aborting a session stops every running turn it has, not just the first', { skip: !systemd }, async () => {
+  await withScratchEnvironment(async ({ root, writeScript }) => {
+    const fakeClaude = writeScript('fake-claude.js', FAKE_CLAUDE);
+    const pids: number[] = [];
+    for (const name of ['a', 'b']) {
+      process.env.FAKE_PID_FILE = path.join(root, `${name}.pid`);
+      const { unitName } = await startTurnThenKillServer(root, fakeClaude, 'session-many');
+      pids.push(Number(readFileSync(process.env.FAKE_PID_FILE, 'utf8')));
+      assert.ok(isTurnAlive(unitName));
+    }
+    delete process.env.FAKE_PID_FILE;
+    assert.equal(runningTurnsDb.listRunningTurns().filter((turn) => turn.session_id === 'session-many').length, 2);
+
+    assert.equal(abortTurn('session-many'), true);
+    await eventually(() => pids.every((pid) => !pidAlive(pid)), 'both CLIs to be stopped');
   });
 });
 
@@ -313,6 +478,20 @@ test('the Codex wrapper runs the CLI in a unit that outlives the wrapper', { ski
     await eventually(() => readRelayExit(logPath) !== null, 'the CLI to finish without its wrapper');
     assert.match(readFileSync(logPath, 'utf8'), /echo second/);
     assert.deepEqual(readRelayExit(logPath), { code: 0, signal: null });
+    exec2.complete();
+
+    // Superseded while this server still drives it: the new turn stops the old unit.
+    const exec3 = prepareDetachedExec({ command: fakeCodex, sessionId: 'session-codex', backend: 'codex' });
+    assert.ok(exec3);
+    const run3 = spawn(exec3.executable, ['exec'], { env: { ...exec3.env, FAKE_DELAY_MS: '30000' }, cwd: root, stdio: ['pipe', 'pipe', 'inherit'] });
+    run3.stdin.end('third');
+    const logPath3 = getTurnLogPath(exec3.unitName);
+    await eventually(() => existsSync(logPath3) && readFileSync(logPath3, 'utf8').includes('thread.started'), 'the third turn to start');
+    assert.equal(await retireDetachedSessionTurns('session-codex', 'codex'), 0, 'an attached unit is left alone by default');
+    assert.equal(await retireDetachedSessionTurns('session-codex', 'codex', { includeAttached: true }), 1);
+    await eventually(() => !isTurnAlive(exec3.unitName), 'the superseded unit to be stopped');
+    await new Promise((resolve) => run3.once('exit', resolve));
+    assert.doesNotMatch(readFileSync(logPath3, 'utf8'), /echo third/);
   });
 });
 

@@ -11,6 +11,7 @@
  */
 
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
@@ -35,7 +36,24 @@ const __dirname = path.dirname(__filename);
  */
 function resolveDatabasePath(): string {
     // process.env.DATABASE_PATH is set by load-env-vars.js to either the .env value or a default(~/.cloudcli/auth.db) in the user's home directory. 
-    return process.env.DATABASE_PATH || resolveLegacyDatabasePath();
+    return guardTestDatabasePath(process.env.DATABASE_PATH || resolveLegacyDatabasePath());
+}
+
+/**
+ * Under the node test runner a database outside the temp directory is never opened.
+ * Shells started by the live server inherit its DATABASE_PATH, so a test run from one
+ * would otherwise write to the live auth.db; such a run gets a per-process scratch file.
+ */
+export function guardTestDatabasePath(
+  dbPath: string,
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  if (!env.NODE_TEST_CONTEXT) return dbPath;
+  const tmpRoot = fs.realpathSync(os.tmpdir());
+  const resolved = path.resolve(dbPath);
+  const inTmp = (dir: string) => resolved === dir || resolved.startsWith(dir + path.sep);
+  if (dbPath === ':memory:' || inTmp(tmpRoot) || inTmp(path.resolve(os.tmpdir()))) return dbPath;
+  return path.join(tmpRoot, `cloudcli-test-${process.pid}`, 'auth.db');
 }
 
 /**

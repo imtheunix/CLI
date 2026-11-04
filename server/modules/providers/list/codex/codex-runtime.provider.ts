@@ -88,8 +88,9 @@ function extractCodexTokenBudget(event: AnyRecord) {
 export function createCodexTurnLineParser(
   normalizeMessage: (raw: unknown, sessionId: string | null) => NormalizedMessage[],
 ): LineHandler {
+  // One parser per turn: it keeps the thread id the turn reported.
+  let capturedSessionId: string | null = null;
   return (line, writer, sessionId = null) => {
-    if (!writer) return;
     let event: AnyRecord;
     try {
       event = JSON.parse(line);
@@ -97,14 +98,30 @@ export function createCodexTurnLineParser(
       return;
     }
     if (!event || typeof event !== 'object' || typeof event.type !== 'string') return;
+    if (event.type === 'thread.started' && typeof event.thread_id === 'string' && event.thread_id && !capturedSessionId) {
+      capturedSessionId = event.thread_id;
+      // A brand-new session has no provider id on its writer yet.
+      const isNewSession = !writer?.getSessionId?.();
+      writer?.setSessionId?.(event.thread_id);
+      if (isNewSession) {
+        writer?.send(createNormalizedMessage({ kind: 'session_created', newSessionId: event.thread_id, sessionId: event.thread_id, provider: 'codex' }));
+      }
+    }
     if (
       (event.type === 'item.started' || event.type === 'item.updated')
       && !PROGRESSIVE_CODEX_ITEM_TYPES.has(event.item?.type)
     ) {
       return;
     }
-    for (const msg of normalizeMessage(transformCodexEvent(event), sessionId)) {
-      writer.send(msg);
+    const sid = capturedSessionId || writer?.getSessionId?.() || sessionId || null;
+    for (const msg of normalizeMessage(transformCodexEvent(event), sid)) {
+      writer?.send(msg);
+    }
+    if (event.type === 'turn.completed') {
+      const tokenBudget = extractCodexTokenBudget(event);
+      if (tokenBudget) {
+        writer?.send(createNormalizedMessage({ kind: 'status', text: 'token_budget', tokenBudget, sessionId: sid, provider: 'codex' }));
+      }
     }
   };
 }
@@ -343,10 +360,16 @@ async function queryCodex(
   // outlives a server restart (detached-turns reattaches to its log). Not with
   // the SDK's bundled binary, whose path only the SDK resolves: that one, and
   // any turn without systemd-run, is spawned directly as before.
-  // A CLI a previous server instance left running on this thread is stopped
-  // first, so one thread never has two processes acting on it.
+  // A turn still running on this thread is superseded: its run is aborted and
+  // its unit stopped (the SDK's SIGTERM only ends the wrapper, never the
+  // unit), as is a CLI a previous server instance left running, so one thread
+  // never has two processes acting on it.
   if (sessionId) {
-    await retireDetachedSessionTurns(sessionId, 'codex');
+    const previous = activeCodexSessions.get(sessionId);
+    if (previous && previous.abortController !== abortController) {
+      previous.abortController?.abort();
+    }
+    await retireDetachedSessionTurns(sessionId, 'codex', { includeAttached: true });
   }
   const detached = prepareDetachedExec({
     command: getCodexPathOverride(),

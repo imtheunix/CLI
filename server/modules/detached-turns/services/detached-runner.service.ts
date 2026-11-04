@@ -3,9 +3,10 @@ import type { ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { StringDecoder } from 'node:string_decoder';
 import { fileURLToPath } from 'node:url';
 
-import { orchestratorJobsDb, runningTurnsDb } from '@/modules/database/index.js';
+import { orchestratorJobsDb, runningTurnsDb, sessionsDb } from '@/modules/database/index.js';
 import type { RunningTurnRow } from '@/modules/database/index.js';
 import type { NormalizedMessage, ProviderRuntimeWriter } from '@/shared/types.js';
 
@@ -13,6 +14,7 @@ import {
   attachRelayedProcess,
   exitStatusCode,
   launchRelayUnit,
+  readDeliveredOffset,
   readRelayExit,
 } from '../relay/relay-process.js';
 
@@ -32,12 +34,16 @@ export type DetachedTurnExecution = {
 
 export type LineHandler = (line: string, writer?: ProviderRuntimeWriter, sessionId?: string | null) => void;
 
-/** Line parsers registered per backend to parse stdout/stderr JSONL lines into stream messages. */
-const backendLineParsers = new Map<string, LineHandler>();
+/** Line parser factories registered per backend; each turn gets its own parser (they keep per-turn state). */
+const backendLineParsers = new Map<string, () => LineHandler>();
 
-/** Register a line parser for a backend so both live execution and reattachment parse identically. */
-export function registerBackendLineParser(backend: string, handler: LineHandler): void {
-  backendLineParsers.set(backend, handler);
+/** Register a line parser factory for a backend so both live execution and reattachment parse identically. */
+export function registerBackendLineParser(backend: string, createParser: () => LineHandler): void {
+  backendLineParsers.set(backend, createParser);
+}
+
+function createTurnParser(backend: string): LineHandler {
+  return backendLineParsers.get(backend)?.() ?? defaultLineParser;
 }
 
 /** Check if systemd-run is available on this system. Cached after first probe. */
@@ -244,31 +250,32 @@ export async function tailLogFile(
   const pollInterval = options.pollIntervalMs ?? 50;
   let offset = options.startOffset ?? 0;
   let lineBuffer = '';
+  const decoder = new StringDecoder('utf8');
+  const chunk = Buffer.allocUnsafe(64 * 1024);
 
+  // Reads from where the last read stopped, in bounded chunks: a multi-byte
+  // character split across reads is decoded whole.
   const drain = () => {
+    let fd: number | null = null;
     try {
-      if (!fs.existsSync(logPath)) return;
-      const stat = fs.statSync(logPath);
-      if (stat.size <= offset) return;
-
-      const fd = fs.openSync(logPath, 'r');
-      const bytesToRead = stat.size - offset;
-      const buffer = Buffer.alloc(bytesToRead);
-      fs.readSync(fd, buffer, 0, bytesToRead, offset);
-      fs.closeSync(fd);
-
-      offset = stat.size;
-      lineBuffer += buffer.toString('utf8');
-
-      const lines = lineBuffer.split(/\r?\n/);
-      lineBuffer = lines.pop() ?? '';
-      for (const line of lines) {
-        if (line.trim()) {
-          options.onLine(line);
+      fd = fs.openSync(logPath, 'r');
+      for (;;) {
+        const bytesRead = fs.readSync(fd, chunk, 0, chunk.length, offset);
+        if (bytesRead === 0) break;
+        offset += bytesRead;
+        lineBuffer += decoder.write(chunk.subarray(0, bytesRead));
+        const lines = lineBuffer.split(/\r?\n/);
+        lineBuffer = lines.pop() ?? '';
+        for (const line of lines) {
+          if (line.trim()) {
+            options.onLine(line);
+          }
         }
       }
     } catch {
-      // transient read errors while writing
+      // not created yet, or a transient read error while writing
+    } finally {
+      if (fd !== null) fs.closeSync(fd);
     }
   };
 
@@ -370,7 +377,7 @@ export function spawnDetachedTurn(input: {
     fs.closeSync(fd);
   }
 
-  const parser = backendLineParsers.get(input.backend);
+  const parser = backendLineParsers.get(input.backend)?.();
   const handleLine = (line: string) => {
     input.onLine?.(line);
     parser?.(line);
@@ -520,9 +527,16 @@ export function prepareDetachedExec(input: {
     unitName,
     complete: () => {
       attachedUnits.delete(unitName);
-      if (runningTurnsDb.getTurn(unitName)?.status === 'running' && !isTurnAlive(unitName)) {
-        runningTurnsDb.completeTurn(unitName, getUnitExitCode(unitName, logPath));
+      if (runningTurnsDb.getTurn(unitName)?.status !== 'running' || isTurnAlive(unitName)) {
+        return;
       }
+      if (!readRelayExit(logPath) && !fs.existsSync(logPath)) {
+        // The SDK never ran the wrapper (it failed first), or the wrapper ran
+        // the CLI directly: there is no unit this row could stand for.
+        runningTurnsDb.deleteTurn(unitName);
+        return;
+      }
+      runningTurnsDb.completeTurn(unitName, getUnitExitCode(unitName, logPath));
     },
   };
 }
@@ -540,11 +554,15 @@ function stopUnit(unitName: string): Promise<void> {
  * does not drive itself: ones reattached after a restart. A new turn calls
  * this before it spawns, so a session never has two live CLI processes.
  */
-export async function retireDetachedSessionTurns(sessionId: string, backend: string): Promise<number> {
+export async function retireDetachedSessionTurns(
+  sessionId: string,
+  backend: string,
+  options: { includeAttached?: boolean } = {},
+): Promise<number> {
   const turns = runningTurnsDb.listRunningTurns().filter((turn) => (
     turn.session_id === sessionId
     && turn.backend === backend
-    && !attachedUnits.has(turn.unit_name)
+    && (options.includeAttached || !attachedUnits.has(turn.unit_name))
     && !fallbackProcesses.has(turn.unit_name)
   ));
   for (const turn of turns) {
@@ -557,33 +575,39 @@ export async function retireDetachedSessionTurns(sessionId: string, backend: str
   return turns.length;
 }
 
-/** Stops an in-flight turn for a session. */
+/**
+ * Stops every in-flight turn of a session (a session can have more than one:
+ * a superseded turn still winding down, or several jobs on one session).
+ * Systemd stops are queued (`--no-block`), so this never waits on a unit.
+ */
 export function abortTurn(sessionId: string): boolean {
-  const turn = runningTurnsDb.getRunningTurnBySession(sessionId);
-  if (!turn) return false;
-
-  const fallback = fallbackProcesses.get(turn.unit_name);
-  if (fallback && fallback.pid) {
-    try {
-      process.kill(-fallback.pid, 'SIGTERM');
-    } catch {
-      try { fallback.kill('SIGTERM'); } catch {}
-    }
-    runningTurnsDb.completeTurn(turn.unit_name, 143);
-    return true;
-  }
-
-  if (isSystemdRunAvailable()) {
-    try {
-      spawnSync('systemctl', ['--user', 'stop', `${turn.unit_name}.service`], { stdio: 'ignore' });
+  const turns = runningTurnsDb.listRunningTurns().filter((turn) => turn.session_id === sessionId);
+  let stopped = false;
+  for (const turn of turns) {
+    const fallback = fallbackProcesses.get(turn.unit_name);
+    if (fallback && fallback.pid) {
+      try {
+        process.kill(-fallback.pid, 'SIGTERM');
+      } catch {
+        try { fallback.kill('SIGTERM'); } catch {}
+      }
       runningTurnsDb.completeTurn(turn.unit_name, 143);
-      return true;
-    } catch {
-      return false;
+      stopped = true;
+      continue;
+    }
+
+    if (isSystemdRunAvailable()) {
+      const result = spawnSync('systemctl', ['--user', 'stop', '--no-block', `${turn.unit_name}.service`], {
+        stdio: 'ignore',
+        timeout: 5000,
+      });
+      if (!result.error) {
+        runningTurnsDb.completeTurn(turn.unit_name, 143);
+        stopped = true;
+      }
     }
   }
-
-  return false;
+  return stopped;
 }
 
 function defaultLineParser(line: string, writer?: ProviderRuntimeWriter): void {
@@ -606,6 +630,40 @@ function defaultLineParser(line: string, writer?: ProviderRuntimeWriter): void {
       }
     } catch {}
   }
+}
+
+function knownProviderSessionId(appSessionId: string): string | null {
+  try {
+    return sessionsDb.getSessionById(appSessionId)?.provider_session_id ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * A writer for a turn that finished while the server was down: it delivers
+ * nothing and records the provider session id the turn reported, as the chat
+ * run's writer does for a live turn.
+ */
+function recordingWriter(appSessionId: string): ProviderRuntimeWriter {
+  let providerSessionId = knownProviderSessionId(appSessionId);
+  const record = (id: unknown) => {
+    if (typeof id !== 'string' || !id || id === providerSessionId) return;
+    providerSessionId = id;
+    try {
+      sessionsDb.assignProviderSessionId(appSessionId, id);
+    } catch (error) {
+      console.warn(`[DetachedTurns] Could not record provider session ${id} for ${appSessionId}:`, error);
+    }
+  };
+  return {
+    send: (message) => {
+      const msg = message as { kind?: string; newSessionId?: unknown };
+      if (msg?.kind === 'session_created') record(msg.newSessionId);
+    },
+    setSessionId: record,
+    getSessionId: () => providerSessionId,
+  };
 }
 
 /**
@@ -639,12 +697,12 @@ export async function reattachActiveTurns(options: {
 
     if (alive) {
       console.log(`[DetachedTurns] Reattaching to live turn: ${turn.unit_name} (session: ${turn.session_id}, backend: ${turn.backend})`);
-      const parser = backendLineParsers.get(turn.backend) ?? defaultLineParser;
+      const parser = createTurnParser(turn.backend);
 
       const run = registry.startRun({
         appSessionId: turn.session_id,
         provider: turn.backend as never,
-        providerSessionId: null,
+        providerSessionId: knownProviderSessionId(turn.session_id),
         connection: null,
         userId: null,
       }) ?? (registry.getRun ? registry.getRun(turn.session_id) : null);
@@ -655,8 +713,10 @@ export async function reattachActiveTurns(options: {
 
       void (async () => {
         try {
+          // The server that went down delivered the log up to its offset.
           await tailLogFile(turn.log_path, {
             isAlive: () => isTurnAlive(turn.unit_name),
+            startOffset: readDeliveredOffset(turn.log_path),
             onLine: (line) => {
               if (run) {
                 parser(line, run.writer, turn.session_id);
@@ -683,15 +743,15 @@ export async function reattachActiveTurns(options: {
       const exitCode = getUnitExitCode(turn.unit_name, turn.log_path);
 
       if (fs.existsSync(turn.log_path)) {
-        const parser = backendLineParsers.get(turn.backend) ?? defaultLineParser;
+        // Nobody is listening, but what the turn established is kept: a
+        // brand-new session's provider id is recorded on its app session.
+        const parser = createTurnParser(turn.backend);
+        const writer = recordingWriter(turn.session_id);
         try {
-          const content = fs.readFileSync(turn.log_path, 'utf8');
-          const lines = content.split(/\r?\n/);
-          for (const line of lines) {
-            if (line.trim()) {
-              parser(line);
-            }
-          }
+          await tailLogFile(turn.log_path, {
+            isAlive: () => false,
+            onLine: (line) => parser(line, writer, turn.session_id),
+          });
         } catch (err) {
           console.warn(`[DetachedTurns] Could not read log for completed turn ${turn.unit_name}:`, err);
         }

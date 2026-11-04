@@ -31,6 +31,6 @@ export class ClaudeProvider extends AbstractProvider {
   constructor() {
     super('claude');
     // A turn reattached after a server restart streams through the live path's normalization.
-    registerBackendLineParser('claude', createClaudeTurnLineParser((raw, sessionId) => this.sessions.normalizeMessage(raw, sessionId)));
+    registerBackendLineParser('claude', () => createClaudeTurnLineParser((raw, sessionId) => this.sessions.normalizeMessage(raw, sessionId)));
   }
 }

@@ -543,13 +543,22 @@ export function spawnDetachableClaudeProcess(spawnOptions, onStderr, turn) {
 
 /**
  * Line parser for a reattached Claude turn's log (stream-json from the CLI):
- * the same transform and normalization the live loop applies.
+ * the same session capture, transform, normalization and status updates
+ * (token budget, context window, rate limits) the live loop applies. One
+ * parser per turn: it keeps the turn's provider session id and budget state.
+ * The provider session id goes to the writer as the live loop's does, which
+ * records it on the app session even for a turn that finished while the
+ * server was down.
  * @param {(message: Object, sessionId: string|null) => Array<Object>} normalizeMessage
- * @returns {(line: string, writer?: { send: (message: Object) => void }, sessionId?: string|null) => void}
+ * @returns {(line: string, writer?: { send: (message: Object) => void, setSessionId?: (id: string) => void, getSessionId?: () => string|null }, sessionId?: string|null) => void}
  */
 export function createClaudeTurnLineParser(normalizeMessage) {
+  let capturedSessionId = null;
+  let reportedContextWindow = null;
+  let mainThreadModel = null;
+  let assistantBudgetSent = false;
+  let lastSentTokenBudget = null;
   return (line, writer, sessionId = null) => {
-    if (!writer) return;
     let message;
     try {
       message = JSON.parse(line);
@@ -558,14 +567,52 @@ export function createClaudeTurnLineParser(normalizeMessage) {
     }
     if (!message || typeof message !== 'object' || typeof message.type !== 'string') return;
     if (message.type.startsWith('control_') || message.type === 'keep_alive') return;
+
+    if (typeof message.session_id === 'string' && message.session_id && !capturedSessionId) {
+      capturedSessionId = message.session_id;
+      reportedContextWindow = getReportedClaudeContextWindow(capturedSessionId) ?? null;
+      // A brand-new session has no provider id on its writer yet.
+      const isNewSession = !writer?.getSessionId?.();
+      writer?.setSessionId?.(capturedSessionId);
+      if (isNewSession) {
+        writer?.send(createNormalizedMessage({ kind: 'session_created', newSessionId: capturedSessionId, sessionId: capturedSessionId, provider: 'claude' }));
+      }
+    }
+    const sid = capturedSessionId || writer?.getSessionId?.() || sessionId || null;
+
     const transformed = transformMessage(message);
-    for (const msg of normalizeMessage(transformed, sessionId)) {
+    for (const msg of normalizeMessage(transformed, sid)) {
       if (transformed.parentToolUseId && !msg.parentToolUseId) {
         msg.parentToolUseId = transformed.parentToolUseId;
       }
       if (isSubagentPromptEcho(msg)) continue;
-      writer.send(msg);
+      writer?.send(msg);
     }
+
+    if (
+      message.type === 'assistant'
+      && !message.parent_tool_use_id
+      && typeof message.message?.model === 'string'
+      && message.message.model !== '<synthetic>'
+    ) {
+      mainThreadModel = message.message.model;
+    }
+    const turnContextWindow = readReportedContextWindow(message, mainThreadModel);
+    if (turnContextWindow) {
+      reportedContextWindow = turnContextWindow;
+      rememberClaudeContextWindow(sid, turnContextWindow);
+    }
+    let tokenBudget = extractTokenBudget(message, reportedContextWindow)
+      || (assistantBudgetSent ? null : extractCumulativeTokenBudget(message, reportedContextWindow));
+    if (!tokenBudget && turnContextWindow && lastSentTokenBudget && lastSentTokenBudget.total !== turnContextWindow) {
+      tokenBudget = { ...lastSentTokenBudget, total: turnContextWindow };
+    }
+    if (tokenBudget) {
+      if (message.type === 'assistant') assistantBudgetSent = true;
+      lastSentTokenBudget = tokenBudget;
+      writer?.send(createNormalizedMessage({ kind: 'status', text: 'token_budget', tokenBudget, sessionId: sid, provider: 'claude' }));
+    }
+    rememberClaudeRateLimit(message);
   };
 }
 
