@@ -23,10 +23,15 @@ const MAX_PUSH_ATTEMPTS = 5;
 const NO_CI_GRACE_MS = 3 * 60_000;
 /** A deploy still going after this long is handed to a person. */
 const DEPLOY_TIMEOUT_MS = 60 * 60_000;
+/** A light gate taking longer than this is stuck. */
+const CHECK_TIMEOUT_MS = 20 * 60_000;
 /** Rounds of conflict resolution before a rebase is given up. */
 const MAX_RESOLVE_ROUNDS = 8;
 
-/** The steps that hold a repository's lane: one job at a time goes from rebase to push. */
+/**
+ * The steps that hold a repository's lane: one job at a time goes from rebase to push. The deploy is not part of
+ * it: Forgejo's deploy jobs have their own concurrency groups, so a push never waits for another job's deploy.
+ */
 const LANE_STEPS: OrchestratorMergeStep[] = ['rebase', 'check', 'push'];
 
 type GitRunner = (cwd: string, ...args: string[]) => Promise<CommandResult>;
@@ -41,8 +46,9 @@ const FINISHED_RUN_STATUSES = new Set(['success', 'failure', 'cancelled', 'skipp
  * the project's checks, push, then (by default) the deploy Forgejo runs for it.
  *
  * Every step is recorded before it runs, and each can be run again: a server
- * restart, a push rejected because another job got there first, or a deploy
- * going on in the same repository, all resume from the step the job is at.
+ * restart or a push rejected because another job got there first resume from
+ * the step the job is at. The check is a light gate (Forgejo CI runs the full
+ * suite after the push), at most `maxConcurrentChecks` at once, under `nice`.
  */
 export function createMergeQueueService(deps: {
   jobs: JobsService;
@@ -61,6 +67,8 @@ export function createMergeQueueService(deps: {
   });
   // One advance per job at a time; the tick skips a job whose step is still running.
   const inFlight = new Set<string>();
+  // The jobs whose check command is running. One server runs the queue for the whole workstation.
+  const runningChecks = new Set<string>();
 
   function setStep(job: OrchestratorJobRow, step: OrchestratorMergeStep, extra: Parameters<typeof orchestratorJobsDb.update>[1] = {}): OrchestratorJobRow {
     const updated = orchestratorJobsDb.update(job.id, { merge_step: step, ...extra }) as OrchestratorJobRow;
@@ -168,19 +176,32 @@ export function createMergeQueueService(deps: {
   }
 
   async function stepCheck(job: OrchestratorJobRow): Promise<void> {
-    const command = await resolveCheckCommand(job.repo_path, job.worktree_path, deps.config().checks);
-    if (command) {
-      const result = await run(command, [], { cwd: job.worktree_path, shell: true, timeoutMs: 45 * 60_000, env: checkEnvironment() });
-      if (result.code !== 0) {
-        const output = result.stdout + result.stderr;
-        // The tail of a long test run is its summary; the failing tests' names are further up.
-        const failing = output.split('\n').filter((line) => /^\s*not ok\b/.test(line)).slice(0, 30);
-        const failingList = failing.length > 0 ? `Failing:\n\n\`\`\`\n${failing.join('\n')}\n\`\`\`\n\n` : '';
-        await backToAgent(job, `after rebasing onto origin/${job.base_branch}, \`${command}\` failed:\n\n${failingList}\`\`\`\n${tail(output)}\n\`\`\``);
-        return;
+    // Taken before the first await: the steps of one tick start side by side. No free slot: wait in `check`.
+    if (runningChecks.size >= Math.max(1, deps.config().maxConcurrentChecks)) return;
+    runningChecks.add(job.id);
+    try {
+      orchestratorJobsDb.recordMergeStep(job.id, 'check:run');
+      const command = await resolveCheckCommand(job.repo_path, job.worktree_path, deps.config().checks);
+      if (command) {
+        // Below the agents' own work on the CPU: the workstation stays usable while a gate runs.
+        const result = await run('nice', ['-n', '10', '/bin/bash', '-lc', command], {
+          cwd: job.worktree_path,
+          timeoutMs: CHECK_TIMEOUT_MS,
+          env: checkEnvironment(),
+        });
+        if (result.code !== 0) {
+          const output = result.stdout + result.stderr;
+          // The tail of a long test run is its summary; the failing tests' names are further up.
+          const failing = output.split('\n').filter((line) => /^\s*not ok\b/.test(line)).slice(0, 30);
+          const failingList = failing.length > 0 ? `Failing:\n\n\`\`\`\n${failing.join('\n')}\n\`\`\`\n\n` : '';
+          await backToAgent(job, `after rebasing onto origin/${job.base_branch}, \`${command}\` failed:\n\n${failingList}\`\`\`\n${tail(output)}\n\`\`\``);
+          return;
+        }
       }
+      setStep(job, 'push');
+    } finally {
+      runningChecks.delete(job.id);
     }
-    setStep(job, 'push');
   }
 
   function waitsForDeploy(job: OrchestratorJobRow): boolean {
@@ -235,27 +256,37 @@ export function createMergeQueueService(deps: {
     recordPush(job, head);
   }
 
-  /** A green descendant on the base branch deployed this job's changes too. */
-  async function supersedingDeploy(job: OrchestratorJobRow, runs: DeployRun[]): Promise<boolean> {
+  /**
+   * The runs of a newer commit on the base branch that contains this job's: Forgejo's `cancel-in-progress`
+   * cancels a commit's run when the next push comes quickly, and the newer run then tests both. The green one
+   * wins; else one still running; else a failed one. Null: no descendant on the base branch has runs.
+   */
+  async function supersedingRuns(job: OrchestratorJobRow, runs: DeployRun[]): Promise<{ sha: string; runs: DeployRun[]; outcome: 'success' | 'running' | 'failure' } | null> {
     const candidates = [...new Set(runs.map((record) => record.commit_sha))]
       .filter((sha): sha is string => Boolean(sha && sha !== job.pushed_sha));
-    if (candidates.length === 0) return false;
+    if (candidates.length === 0) return null;
     const cwd = job.worktree_path;
     const fetched = await git(cwd, 'fetch', '--quiet', 'origin', job.base_branch);
     if (fetched.code !== 0) throw new Error(`git fetch failed: ${tail(fetched.stderr, 10)}`);
+    const found: Array<{ sha: string; runs: DeployRun[]; outcome: 'success' | 'running' | 'failure' }> = [];
     for (const sha of candidates) {
-      const commitRuns = runs.filter((record) => record.commit_sha === sha);
-      // A successful workflow alone is insufficient if another workflow is failing or still running.
-      if (!commitRuns.some((record) => record.status === 'success')
-        || commitRuns.some((record) => record.status !== 'success' && record.status !== 'skipped')) continue;
       if ((await git(cwd, 'merge-base', '--is-ancestor', job.pushed_sha!, sha)).code !== 0
         || (await git(cwd, 'merge-base', '--is-ancestor', sha, `origin/${job.base_branch}`)).code !== 0) continue;
-      const note = `Deployed by superseding commit ${sha} on origin/${job.base_branch}: ${commitRuns.map((record) => `${record.workflow_id}#${record.id}: ${record.status}`).join(', ')}.`;
-      setStep(job, 'merged', { last_error: note });
-      console.info(`[Orchestrator] Job ${job.id}: ${note}`);
-      return true;
+      const commitRuns = runs.filter((record) => record.commit_sha === sha);
+      // A successful workflow alone is insufficient if another workflow is failing or still running.
+      const outcome = commitRuns.some((record) => !FINISHED_RUN_STATUSES.has(String(record.status))) ? 'running'
+        : commitRuns.every((record) => record.status === 'success' || record.status === 'skipped')
+          && commitRuns.some((record) => record.status === 'success') ? 'success' : 'failure';
+      found.push({ sha, runs: commitRuns, outcome });
     }
-    return false;
+    return found.find((entry) => entry.outcome === 'success')
+      ?? found.find((entry) => entry.outcome === 'running')
+      ?? found[0]
+      ?? null;
+  }
+
+  function describeRuns(records: DeployRun[]): string {
+    return records.map((record) => `${record.workflow_id}#${record.id}: ${record.status}`).join(', ');
   }
 
   async function stepDeploy(job: OrchestratorJobRow): Promise<void> {
@@ -275,20 +306,32 @@ export function createMergeQueueService(deps: {
     const body = await fetchJson(`${apiUrl}/repos/${origin.owner}/${origin.repo}/actions/runs?limit=30`, token) as {
       workflow_runs?: DeployRun[];
     };
-    const runs = (body.workflow_runs ?? []).filter((runRecord) => runRecord.commit_sha === job.pushed_sha);
-    if ((runs.length === 0 || runs.some((record) => record.status === 'failure' || record.status === 'cancelled'))
-      && await supersedingDeploy(job, body.workflow_runs ?? [])) return;
+    const allRuns = body.workflow_runs ?? [];
+    const runs = allRuns.filter((runRecord) => runRecord.commit_sha === job.pushed_sha);
+    const running = runs.some((runRecord) => !FINISHED_RUN_STATUSES.has(String(runRecord.status)));
+    const failed = runs.filter((runRecord) => runRecord.status === 'failure' || runRecord.status === 'cancelled');
+    const superseded = runs.length === 0 || failed.length > 0 ? await supersedingRuns(job, allRuns) : null;
+    if (superseded?.outcome === 'success') {
+      const note = `Deployed by superseding commit ${superseded.sha} on origin/${job.base_branch}: ${describeRuns(superseded.runs)}.`;
+      setStep(job, 'merged', { last_error: note });
+      console.info(`[Orchestrator] Job ${job.id}: ${note}`);
+      return;
+    }
+    // Only cancelled (not failed): a newer push cancelled this run, and that push's run decides.
+    const onlyCancelled = !running && failed.length > 0 && failed.every((runRecord) => runRecord.status === 'cancelled');
     if (runs.length === 0) {
       if (now() - since > NO_CI_GRACE_MS) setStep(job, 'merged');
       return;
     }
-    if (runs.some((runRecord) => !FINISHED_RUN_STATUSES.has(String(runRecord.status)))) {
+    if (running || (onlyCancelled && superseded?.outcome === 'running')) {
       if (now() - since > DEPLOY_TIMEOUT_MS) await block(job, `The deploy of ${job.pushed_sha.slice(0, 8)} is still running after an hour.`, false);
       return;
     }
-    const failed = runs.filter((runRecord) => runRecord.status === 'failure' || runRecord.status === 'cancelled');
     if (failed.length > 0) {
-      await block(job, `The pushed commit ${job.pushed_sha.slice(0, 8)} is on origin/${job.base_branch}, but its CI/deploy run ${failed.map((r) => `${r.workflow_id}#${r.id}: ${r.status}`).join(', ')}. Rerun it in Forgejo, then tjob retry ${job.id}.`, true);
+      const newer = onlyCancelled && superseded
+        ? ` (superseded by ${superseded.sha.slice(0, 8)}, whose run failed: ${describeRuns(superseded.runs)})`
+        : '';
+      await block(job, `The pushed commit ${job.pushed_sha.slice(0, 8)} is on origin/${job.base_branch}, but its CI/deploy run ${describeRuns(failed)}${newer}. Rerun it in Forgejo, then tjob retry ${job.id}.`, true);
       return;
     }
     setStep(job, 'merged', { last_error: null });
@@ -305,13 +348,7 @@ export function createMergeQueueService(deps: {
       }
       case 'rebase': return stepRebase(job);
       case 'check': return stepCheck(job);
-      case 'push': {
-        // Repositories that await CI serialize pushes on the previous deploy.
-        const deploying = waitsForDeploy(job) && orchestratorJobsDb.listInMergeQueue().some((other) =>
-          other.id !== job.id && other.repo_path === job.repo_path && other.merge_step === 'deploy');
-        if (!deploying) await stepPush(job);
-        return;
-      }
+      case 'push': return stepPush(job);
       case 'deploy': return stepDeploy(job);
       default:
     }

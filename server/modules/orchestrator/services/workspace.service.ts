@@ -200,19 +200,37 @@ export async function readOriginRepository(repoPath: string): Promise<{ owner: s
   return result.code === 0 && match ? { owner: match[1], repo: match[2] } : null;
 }
 
-/** Used by the CI/CD queue: the check command for a repository, from the config or what the project offers. */
+/**
+ * Used by the CI/CD queue: the light gate run before a push (the user, 2026-11-03: no full suite in the queue;
+ * Forgejo CI is the only full gate and a red main is fixed afterwards). The configured command wins; then the
+ * repository's own `scripts/merge-gate.sh`; then a fast default for its stack (compile, typecheck, lint, test
+ * collection, never the test run); `scripts/check.sh` only when nothing lighter is there. Null: no check.
+ */
 export async function resolveCheckCommand(repoPath: string, worktreePath: string, configured: Record<string, string>): Promise<string | null> {
   const name = path.basename(repoPath);
   if (configured[name]) return configured[name];
-  if (existsSync(path.join(worktreePath, 'scripts/check.sh'))) return 'scripts/check.sh';
+  const has = (file: string) => existsSync(path.join(worktreePath, file));
+  if (has('scripts/merge-gate.sh')) return 'scripts/merge-gate.sh';
   try {
     const manifest = JSON.parse(await fs.readFile(path.join(worktreePath, 'package.json'), 'utf8')) as { scripts?: Record<string, string> };
-    if (manifest.scripts?.check) return 'npm run check';
-    if (manifest.scripts?.test) return 'npm test';
+    // `check` and `test` run the test suites (vitest...): CI's job, not the queue's.
+    const light = ['typecheck', 'lint'].filter((script) => manifest.scripts?.[script]);
+    if (light.length > 0) return light.map((script) => `npm run ${script}`).join(' && ');
   } catch { /* not a JavaScript project */ }
-  if (existsSync(path.join(worktreePath, 'pom.xml'))) return 'mvn -q clean test';
-  if (existsSync(path.join(worktreePath, 'Cargo.toml'))) return 'cargo test --quiet';
-  if (existsSync(path.join(worktreePath, 'scripts/hermes-env.sh'))) return 'scripts/hermes-env.sh python -m pytest -q';
-  if (existsSync(path.join(worktreePath, 'pyproject.toml'))) return 'python -m pytest -q';
+  if (has('pom.xml')) return 'mvn -q -o test-compile || mvn -q test-compile';
+  if (has('Cargo.toml')) return 'cargo check --all-targets --quiet';
+  if (['pyproject.toml', 'setup.py', 'requirements.txt', 'scripts/hermes-env.sh'].some(has)) {
+    const python = has('scripts/hermes-env.sh') ? 'scripts/hermes-env.sh python' : 'python';
+    const collect = `${python} -m pytest --collect-only -q`;
+    return await usesRuff(worktreePath) ? `${collect} && ${python} -m ruff check .` : collect;
+  }
+  if (has('scripts/check.sh')) return 'scripts/check.sh';
   return null;
+}
+
+/** Ruff is part of the light gate only where the project configures it. */
+async function usesRuff(worktreePath: string): Promise<boolean> {
+  if (['ruff.toml', '.ruff.toml'].some((file) => existsSync(path.join(worktreePath, file)))) return true;
+  const pyproject = await fs.readFile(path.join(worktreePath, 'pyproject.toml'), 'utf8').catch(() => '');
+  return /^\[tool\.ruff\b/m.test(pyproject);
 }

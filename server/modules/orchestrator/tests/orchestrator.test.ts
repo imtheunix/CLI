@@ -8,11 +8,11 @@ import test from 'node:test';
 
 import { closeConnection, initializeDatabase, orchestratorJobsDb, sessionsDb, userDb } from '@/modules/database/index.js';
 import type { OrchestratorJobRow } from '@/modules/database/index.js';
-import { createJobsService } from '../services/jobs.service.js';
+import { createJobsService, mergeStepTimings } from '../services/jobs.service.js';
 import { createMergeQueueService } from '../services/merge-queue.service.js';
 import { loadOrchestratorConfig } from '../services/orchestrator-config.service.js';
 import type { OrchestratorConfig } from '../services/orchestrator-config.service.js';
-import { checkEnvironment, runCommand } from '../services/workspace.service.js';
+import { checkEnvironment, resolveCheckCommand, runCommand } from '../services/workspace.service.js';
 import { chatRunRegistry } from '@/modules/websocket/index.js';
 
 type Turn = { sessionId: string; command: string; options: Record<string, unknown> };
@@ -473,6 +473,58 @@ for (const ownStatus of ['cancelled', 'failure', 'missing']) {
   });
 }
 
+test('a run cancelled by a newer push follows the newer commit\'s run: running waits, success merges', async () => {
+  await withWorkspace(async (ctx) => {
+    writeFileSync(ctx.config.forgejo.tokenFile, 'test-token\n');
+    const id = await finishedJob(ctx, (worktree) => commitFile(worktree, 'feature.txt', 'f\n', 'feature'));
+    let newer = '';
+    let newerStatus = 'running';
+    const queue = createMergeQueueService({
+      jobs: ctx.jobs, config: () => ctx.config,
+      fetchJson: async () => ({ workflow_runs: [
+        ...(newer ? [{ id: 761, workflow_id: 'ci.yml', commit_sha: newer, status: newerStatus }] : []),
+        { id: 760, workflow_id: 'ci.yml', commit_sha: ctx.job(id).pushed_sha, status: 'cancelled' },
+      ] }),
+    });
+    await drain(queue, () => ctx.job(id), ['deploy']);
+    git(ctx.upstream, 'pull', '-q', 'origin', 'main');
+    commitFile(ctx.upstream, 'next.txt', 'n\n', 'next job');
+    newer = git(ctx.upstream, 'rev-parse', 'HEAD');
+    git(ctx.upstream, 'push', '-q', 'origin', 'HEAD:main');
+
+    await queue.tick();
+    assert.equal(ctx.job(id).merge_step, 'deploy');
+    newerStatus = 'success';
+    await queue.tick();
+    assert.equal(ctx.job(id).merge_step, 'merged');
+    assert.match(ctx.job(id).last_error!, /ci\.yml#761: success/);
+  });
+});
+
+test('a run cancelled by a newer push blocks when the newer commit\'s run fails', async () => {
+  await withWorkspace(async (ctx) => {
+    writeFileSync(ctx.config.forgejo.tokenFile, 'test-token\n');
+    const id = await finishedJob(ctx, (worktree) => commitFile(worktree, 'feature.txt', 'f\n', 'feature'));
+    let newer = '';
+    const queue = createMergeQueueService({
+      jobs: ctx.jobs, config: () => ctx.config,
+      fetchJson: async () => ({ workflow_runs: [
+        { id: 761, workflow_id: 'ci.yml', commit_sha: newer, status: 'failure' },
+        { id: 760, workflow_id: 'ci.yml', commit_sha: ctx.job(id).pushed_sha, status: 'cancelled' },
+      ] }),
+    });
+    await drain(queue, () => ctx.job(id), ['deploy']);
+    git(ctx.upstream, 'pull', '-q', 'origin', 'main');
+    commitFile(ctx.upstream, 'next.txt', 'n\n', 'next job');
+    newer = git(ctx.upstream, 'rev-parse', 'HEAD');
+    git(ctx.upstream, 'push', '-q', 'origin', 'HEAD:main');
+
+    await queue.tick();
+    assert.equal(ctx.job(id).merge_step, 'blocked');
+    assert.match(ctx.job(id).last_error!, /ci\.yml#760: cancelled \(superseded by \w{8}, whose run failed: ci\.yml#761: failure\)/);
+  });
+});
+
 for (const scenario of ['failing descendant', 'unrelated success', 'success off base', 'partly green descendant']) {
   test(`a cancelled deploy still blocks with a ${scenario}`, async () => {
     await withWorkspace(async (ctx) => {
@@ -736,36 +788,23 @@ test('a no-wait repository pushes two queued jobs and immediately merges both wi
   }, (config) => { config.waitForDeploy = { demo: false }; });
 });
 
-for (const explicit of [false, true]) {
-  test(`a waiting repository serializes pushes until deploy completes (${explicit ? 'explicit' : 'default'})`, async () => {
-    await withWorkspace(async (ctx) => {
-      const first = await finishedJob(ctx, (worktree) => commitFile(worktree, 'a.txt', 'a', 'a'));
-      const second = await finishedJob(ctx, (worktree) => commitFile(worktree, 'b.txt', 'b', 'b'));
-      writeFileSync(ctx.config.forgejo.tokenFile, 'test-token');
-      let status = 'running';
-      const queue = createMergeQueueService({
-        jobs: ctx.jobs, config: () => ctx.config,
-        fetchJson: async () => ({ workflow_runs: [{ commit_sha: ctx.job(first).pushed_sha, status }] }),
-      });
-      await drain(queue, () => ctx.job(first), ['deploy']);
-      await drain(queue, () => ctx.job(second), ['push']);
-      assert.equal(ctx.job(first).merge_step, 'deploy');
-      assert.equal(ctx.job(second).merge_step, 'push');
-      const firstSha = ctx.job(first).pushed_sha;
-      await queue.tick();
-      assert.equal(ctx.job(first).merge_step, 'deploy');
-      assert.equal(ctx.job(second).merge_step, 'push');
-      assert.equal(ctx.job(second).pushed_sha, null);
-      assert.equal(git(ctx.upstream, 'ls-remote', 'origin', 'refs/heads/main').split(/\s/)[0], firstSha);
-      status = 'success';
-      await queue.tick();
-      assert.equal(ctx.job(first).merge_step, 'merged');
-      await queue.tick();
-      assert.equal(ctx.job(second).merge_step, 'deploy');
-      assert.notEqual(ctx.job(second).pushed_sha, firstSha);
-    }, (config) => { config.waitForDeploy = { tsge: false, ...(explicit ? { demo: true } : {}) }; });
+test('a push does not wait for another job\'s deploy in the same repository', async () => {
+  await withWorkspace(async (ctx) => {
+    const first = await finishedJob(ctx, (worktree) => commitFile(worktree, 'a.txt', 'a', 'a'));
+    const second = await finishedJob(ctx, (worktree) => commitFile(worktree, 'b.txt', 'b', 'b'));
+    writeFileSync(ctx.config.forgejo.tokenFile, 'test-token');
+    const queue = createMergeQueueService({
+      jobs: ctx.jobs, config: () => ctx.config,
+      fetchJson: async () => ({ workflow_runs: [{ commit_sha: ctx.job(first).pushed_sha, status: 'running' }] }),
+    });
+    await drain(queue, () => ctx.job(first), ['deploy']);
+    await drain(queue, () => ctx.job(second), ['deploy']);
+    // The first deploy is still running; the second job pushed on top of it all the same.
+    assert.equal(ctx.job(first).merge_step, 'deploy');
+    assert.equal(ctx.job(second).merge_step, 'deploy');
+    assert.equal(git(ctx.upstream, 'ls-remote', 'origin', 'refs/heads/main').split(/\s/)[0], ctx.job(second).pushed_sha);
   });
-}
+});
 
 test('a no-wait repository recovers an unrecorded push without pushing twice', async () => {
   await withWorkspace(async (ctx) => {
@@ -863,5 +902,115 @@ test('wait mode keeps quota-stopped jobs queued until reset and ignores aborted 
     await eventually(() => runtime.turns.length === 2, 'GLM after reset');
     assert.equal(job(created.id).backend, 'glm');
     assert.equal(job(created.id).session_id, sessionId);
+  });
+});
+
+test('the light gate: configured, then merge-gate.sh, then a fast check per stack, check.sh last', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'light-gate-'));
+  try {
+    const resolve = async (files: Record<string, string>, configured: Record<string, string> = {}) => {
+      const dir = await mkdtemp(path.join(root, 'repo-'));
+      for (const [file, content] of Object.entries(files)) {
+        await mkdir(path.dirname(path.join(dir, file)), { recursive: true });
+        writeFileSync(path.join(dir, file), content);
+      }
+      return resolveCheckCommand(path.join(root, 'demo'), dir, configured);
+    };
+    const npm = (scripts: Record<string, string>) => JSON.stringify({ scripts });
+    assert.equal(await resolve({ 'scripts/merge-gate.sh': '' }, { demo: 'make quick' }), 'make quick');
+    assert.equal(await resolve({ 'scripts/merge-gate.sh': '', 'package.json': npm({ lint: 'eslint' }) }), 'scripts/merge-gate.sh');
+    assert.equal(
+      await resolve({ 'package.json': npm({ typecheck: 'tsc', lint: 'eslint', test: 'vitest run', check: 'npm test' }) }),
+      'npm run typecheck && npm run lint',
+    );
+    assert.equal(await resolve({ 'package.json': npm({ lint: 'eslint', test: 'vitest run' }) }), 'npm run lint');
+    // Only the suite: no npm gate (never `npm test`); a lighter stack or check.sh is used, else nothing.
+    assert.equal(await resolve({ 'package.json': npm({ test: 'vitest run', check: 'npm test' }) }), null);
+    assert.equal(await resolve({ 'package.json': npm({ test: 'vitest' }), 'scripts/check.sh': '' }), 'scripts/check.sh');
+    assert.equal(await resolve({ 'pom.xml': '' }), 'mvn -q -o test-compile || mvn -q test-compile');
+    assert.equal(await resolve({ 'Cargo.toml': '', 'scripts/check.sh': '' }), 'cargo check --all-targets --quiet');
+    assert.equal(await resolve({ 'requirements.txt': '' }), 'python -m pytest --collect-only -q');
+    assert.equal(
+      await resolve({ 'pyproject.toml': '[project]\nname = "x"\n', 'scripts/hermes-env.sh': '' }),
+      'scripts/hermes-env.sh python -m pytest --collect-only -q',
+    );
+    assert.equal(
+      await resolve({ 'pyproject.toml': '[tool.ruff]\nline-length = 120\n' }),
+      'python -m pytest --collect-only -q && python -m ruff check .',
+    );
+    assert.equal(await resolve({ 'scripts/check.sh': '' }), 'scripts/check.sh');
+    assert.equal(await resolve({}), null);
+    assert.equal(loadOrchestratorConfig(path.join(root, 'none.json')).checks.tribeiracli, 'npm run typecheck && npm run lint');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('maxConcurrentChecks defaults to 1 and takes a positive override', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'check-slots-'));
+  try {
+    const file = path.join(root, 'orchestrator.json');
+    assert.equal(loadOrchestratorConfig(file).maxConcurrentChecks, 1);
+    writeFileSync(file, JSON.stringify({ maxConcurrentChecks: 3 }));
+    assert.equal(loadOrchestratorConfig(file).maxConcurrentChecks, 3);
+    writeFileSync(file, JSON.stringify({ maxConcurrentChecks: 0 }));
+    assert.equal(loadOrchestratorConfig(file).maxConcurrentChecks, 1);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('one merge check at a time on the workstation, run under nice; the others wait in check', async () => {
+  await withWorkspace(async (ctx) => {
+    const first = await finishedJob(ctx, (worktree) => commitFile(worktree, 'a.txt', 'a', 'a'));
+    const second = await finishedJob(ctx, (worktree) => commitFile(worktree, 'b.txt', 'b', 'b'));
+    // Two repositories' jobs at their check at once (the lane is per repository).
+    orchestratorJobsDb.update(first, { merge_step: 'check' });
+    orchestratorJobsDb.update(second, { merge_step: 'check' });
+    const checks: Array<{ argv: string[]; release: () => void }> = [];
+    const queue = createMergeQueueService({
+      jobs: ctx.jobs, config: () => ctx.config,
+      run: async (command, args, options) => {
+        if (command !== 'nice') return runCommand(command, args, options);
+        await new Promise<void>((release) => checks.push({ argv: [command, ...args], release }));
+        return { code: 0, stdout: '', stderr: '' };
+      },
+    });
+    const firstPass = queue.tick();
+    await eventually(() => checks.length === 1, 'the first check');
+    assert.deepEqual(checks[0].argv, ['nice', '-n', '10', '/bin/bash', '-lc', 'true']);
+    await queue.tick(); // the other job finds no free slot
+    assert.equal(checks.length, 1);
+    assert.deepEqual([ctx.job(first).merge_step, ctx.job(second).merge_step], ['check', 'check']);
+
+    checks[0].release();
+    await firstPass;
+    const secondPass = queue.tick();
+    await eventually(() => checks.length === 2, 'the second check');
+    checks[1].release();
+    await secondPass;
+    assert.ok([first, second].every((id) => ctx.job(id).merge_step !== 'check'));
+  });
+});
+
+test('each merge step\'s start is recorded, and the job view shows how long each took', async () => {
+  await withWorkspace(async (ctx) => {
+    const id = await finishedJob(ctx, (worktree) => commitFile(worktree, 'feature.txt', 'f\n', 'feature'));
+    let clock = Date.now();
+    const queue = createMergeQueueService({ jobs: ctx.jobs, config: () => ctx.config, now: () => clock });
+    await drain(queue, () => ctx.job(id), ['deploy']);
+    clock += 10 * 60_000;
+    await queue.tick();
+    assert.equal(ctx.job(id).merge_step, 'merged');
+
+    const view = ctx.jobs.get(id)!;
+    assert.deepEqual(view.mergeSteps.map((entry) => entry.step), ['queued', 'rebase', 'check', 'check:run', 'push', 'deploy', 'merged']);
+    assert.ok(view.mergeSteps.slice(0, -1).every((entry) => typeof entry.durationMs === 'number' && entry.durationMs >= 0));
+    assert.equal(view.mergeSteps.at(-1)!.durationMs, null);
+
+    const at = (seconds: number) => new Date(Date.UTC(2026, 10, 3, 12, 0, seconds)).toISOString();
+    assert.deepEqual(mergeStepTimings([
+      { step: 'rebase', at: at(0) }, { step: 'check', at: at(5) }, { step: 'check:run', at: at(20) },
+    ], Date.parse(at(50))).map((entry) => entry.durationMs), [5000, 15000, 30000]);
   });
 });

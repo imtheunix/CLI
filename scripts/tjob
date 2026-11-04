@@ -52,6 +52,12 @@ else:
     if mode == "show":
         for k in ("repo_path", "base_branch", "branch", "worktree_path", "session_id", "model", "pushed_sha", "last_error"):
             if j.get(k): print("  %s: %s" % (k, j[k]))
+        def took(ms):
+            if ms is None: return ""
+            m, sec = divmod(int(ms) // 1000, 60)
+            return "%dm%02ds" % (m, sec) if m else "%ds" % sec
+        steps = j.get("mergeSteps") or []
+        if steps: print("  steps: " + ", ".join(("%s %s" % (e["step"], took(e.get("durationMs")))).strip() for e in steps))
 ' "$1"
 }
 
