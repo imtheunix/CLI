@@ -1,6 +1,6 @@
 import { scheduledMessagesDb, sessionDraftsDb } from '@/modules/database/index.js';
-import type { QueuedSessionMessageRecord, ScheduledMessageRow } from '@/modules/database/index.js';
-import { chatRunRegistry, runDetachedChatTurn } from '@/modules/websocket/index.js';
+import type { ScheduledMessageRow } from '@/modules/database/index.js';
+import { chatRunRegistry, dispatchQueuedMessages, runDetachedChatTurn } from '@/modules/websocket/index.js';
 import type { ProviderRuntimeGateway } from '@/modules/websocket/index.js';
 
 /**
@@ -14,16 +14,7 @@ const POLL_INTERVAL_MS = 1_000;
 
 let pollTimer: ReturnType<typeof setInterval> | null = null;
 let dispatchInFlight = false;
-// Claims remove the selected item before abort() settles. Hold this session
-// until its replacement run is reserved, so another poll cannot overtake it.
-const preparingQueuedSessions = new Set<string>();
-
-type StoredQueuedMessage = {
-  content: string;
-  options: Record<string, unknown>;
-  attachments: unknown[];
-};
-
+let unsubscribeCompletion: (() => void) | null = null;
 function readOptions(raw: string): Record<string, unknown> {
   try {
     const parsed: unknown = JSON.parse(raw);
@@ -35,118 +26,6 @@ function readOptions(raw: string): Record<string, unknown> {
   }
 }
 
-function readQueuedMessage(value: unknown): StoredQueuedMessage | null {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    return null;
-  }
-  const record = value as Record<string, unknown>;
-  const content = typeof record.content === 'string' ? record.content : '';
-  const attachments = Array.isArray(record.attachments)
-    ? record.attachments
-    : Array.isArray(record.images)
-      ? record.images
-      : [];
-  if (!content.trim() && attachments.length === 0) {
-    return null;
-  }
-  const options = record.options && typeof record.options === 'object' && !Array.isArray(record.options)
-    ? record.options as Record<string, unknown>
-    : {};
-  return { content, options, attachments };
-}
-
-async function sendClaimedQueuedMessage(
-  candidate: QueuedSessionMessageRecord,
-  runtime: ProviderRuntimeGateway,
-  onReserved: () => void,
-): Promise<void> {
-  const queue = candidate.queuedMessage as { items?: unknown[]; forceId?: string };
-  const message = readQueuedMessage(Array.isArray(queue?.items)
-    ? queue.items.find((item, index) => queue.forceId ? (item as { id?: string })?.id === queue.forceId : index === 0)
-    : candidate.queuedMessage);
-  if (!message) {
-    sessionDraftsDb.deleteEmptyDraft(candidate.userId, candidate.sessionId);
-    return;
-  }
-
-  // "Send now" stops the running turn, as Stop does, and sends the message as
-  // the next user turn. Mid-turn input is not an option: Claude reads it only
-  // at its next step and never shows it as a turn, so the agent kept working
-  // as if nothing had been sent; Codex and OpenCode cannot take it at all.
-  const result = await runDetachedChatTurn(
-    {
-      sessionId: candidate.sessionId,
-      userId: candidate.userId,
-      interruptActiveRun: Boolean(queue?.forceId),
-      onReserved,
-      content: message.content,
-      options: { ...message.options, attachments: message.attachments },
-    },
-    { runtime },
-  );
-
-  // The registry check and run reservation are separate operations. If a run
-  // wins that tiny race, put the turn back so the next poll tries again.
-  if (!result.started && result.error?.includes('already in progress for this session.')) {
-    sessionDraftsDb.restoreQueuedMessage(candidate);
-    return;
-  }
-  if (!result.started || result.error) {
-    sessionDraftsDb.restoreQueuedMessage(candidate);
-    sessionDraftsDb.pauseQueue(candidate.sessionId);
-  }
-  sessionDraftsDb.deleteEmptyDraft(candidate.userId, candidate.sessionId);
-}
-
-/**
- * Whether a queued turn has to keep waiting for the session.
- *
- * A turn that ends with background work still going (a backgrounded command,
- * agent or workflow) is marked completed, but its CLI process stays open so
- * that work can report back. A new turn replaces that process and stops the
- * work, which is why the composer asks before an interactive send. A queued
- * turn was promised to go "when this finishes", so it waits for that work too.
- */
-function isSessionBusy(sessionId: string, runtime: ProviderRuntimeGateway): boolean {
-  return chatRunRegistry.isProcessing(sessionId) || runtime.hasBackgroundWork(sessionId);
-}
-
-/** Sends every persisted queued turn whose session is currently idle. */
-export async function dispatchQueuedMessages(runtime: ProviderRuntimeGateway): Promise<number> {
-  const candidates = sessionDraftsDb.listQueuedMessages();
-  let claimed = 0;
-
-  await Promise.all(candidates.map(async (candidate) => {
-    if (preparingQueuedSessions.has(candidate.sessionId)) return;
-    const queue = candidate.queuedMessage as { items?: unknown[]; paused?: boolean; forceId?: string };
-    if (queue?.paused || (Array.isArray(queue?.items) && !queue.items.length)) return;
-    if (!queue?.forceId && isSessionBusy(candidate.sessionId, runtime)) {
-      return;
-    }
-    if (!sessionDraftsDb.claimQueuedMessage(candidate)) {
-      return;
-    }
-    claimed += 1;
-    preparingQueuedSessions.add(candidate.sessionId);
-    let released = false;
-    const release = () => {
-      if (released) return;
-      released = true;
-      preparingQueuedSessions.delete(candidate.sessionId);
-    };
-    try {
-      await sendClaimedQueuedMessage(candidate, runtime, release);
-    } catch (error) {
-      sessionDraftsDb.restoreQueuedMessage(candidate);
-      sessionDraftsDb.pauseQueue(candidate.sessionId);
-      console.error('[QueuedMessages] Send failed', error);
-    } finally {
-      release();
-    }
-  }));
-
-  return claimed;
-}
 
 async function sendClaimedMessage(
   row: ScheduledMessageRow,
@@ -238,6 +117,9 @@ export function initializeScheduledMessageDispatcher(runtime: ProviderRuntimeGat
       });
   };
 
+  unsubscribeCompletion = chatRunRegistry.onRunCompleted(() => {
+    queueMicrotask(() => void dispatchQueuedMessages(runtime).catch((error: unknown) => console.error('[QueuedMessages]', error)));
+  });
   pollTimer = setInterval(poll, POLL_INTERVAL_MS);
   // Never keep the process alive just to poll for scheduled messages.
   pollTimer.unref?.();
@@ -247,8 +129,13 @@ export function initializeScheduledMessageDispatcher(runtime: ProviderRuntimeGat
 }
 
 export function closeScheduledMessageDispatcher(): void {
+  unsubscribeCompletion?.();
+  unsubscribeCompletion = null;
   if (pollTimer) {
     clearInterval(pollTimer);
     pollTimer = null;
   }
 }
+
+// Compatibility for the module's queue regression tests.
+export { dispatchQueuedMessages } from '@/modules/websocket/index.js';

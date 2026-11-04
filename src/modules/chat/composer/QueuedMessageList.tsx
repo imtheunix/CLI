@@ -1,10 +1,19 @@
 import { useEffect, useReducer, useState } from 'react';
 
+import { useWebSocket } from '@/shared/context/WebSocketContext';
 import SendToLoadBalancerButton from '@/modules/chat/composer/SendToLoadBalancerButton';
-import { hasChatDraftSaveError, isQueuePaused, readQueuedMessages, replaceQueuedMessages, subscribeToChatDrafts } from '@/shared/chatDrafts';
+import { hydrateChatDrafts, persistQueuedMessages, hasChatDraftSaveError, isQueuePaused, readQueuedMessages, replaceQueuedMessages, subscribeToChatDrafts } from '@/shared/chatDrafts';
 
 /** Used by ChatComposer to edit and control durable per-session queued turns. */
 export default function QueuedMessageList({ scope, busy }: { scope: string; busy: boolean }) {
+  const { sendMessage, subscribe } = useWebSocket();
+  useEffect(() => subscribe((event) => {
+    if (event.sessionId !== scope) return;
+    if (event.kind === 'queue_updated') void hydrateChatDrafts();
+    if (event.kind === 'queue_interrupt_required' && window.confirm('This provider must stop the running turn to send this message. Send now?')) {
+      sendMessage({ type: 'chat.queue-send', sessionId: scope, messageId: event.messageId, allowInterrupt: true });
+    }
+  }), [scope, sendMessage, subscribe]);
   // The store owns the queue; this counter repaints after local or remote changes.
   const [, refresh] = useReducer((value: number) => value + 1, 0);
   useEffect(() => subscribeToChatDrafts(refresh), []);
@@ -41,10 +50,13 @@ export default function QueuedMessageList({ scope, busy }: { scope: string; busy
                 type="button"
                 className={buttonClass}
                 title={busy
-                  ? 'Stops the running turn, as Stop does, and sends this message as the next turn.'
+                  ? 'Delivers this message to the running turn at its next opportunity.'
                   : 'Sends this message now, ahead of the rest of the queue.'}
-                onClick={() => {
-                  replaceQueuedMessages(scope, items, false, item.id);
+                onClick={async () => {
+                  if (!await persistQueuedMessages(scope)) return;
+                  if (!sendMessage({ type: 'chat.queue-send', sessionId: scope, messageId: item.id })) {
+                    setNote({ text: 'Not connected. Message remains queued; reconnect and try again.', error: true });
+                  }
                 }}
               >Send now</button>
               <SendToLoadBalancerButton

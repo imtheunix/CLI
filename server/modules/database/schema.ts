@@ -367,6 +367,14 @@ ${USER_PREFERENCES_TABLE_SCHEMA_SQL}
 
 ${SESSION_DRAFTS_TABLE_SCHEMA_SQL}
 
+-- Delivery receipts prevent stale browser drafts from resurrecting consumed input.
+CREATE TABLE IF NOT EXISTS queued_message_receipts (
+  user_id INTEGER NOT NULL,
+  session_id TEXT NOT NULL,
+  message_id TEXT NOT NULL,
+  PRIMARY KEY (user_id, session_id, message_id)
+);
+
 ${SUPERSEDED_PROVIDER_SESSIONS_TABLE_SCHEMA_SQL}
 
 ${RUNNING_TURNS_TABLE_SCHEMA_SQL}

@@ -295,6 +295,14 @@ export function replaceQueuedMessages(scope: string, items: StoredQueuedMessage[
   flushServerWritesNow();
 }
 
+/** Used by the queue's socket action to order delivery after pending durable edits. */
+export async function persistQueuedMessages(scope: string): Promise<boolean> {
+  if (failedScopes.has(scope)) pendingScopes.add(scope);
+  flushServerWritesNow();
+  await serverWrites.get(scope);
+  return !failedScopes.has(scope);
+}
+
 /** Appends a durable message; never replaces an earlier queued prompt. */
 export function writeQueuedMessage(scope: string, message: StoredQueuedMessage): void {
   if (!message.content.trim() && !(message.attachments ?? message.images)?.length) return;
