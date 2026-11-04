@@ -46,7 +46,7 @@ import {
   getReportedClaudeContextWindow,
   rememberClaudeContextWindow
 } from '@/modules/providers/services/provider-token-usage.service.js';
-import { abortTurn } from '@/modules/detached-turns/index.js';
+import { abortTurn, retireDetachedSessionTurns, spawnRelayedTurn } from '@/modules/detached-turns/index.js';
 import { createCompleteMessage, createNormalizedMessage } from '@/shared/utils.js';
 
 const activeSessions = new Map();
@@ -505,6 +505,68 @@ function spawnLocalClaudeProcess({ command, args, cwd, env, signal }, onStderr) 
     child.stderr.on('data', (chunk) => onStderr(chunk.toString()));
   }
   return child;
+}
+
+/**
+ * Spawns the CLI in a relayed systemd unit so the turn outlives a server
+ * restart (detached-turns reattaches to it), or directly when systemd-run is
+ * unavailable or there is no app session id to record the turn under.
+ * @param {Object} spawnOptions - The SDK's SpawnOptions
+ * @param {Function|undefined} onStderr - The SDK options' stderr callback
+ * @param {{ sessionId: string|null, jobId?: string|null }} turn - What the turn is recorded under
+ * @returns {import('child_process').ChildProcess | import('@/modules/detached-turns/index.js').RelayedTurnProcess} The spawned CLI, or the relayed handle on it
+ */
+export function spawnDetachableClaudeProcess(spawnOptions, onStderr, turn) {
+  const relayed = turn.sessionId
+    ? spawnRelayedTurn({
+      command: spawnOptions.command,
+      args: spawnOptions.args,
+      cwd: spawnOptions.cwd || process.cwd(),
+      env: spawnOptions.env,
+      sessionId: turn.sessionId,
+      backend: 'claude',
+      jobId: turn.jobId ?? null,
+      protocol: 'claude',
+      signal: spawnOptions.signal,
+    })
+    : null;
+  if (!relayed) {
+    return spawnLocalClaudeProcess(spawnOptions, onStderr);
+  }
+  if (onStderr) {
+    relayed.stderr.on('data', (chunk) => onStderr(chunk.toString()));
+  } else {
+    relayed.stderr.resume();
+  }
+  return relayed;
+}
+
+/**
+ * Line parser for a reattached Claude turn's log (stream-json from the CLI):
+ * the same transform and normalization the live loop applies.
+ * @param {(message: Object, sessionId: string|null) => Array<Object>} normalizeMessage
+ * @returns {(line: string, writer?: { send: (message: Object) => void }, sessionId?: string|null) => void}
+ */
+export function createClaudeTurnLineParser(normalizeMessage) {
+  return (line, writer, sessionId = null) => {
+    if (!writer) return;
+    let message;
+    try {
+      message = JSON.parse(line);
+    } catch {
+      return;
+    }
+    if (!message || typeof message !== 'object' || typeof message.type !== 'string') return;
+    if (message.type.startsWith('control_') || message.type === 'keep_alive') return;
+    const transformed = transformMessage(message);
+    for (const msg of normalizeMessage(transformed, sessionId)) {
+      if (transformed.parentToolUseId && !msg.parentToolUseId) {
+        msg.parentToolUseId = transformed.parentToolUseId;
+      }
+      if (isSubagentPromptEcho(msg)) continue;
+      writer.send(msg);
+    }
+  };
 }
 
 /**
@@ -1129,6 +1191,11 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
   if (sessionKey() && getSession(sessionKey())) {
     await retireSessionProcess(sessionKey(), getSession(sessionKey()));
   }
+  // The same for a process a previous server instance left running: it was
+  // reattached after a restart, so this process only holds its unit.
+  if (sessionId) {
+    await retireDetachedSessionTurns(sessionId, 'claude');
+  }
 
   // Arms (or re-arms) the idle countdown that eventually closes stdin.
   const scheduleRelease = () => {
@@ -1299,10 +1366,13 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
     let spawnedProcess = null;
     const spawnProcess = sdkOptions.spawnClaudeCodeProcess
       ?? context.spawnProcess
-      ?? ((spawnOptions) => spawnLocalClaudeProcess(spawnOptions, sdkOptions.stderr));
+      ?? ((spawnOptions) => spawnDetachableClaudeProcess(spawnOptions, sdkOptions.stderr, {
+        sessionId: sessionId || null,
+        jobId: typeof options.jobId === 'string' ? options.jobId : null,
+      }));
     sdkOptions.spawnClaudeCodeProcess = (spawnOptions) => {
       spawnedProcess = spawnProcess(spawnOptions);
-      console.log(`[Claude SDK] Spawned Claude Code for session ${sessionKey() || 'NEW'} (pid ${spawnedProcess?.pid ?? 'unknown'})`);
+      console.log(`[Claude SDK] Spawned Claude Code for session ${sessionKey() || 'NEW'} (${spawnedProcess?.unitName ? `unit ${spawnedProcess.unitName}` : `pid ${spawnedProcess?.pid ?? 'unknown'}`})`);
       return spawnedProcess;
     };
     let heldPrompt = createHeldPromptStream(promptMessages);
@@ -1627,11 +1697,12 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
  * @returns {boolean} True if session was aborted, false if not found
  */
 async function abortClaudeSDKSession(sessionId) {
-  const detachedAborted = abortTurn(sessionId);
   const session = getSession(sessionId);
 
   if (!session) {
-    console.log(`Session ${sessionId} not found`);
+    // A turn reattached after a restart has no SDK query here, only its unit.
+    const detachedAborted = abortTurn(sessionId);
+    if (!detachedAborted) console.log(`Session ${sessionId} not found`);
     return detachedAborted;
   }
 
