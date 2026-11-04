@@ -549,8 +549,15 @@ export function spawnDetachableClaudeProcess(spawnOptions, onStderr, turn) {
  * The provider session id goes to the writer as the live loop's does, which
  * records it on the app session even for a turn that finished while the
  * server was down.
+ *
+ * Like the live loop's completeTurn, the first `result` reports the turn
+ * complete while the CLI may stay up in its background hold; the turn's
+ * background tasks are tracked (listClaudeSDKBackgroundWork) until `finish`.
+ * `prime` takes the part of the log the previous server already delivered:
+ * it re-establishes the session id, model and background tasks without
+ * sending any of it again, and completes the run if that part already ended
+ * with a `result`.
  * @param {(message: Object, sessionId: string|null) => Array<Object>} normalizeMessage
- * @returns {(line: string, writer?: { send: (message: Object) => void, setSessionId?: (id: string) => void, getSessionId?: () => string|null }, sessionId?: string|null) => void}
  */
 export function createClaudeTurnLineParser(normalizeMessage) {
   let capturedSessionId = null;
@@ -558,16 +565,22 @@ export function createClaudeTurnLineParser(normalizeMessage) {
   let mainThreadModel = null;
   let assistantBudgetSent = false;
   let lastSentTokenBudget = null;
-  return (line, writer, sessionId = null) => {
+  let completeSent = false;
+
+  const parse = (line) => {
     let message;
     try {
       message = JSON.parse(line);
     } catch {
-      return;
+      return null;
     }
-    if (!message || typeof message !== 'object' || typeof message.type !== 'string') return;
-    if (message.type.startsWith('control_') || message.type === 'keep_alive') return;
+    if (!message || typeof message !== 'object' || typeof message.type !== 'string') return null;
+    if (message.type.startsWith('control_') || message.type === 'keep_alive') return null;
+    return message;
+  };
 
+  // What every line does, delivered or not: the session id, the model, the tasks.
+  const track = (message, writer, sessionId) => {
     if (typeof message.session_id === 'string' && message.session_id && !capturedSessionId) {
       capturedSessionId = message.session_id;
       reportedContextWindow = getReportedClaudeContextWindow(capturedSessionId) ?? null;
@@ -578,7 +591,30 @@ export function createClaudeTurnLineParser(normalizeMessage) {
         writer?.send(createNormalizedMessage({ kind: 'session_created', newSessionId: capturedSessionId, sessionId: capturedSessionId, provider: 'claude' }));
       }
     }
-    const sid = capturedSessionId || writer?.getSessionId?.() || sessionId || null;
+    if (
+      message.type === 'assistant'
+      && !message.parent_tool_use_id
+      && typeof message.message?.model === 'string'
+      && message.message.model !== '<synthetic>'
+    ) {
+      mainThreadModel = message.message.model;
+    }
+    // Keyed like the live loop: by the app session.
+    const key = sessionId || capturedSessionId;
+    if (key) backgroundWork.apply(key, message);
+    return capturedSessionId || writer?.getSessionId?.() || sessionId || null;
+  };
+
+  const complete = (writer, sid) => {
+    if (completeSent) return;
+    completeSent = true;
+    writer?.send(createCompleteMessage({ provider: 'claude', sessionId: sid, exitCode: 0 }));
+  };
+
+  const handleLine = (line, writer, sessionId) => {
+    const message = parse(line);
+    if (!message) return;
+    const sid = track(message, writer, sessionId);
 
     const transformed = transformMessage(message);
     for (const msg of normalizeMessage(transformed, sid)) {
@@ -589,14 +625,6 @@ export function createClaudeTurnLineParser(normalizeMessage) {
       writer?.send(msg);
     }
 
-    if (
-      message.type === 'assistant'
-      && !message.parent_tool_use_id
-      && typeof message.message?.model === 'string'
-      && message.message.model !== '<synthetic>'
-    ) {
-      mainThreadModel = message.message.model;
-    }
     const turnContextWindow = readReportedContextWindow(message, mainThreadModel);
     if (turnContextWindow) {
       reportedContextWindow = turnContextWindow;
@@ -613,7 +641,32 @@ export function createClaudeTurnLineParser(normalizeMessage) {
       writer?.send(createNormalizedMessage({ kind: 'status', text: 'token_budget', tokenBudget, sessionId: sid, provider: 'claude' }));
     }
     rememberClaudeRateLimit(message);
+
+    if (message.type === 'result') complete(writer, sid);
   };
+
+  handleLine.prime = (lines, writer, sessionId) => {
+    let sid = null;
+    let idleAfterResult = false;
+    for (const line of lines) {
+      const message = parse(line);
+      if (!message) continue;
+      sid = track(message, writer, sessionId);
+      // Its budget reached the client already: the result's summed bill is no stand-in for it.
+      if (message.type === 'assistant') assistantBudgetSent = true;
+      if (message.type === 'result') idleAfterResult = true;
+      else if (message.type !== 'system') idleAfterResult = false;
+    }
+    // Held after its `result` (background work): the turn is over for the client.
+    if (idleAfterResult) complete(writer, sid);
+  };
+
+  handleLine.finish = (sessionId) => {
+    const key = sessionId || capturedSessionId;
+    if (key) backgroundWork.clear(key);
+  };
+
+  return handleLine;
 }
 
 /**

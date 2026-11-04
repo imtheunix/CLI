@@ -9,7 +9,9 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import { closeConnection, initializeDatabase, runningTurnsDb, sessionsDb, userDb } from '@/modules/database/index.js';
-import { createClaudeTurnLineParser, spawnDetachableClaudeProcess } from '@/modules/providers/list/claude/claude-runtime.provider.js';
+import { createClaudeTurnLineParser, listClaudeSDKBackgroundWork, spawnDetachableClaudeProcess } from '@/modules/providers/list/claude/claude-runtime.provider.js';
+import { createCodexTurnLineParser } from '@/modules/providers/list/codex/codex-runtime.provider.js';
+import { chatRunRegistry } from '@/modules/websocket/index.js';
 import type { NormalizedMessage } from '@/shared/types.js';
 
 import {
@@ -22,6 +24,7 @@ import {
   registerBackendLineParser,
   resetSystemdRunCache,
   retireDetachedSessionTurns,
+  readDeliveredOffset,
   readRelayExit,
   spawnRelayedTurn,
   tailLogFile,
@@ -57,7 +60,8 @@ const FAKE_CLAUDE = `#!/usr/bin/env node
 const fs = require('node:fs');
 if (process.env.FAKE_PID_FILE) fs.writeFileSync(process.env.FAKE_PID_FILE, String(process.pid));
 const say = (m) => process.stdout.write(JSON.stringify(m) + '\\n');
-const text = (t) => say({ type: 'assistant', session_id: 'native-1', message: { role: 'assistant', content: [{ type: 'text', text: t }] } });
+let sid = 'native-1';
+const text = (t) => say({ type: 'assistant', session_id: sid, message: { role: 'assistant', content: [{ type: 'text', text: t }] } });
 let buffer = '';
 let waitingFor = null;
 process.stdin.on('data', (chunk) => {
@@ -76,9 +80,10 @@ process.stdin.on('data', (chunk) => {
       }, 300);
     } else if (m.type === 'control_response' && m.response.request_id === waitingFor) {
       waitingFor = null;
+      if (process.env.FAKE_QUIET_TAIL) sid = undefined;
       text('tool ' + m.response.response.behavior);
       setTimeout(() => text('part 2'), Number(process.env.FAKE_TAIL_MS || 300));
-      setTimeout(() => say({ type: 'result', subtype: 'success', session_id: 'native-1' }), Number(process.env.FAKE_TAIL_MS || 300) + 100);
+      setTimeout(() => say({ type: 'result', subtype: 'success', session_id: sid }), Number(process.env.FAKE_TAIL_MS || 300) + 100);
     }
   }
 });
@@ -391,6 +396,83 @@ test('a turn held open for background work keeps stdin open after the server die
   });
 });
 
+test('a brand-new session reattached past its init keeps its provider id: the delivered prefix primes the parser', { skip: !systemd }, async () => {
+  await withScratchEnvironment(async ({ root, writeScript }) => {
+    process.env.FAKE_QUIET_TAIL = '1';
+    try {
+      const fakeClaude = writeScript('fake-claude.js', FAKE_CLAUDE);
+      registerTextParser();
+      sessionsDb.createAppSession('session-prime', 'claude', root);
+      const { unitName, logPath } = await startTurnThenKillServer(root, fakeClaude, 'session-prime');
+      const delivered = readFileSync(logPath, 'utf8').slice(0, readDeliveredOffset(logPath));
+      assert.match(delivered, /"session_id":"native-1"/, 'the session id was delivered before the kill');
+
+      await reattachActiveTurns({}); // the real chat run registry
+      await eventually(() => runningTurnsDb.getTurn(unitName)?.status === 'completed', 'the reattached turn to end');
+      assert.doesNotMatch(readFileSync(logPath, 'utf8').slice(delivered.length), /native-1/, 'nothing after the offset names the session');
+      assert.equal(sessionsDb.getSessionById('session-prime')?.provider_session_id, 'native-1', 'the provider session id is recorded');
+      assert.equal(chatRunRegistry.getRun('session-prime')?.status, 'completed');
+    } finally {
+      delete process.env.FAKE_QUIET_TAIL;
+    }
+  });
+});
+
+test('a reattached Claude turn held for background work is complete for the client at once, and its tasks are tracked until the hold ends', { skip: !systemd }, async () => {
+  await withScratchEnvironment(async ({ root, writeScript }) => {
+    process.env.FAKE_BG_MS = '4000';
+    try {
+      const fakeClaude = writeScript('fake-claude-bg.js', FAKE_CLAUDE_BACKGROUND);
+      registerTextParser();
+      sessionsDb.createAppSession('session-hold', 'claude', root);
+      const { unitName, logPath } = await startTurnThenKillServer(root, fakeClaude, 'session-hold');
+      assert.match(readFileSync(logPath, 'utf8').slice(0, readDeliveredOffset(logPath)), /"type":"result"/, 'the result was delivered before the kill');
+
+      await reattachActiveTurns({}); // the real chat run registry
+      assert.equal(chatRunRegistry.getRun('session-hold')?.status, 'completed', 'the run is complete for the client');
+      assert.ok(isTurnAlive(unitName), 'while the unit is still held');
+      const held = listClaudeSDKBackgroundWork().find((work) => work.sessionId === 'session-hold');
+      assert.deepEqual(held?.tasks.map((task) => task.taskId), ['task-1'], 'the background task is tracked');
+
+      await eventually(() => runningTurnsDb.getTurn(unitName)?.status === 'completed', 'the hold to end', 15_000);
+      assert.equal(listClaudeSDKBackgroundWork().find((work) => work.sessionId === 'session-hold'), undefined, 'cleared once the unit is gone');
+    } finally {
+      delete process.env.FAKE_BG_MS;
+    }
+  });
+});
+
+test('priming from the delivered prefix: Codex recovers its thread id; Claude restores its model and sends no stale budget', () => {
+  const sent: NormalizedMessage[] = [];
+  let providerId: string | null = null;
+  const writer = {
+    send: (msg: NormalizedMessage) => sent.push(msg),
+    setSessionId: (id: string) => { providerId = id; },
+    getSessionId: () => providerId,
+  };
+  const codex = createCodexTurnLineParser((_raw, sid) => [{ kind: 'text', content: 'x', sessionId: sid } as NormalizedMessage]);
+  codex.prime?.([JSON.stringify({ type: 'thread.started', thread_id: 'thread-9' }), '{"type":"item.completed","item":{"type":"agent_message","text":"old"}}'], writer as never);
+  codex(JSON.stringify({ type: 'item.completed', item: { id: 'i2', type: 'agent_message', text: 'new' } }), writer as never, 'app-codex');
+  assert.equal(providerId, 'thread-9');
+  assert.equal((sent.find((msg) => msg.kind === 'session_created') as { newSessionId?: string } | undefined)?.newSessionId, 'thread-9');
+  assert.equal(sent.at(-1)?.sessionId, 'thread-9');
+
+  sent.length = 0;
+  providerId = null;
+  const usage = { input_tokens: 10, output_tokens: 5 };
+  const claude = createClaudeTurnLineParser(() => []);
+  claude.prime?.([
+    JSON.stringify({ type: 'system', subtype: 'init', session_id: 'native-9' }),
+    JSON.stringify({ type: 'assistant', session_id: 'native-9', message: { role: 'assistant', model: 'claude-x', content: [], usage } }),
+  ], writer as never, 'app-claude');
+  assert.equal(providerId, 'native-9');
+  claude(JSON.stringify({ type: 'result', subtype: 'success', session_id: 'native-9', usage: { input_tokens: 999, output_tokens: 999 } }), writer as never, 'app-claude');
+  assert.ok(!sent.some((msg) => msg.kind === 'status' && (msg as { text?: string }).text === 'token_budget'), 'the result\'s summed bill is not published as the context budget');
+  assert.equal(sent.filter((msg) => msg.kind === 'complete').length, 1, 'the result completes the turn once');
+  claude(JSON.stringify({ type: 'result', subtype: 'success', session_id: 'native-9' }), writer as never, 'app-claude');
+  assert.equal(sent.filter((msg) => msg.kind === 'complete').length, 1, 'and only once');
+});
+
 test('the log tail decodes a multi-byte character split across read chunks', async () => {
   await withScratchEnvironment(async ({ root }) => {
     const logPath = path.join(root, 'utf8.log');
@@ -490,7 +572,7 @@ test('the Codex wrapper runs the CLI in a unit that outlives the wrapper', { ski
     assert.equal(await retireDetachedSessionTurns('session-codex', 'codex'), 0, 'an attached unit is left alone by default');
     assert.equal(await retireDetachedSessionTurns('session-codex', 'codex', { includeAttached: true }), 1);
     await eventually(() => !isTurnAlive(exec3.unitName), 'the superseded unit to be stopped');
-    await new Promise((resolve) => run3.once('exit', resolve));
+    if (run3.exitCode === null && run3.signalCode === null) await new Promise((resolve) => run3.once('exit', resolve));
     assert.doesNotMatch(readFileSync(logPath3, 'utf8'), /echo third/);
   });
 });
