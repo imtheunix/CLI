@@ -31,6 +31,6 @@ export class CodexProvider extends AbstractProvider {
   constructor() {
     super('codex');
     // A turn reattached after a server restart streams through the live path's normalization.
-    registerBackendLineParser('codex', createCodexTurnLineParser((raw, sessionId) => this.sessions.normalizeMessage(raw, sessionId)));
+    registerBackendLineParser('codex', () => createCodexTurnLineParser((raw, sessionId) => this.sessions.normalizeMessage(raw, sessionId)));
   }
 }

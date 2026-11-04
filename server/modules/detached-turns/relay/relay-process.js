@@ -27,12 +27,20 @@ export const END_INPUT_LINE = '{"type":"cli_relay_end_input"}';
 const RELAY_SCRIPT = fileURLToPath(new URL('./turn-relay.js', import.meta.url));
 const POLL_INTERVAL_MS = 50;
 const CONNECT_TIMEOUT_MS = 30_000;
+const READ_CHUNK_BYTES = 64 * 1024;
+const MAX_READ_PER_TICK = 1024 * 1024;
+const OFFSET_SAVE_MS = 250;
 
 // The SDKs kill every child they spawned from a process `exit` handler. For a
 // relayed turn that would stop the unit on every server shutdown, which is
 // the one thing the unit is there to survive, so kills are ignored from here.
 let serverExiting = false;
-process.once('exit', () => { serverExiting = true; });
+/** Attached turns' offset savers, run as the server goes down. */
+const exitSavers = new Set();
+process.once('exit', () => {
+  serverExiting = true;
+  for (const save of exitSavers) save();
+});
 
 /**
  * Files a relayed turn uses next to its log.
@@ -46,7 +54,27 @@ export function relayPaths(logPath) {
     const digest = createHash('sha256').update(logPath).digest('hex').slice(0, 16);
     socketPath = path.join(os.tmpdir(), `cli-turn-${digest}.sock`);
   }
-  return { socketPath, errPath: `${logPath}.err`, exitPath: `${logPath}.exit` };
+  return {
+    socketPath,
+    errPath: `${logPath}.err`,
+    exitPath: `${logPath}.exit`,
+    offsetPath: `${logPath}.offset`,
+  };
+}
+
+/**
+ * How far into the turn log the attached server had read: a server that
+ * reattaches after a restart resumes there instead of replaying the turn.
+ * @param {string} logPath
+ * @returns {number}
+ */
+export function readDeliveredOffset(logPath) {
+  try {
+    const offset = Number(fs.readFileSync(relayPaths(logPath).offsetPath, 'utf8'));
+    return Number.isSafeInteger(offset) && offset > 0 ? offset : 0;
+  } catch {
+    return 0;
+  }
 }
 
 /**
@@ -174,23 +202,47 @@ export function attachRelayedProcess({ unitName, logPath, signal }) {
   proc.stdout = new Readable({ read() {} });
   proc.stderr = new Readable({ read() {} });
 
-  const offsets = new Map([[logPath, 0], [errPath, 0]]);
-  const drain = (file, stream) => {
+  // Read in bounded chunks from where the last read stopped; a tick stops
+  // early when the consumer is not keeping up, and the final drain reads all.
+  const readers = new Map([[logPath, { fd: null, offset: 0 }], [errPath, { fd: null, offset: 0 }]]);
+  const drain = (file, stream, all = false) => {
+    const reader = readers.get(file);
     try {
-      const size = fs.statSync(file).size;
-      const offset = offsets.get(file);
-      if (size <= offset) return;
-      const buffer = Buffer.alloc(size - offset);
-      const fd = fs.openSync(file, 'r');
-      try {
-        fs.readSync(fd, buffer, 0, buffer.length, offset);
-      } finally {
-        fs.closeSync(fd);
+      if (reader.fd === null) reader.fd = fs.openSync(file, 'r');
+      for (let read = 0; all || read < MAX_READ_PER_TICK;) {
+        const chunk = Buffer.allocUnsafe(READ_CHUNK_BYTES);
+        const bytesRead = fs.readSync(reader.fd, chunk, 0, chunk.length, reader.offset);
+        if (bytesRead === 0) return;
+        reader.offset += bytesRead;
+        read += bytesRead;
+        if (!stream.push(chunk.subarray(0, bytesRead)) && !all) return;
       }
-      offsets.set(file, size);
-      stream.push(buffer);
     } catch {
       // not created yet
+    }
+  };
+  // Recorded at most every OFFSET_SAVE_MS, and once more at the end.
+  let savedOffset = 0;
+  let offsetSavedAt = 0;
+  const saveOffset = (force = false) => {
+    const { offset } = readers.get(logPath);
+    if (offset === savedOffset || (!force && Date.now() - offsetSavedAt < OFFSET_SAVE_MS)) return;
+    try {
+      fs.writeFileSync(relayPaths(logPath).offsetPath, String(offset));
+      savedOffset = offset;
+      offsetSavedAt = Date.now();
+    } catch { /* the turns directory went away */ }
+  };
+  // A server going down records exactly how far it got.
+  const saveOffsetOnExit = () => saveOffset(true);
+  exitSavers.add(saveOffsetOnExit);
+  const closeReaders = () => {
+    exitSavers.delete(saveOffsetOnExit);
+    for (const reader of readers.values()) {
+      if (reader.fd !== null) {
+        try { fs.closeSync(reader.fd); } catch { /* closed */ }
+        reader.fd = null;
+      }
     }
   };
 
@@ -198,8 +250,10 @@ export function attachRelayedProcess({ unitName, logPath, signal }) {
     if (finished) return;
     finished = true;
     clearInterval(poller);
-    drain(logPath, proc.stdout);
-    drain(errPath, proc.stderr);
+    drain(logPath, proc.stdout, true);
+    drain(errPath, proc.stderr, true);
+    saveOffset(true);
+    closeReaders();
     proc.stdout.push(null);
     proc.stderr.push(null);
     socket?.destroy();
@@ -214,6 +268,7 @@ export function attachRelayedProcess({ unitName, logPath, signal }) {
   const poller = setInterval(() => {
     drain(logPath, proc.stdout);
     drain(errPath, proc.stderr);
+    saveOffset();
     const status = readRelayExit(logPath);
     if (status) {
       finish(status);

@@ -37,12 +37,12 @@ export {
 // spawnRelayedTurn: used by the Claude runtime's spawn hook to run the CLI in a relayed unit
 export { prepareDetachedExec, retireDetachedSessionTurns, spawnRelayedTurn } from './services/detached-runner.service.js';
 // readRelayExit: the exit status a relayed turn recorded (restart tests)
-export { readRelayExit } from './relay/relay-process.js';
+export { readDeliveredOffset, readRelayExit } from './relay/relay-process.js';
 
 // reattachActiveTurns: used by orchestrator.module.ts on server startup to reconnect to turns across restarts
 export { reattachActiveTurns } from './services/detached-runner.service.js';
 
-// registerBackendLineParser: used by providers (agy, opencode) to register stream line parsers
+// registerBackendLineParser: used by providers (claude, codex) to register per-turn stream line parser factories
 export { registerBackendLineParser } from './services/detached-runner.service.js';
 
 // spawnDetachedTurn: used by providers (agy, opencode) to run agent turns detached from cloudcli service
