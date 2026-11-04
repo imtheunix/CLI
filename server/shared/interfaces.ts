@@ -37,6 +37,8 @@ export interface IProviderRuntime {
     context: ProviderRuntimeContext,
   ): Promise<unknown>;
   abort(sessionId: string): boolean | Promise<boolean>;
+  /** Used by the runtime dispatcher to steer an open query without cancelling its tools. */
+  inject?(sessionId: string, command: string, options: AnyRecord): Promise<boolean>;
   permissions?: ProviderRuntimePermissionGateway;
   /**
    * Sessions with background tasks still outstanding, whether or not their

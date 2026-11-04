@@ -18,10 +18,10 @@ type Frame = Record<string, unknown>;
 /**
  * The reported bug end to end through a real websocket: a turn started from
  * the composer is still working, a queued message gets "Send now", and the
- * running turn must end and the message go out as the next turn — then Stop
+ * running turn receives input without ending — then Stop
  * must stop that turn too.
  */
-test('Send now on a busy session stops the running turn and sends the queued message next; Stop stops it', { timeout: 10_000 }, async () => {
+test('Send now over the socket steers a busy Claude session; Stop still interrupts', { timeout: 10_000 }, async () => {
   const directory = await mkdtemp(path.join(tmpdir(), 'send-now-websocket-'));
   const previousPath = process.env.DATABASE_PATH;
   closeConnection();
@@ -36,6 +36,10 @@ test('Send now on a busy session stops the running turn and sends the queued mes
     hasRuntime: () => true, hasBackgroundWork: () => false,
     getPendingApprovalsForSession: () => [], resolveToolApproval: () => {},
     stopBackgroundTask: async () => false,
+    inject: async (_provider, sessionId, command) => {
+      chatRunRegistry.getRun(sessionId)?.writer.send({ kind: 'text', role: 'user', provider: 'claude', content: command });
+      return true;
+    },
     abort: async (_provider, sessionId) => { aborted.push(sessionId); return true; },
     run: async (_provider, content, options, writer) => {
       started.push(content);
@@ -88,23 +92,20 @@ test('Send now on a busy session stops the running turn and sends the queued mes
       text: '',
       queuedMessage: { items: [{ id: 'q', content: 'do this instead' }], paused: false, forceId: 'q' },
     });
-    // Resolves when the turn it starts settles, which is only after the Stop below.
-    const dispatched = dispatchQueuedMessages(runtime);
+    desktop.client.send(JSON.stringify({ type: 'chat.queue-send', sessionId: 'session', messageId: 'q' }));
 
     for (const browser of [desktop, phone]) {
-      await waitForFrame(browser, (frame) => frame.content === 'working on: do this instead');
+      await waitForFrame(browser, (frame) => frame.content === 'do this instead');
       const kinds = browser.frames
         .filter((frame) => frame.kind === 'complete' || frame.kind === 'text')
         .map((frame) => frame.kind === 'complete' ? `complete${frame.aborted ? ' (aborted)' : ''}` : `${frame.role ?? 'assistant'}: ${frame.content}`);
       assert.deepEqual(kinds, [
         'assistant: working on: long task',
-        'complete (aborted)',
         'user: do this instead',
-        'assistant: working on: do this instead',
-      ], 'the running turn ends before the queued message goes out as the next turn');
+      ], 'the injected message follows the active turn without a completion');
     }
-    assert.deepEqual(started, ['long task', 'do this instead']);
-    assert.deepEqual(aborted, ['session']);
+    assert.deepEqual(started, ['long task']);
+    assert.deepEqual(aborted, []);
     assert.equal(sessionDraftsDb.getDrafts(Number(user.id))[0]?.queuedMessage ?? null, null, 'the item left the queue');
 
     // Stop from the phone ends the turn Send now started.
@@ -113,8 +114,8 @@ test('Send now on a busy session stops the running turn and sends the queued mes
     await waitForFrame(phone, (frame) => phone.frames.indexOf(frame) >= before && frame.kind === 'complete');
     assert.equal(phone.frames.slice(before).find((frame) => frame.kind === 'complete')?.aborted, true);
     assert.equal(chatRunRegistry.isProcessing('session'), false);
-    assert.deepEqual(aborted, ['session', 'session']);
-    assert.equal(await dispatched, 1);
+    assert.deepEqual(aborted, ['session']);
+    assert.equal(await dispatchQueuedMessages(runtime), 0);
   } finally {
     clients.forEach((client) => client.terminate());
     server.closeAllConnections();

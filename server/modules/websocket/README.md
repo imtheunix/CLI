@@ -273,3 +273,32 @@ To add a new websocket route:
 3. Add a new pathname branch in the router.
 4. Wire dependency injection from `server/index.ts`.
 5. Keep `index.ts` as barrel-only export surface.
+
+### Queued input delivery (2026-11-03)
+
+`chat.queue-send { sessionId, messageId, allowInterrupt? }` requests delivery of
+an already-persisted queue item. The socket and timer use the same atomic claim
+and session preparation lock. Delivery receipts filter stale draft saves, so a
+reload or slow HTTP write cannot put a consumed message back in the queue.
+`queue_updated` asks the client to hydrate its queue. Unsupported providers
+reply `queue_interrupt_required`; only the confirmed retry sets
+`allowInterrupt: true`.
+
+The installed Claude Agent SDK 0.3.165 accepts an `AsyncIterable<SDKUserMessage>`
+(`sdk.d.ts`, `query` / `streamInput`). Its `sdk.mjs` implementation writes each
+input as it arrives rather than waiting for the previous result. The installed
+CLI accepts `--replay-user-messages` with streaming JSON input/output. Claude's
+runtime feeds a held, pushable iterable with `priority: 'next'` messages; replay
+user events give the live transcript its delivery order and provider UUIDs.
+A result received before pending user echoes keeps stdin open. Initial prompt
+echoes are suppressed because the composer or detached sender already showed
+that prompt.
+
+The current Codex `thread.runStreamed`, OpenCode command subprocess, and agy
+`-p` subprocess adapters expose no live input method. Their confirmed fallback
+asks the runtime to interrupt before aborting its signal, then waits for the
+old runtime promise to settle before reserving its replacement. Esc/Stop keeps
+its existing immediate cancellation behavior.
+
+Regression milestone: 43 focused server tests and 15 queue/load-balancer client
+tests passed. Mem0 tools were unavailable in this job session.

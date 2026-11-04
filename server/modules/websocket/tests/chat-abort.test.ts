@@ -73,3 +73,52 @@ for (const provider of ['claude', 'codex', 'opencode'] as LLMProvider[]) {
     });
   }
 }
+
+for (const provider of ['codex', 'opencode', 'agy'] as LLMProvider[]) {
+  test(`Send now waits for ${provider} cleanup before starting the replacement`, { timeout: 10_000 }, async () => {
+    const previousPath = process.env.DATABASE_PATH;
+    const directory = await mkdtemp(path.join(tmpdir(), 'chat-fallback-'));
+    closeConnection();
+    process.env.DATABASE_PATH = path.join(directory, 'auth.db');
+    await initializeDatabase();
+    let finishCleanup!: () => void;
+    const cleanup = new Promise<void>((resolve) => { finishCleanup = resolve; });
+    const started: string[] = [];
+    let oldSignal: AbortSignal | undefined;
+    const runtime: ProviderRuntimeGateway = {
+      hasRuntime: () => true, hasBackgroundWork: () => false,
+      getPendingApprovalsForSession: () => [], resolveToolApproval: () => {},
+      stopBackgroundTask: async () => false,
+      abort: async () => { assert.equal(oldSignal?.aborted, false, 'interrupt precedes signal shutdown'); return true; },
+      run: async (_provider, command, options, writer) => {
+        started.push(command);
+        if (command === 'old') {
+          oldSignal = (options.abortController as AbortController).signal;
+          await new Promise<void>((resolve) => oldSignal!.addEventListener('abort', () => resolve(), { once: true }));
+          await cleanup;
+        }
+        writer.send({ kind: 'complete', provider, exitCode: 0 });
+      },
+    };
+    try {
+      const user = userDb.createUser('fallback-test', 'hash');
+      sessionsDb.createAppSession('fallback', provider, directory);
+      const first = runDetachedChatTurn({ sessionId: 'fallback', userId: user.id, content: 'old' }, { runtime });
+      await settle();
+      const replacement = runDetachedChatTurn({ sessionId: 'fallback', userId: user.id, content: 'new', steerActiveRun: true, interruptActiveRun: true }, { runtime });
+      await settle();
+      assert.equal(oldSignal?.aborted, true);
+      assert.deepEqual(started, ['old'], 'replacement waits for runtime settlement');
+      finishCleanup();
+      await first;
+      assert.deepEqual(await replacement, { started: true, error: null });
+      assert.deepEqual(started, ['old', 'new']);
+    } finally {
+      finishCleanup();
+      chatRunRegistry.clearAll(); closeConnection();
+      if (previousPath === undefined) delete process.env.DATABASE_PATH;
+      else process.env.DATABASE_PATH = previousPath;
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+}

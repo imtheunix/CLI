@@ -96,6 +96,18 @@ export const sessionDraftsDb = {
     }));
   },
 
+  /** Persists an explicit socket delivery request so it survives a restart before dispatch. */
+  requestQueuedDelivery(userId: number, scope: string, messageId: string, allowInterrupt: boolean): QueuedSessionMessageRecord | null {
+    const draft = this.getDrafts(userId).find((item) => item.scope === scope);
+    const queue = draft?.queuedMessage as { items?: Array<{ id?: string }> } | undefined;
+    if (!draft || !queue?.items?.some((item) => item.id === messageId)) return null;
+    this.saveDraft(userId, scope, {
+      text: draft.text,
+      queuedMessage: { ...queue, paused: false, forceId: messageId, forceInterrupt: allowInterrupt },
+    });
+    return this.listQueuedMessages().find((item) => item.userId === userId && item.sessionId === scope) ?? null;
+  },
+
   /** Atomically consumes one item; the claim token prevents an edited queue from being sent. */
   claimQueuedMessage(candidate: QueuedSessionMessageRecord): boolean {
     const stored = candidate.queuedMessage as { items?: unknown[]; forceId?: string; paused?: boolean } | null;
@@ -105,11 +117,19 @@ export const sessionDraftsDb = {
       const items = stored.items.filter((_, position) => position !== index);
       remaining = items.length ? JSON.stringify({ items, paused: false }) : null;
     }
-    const result = getConnection().prepare(
-      `UPDATE session_drafts SET queued_message = ?, updated_at = CURRENT_TIMESTAMP
-       WHERE user_id = ? AND draft_scope = ? AND queued_message = ?`
-    ).run(remaining, candidate.userId, candidate.sessionId, candidate.claimToken);
-    return result.changes > 0;
+    const db = getConnection();
+    return db.transaction(() => {
+      const result = db.prepare(
+        `UPDATE session_drafts SET queued_message = ?, updated_at = CURRENT_TIMESTAMP
+         WHERE user_id = ? AND draft_scope = ? AND queued_message = ?`
+      ).run(remaining, candidate.userId, candidate.sessionId, candidate.claimToken);
+      if (!result.changes) return false;
+      const items = Array.isArray(stored?.items) ? stored.items : [stored];
+      const selected = items.find((item, index) => stored?.forceId ? (item as { id?: string })?.id === stored.forceId : index === 0) as { id?: string } | undefined;
+      if (selected?.id) db.prepare('INSERT OR IGNORE INTO queued_message_receipts (user_id, session_id, message_id) VALUES (?, ?, ?)')
+        .run(candidate.userId, candidate.sessionId, selected.id);
+      return true;
+    })();
   },
 
   /** Restores a failed reservation without overwriting edits made since the claim. */
@@ -121,10 +141,16 @@ export const sessionDraftsDb = {
       const items = stored.items.filter((_, position) => position !== index);
       expected = items.length ? JSON.stringify({ items, paused: false }) : null;
     }
-    getConnection().prepare(
+    const restored = getConnection().prepare(
       `UPDATE session_drafts SET queued_message = ?, updated_at = CURRENT_TIMESTAMP
        WHERE user_id = ? AND draft_scope = ? AND queued_message IS ?`
     ).run(candidate.claimToken, candidate.userId, candidate.sessionId, expected);
+    if (restored.changes) {
+      const items = Array.isArray(stored?.items) ? stored.items : [stored];
+      const selected = items.find((item, index) => stored?.forceId ? (item as { id?: string })?.id === stored.forceId : index === 0) as { id?: string } | undefined;
+      if (selected?.id) getConnection().prepare('DELETE FROM queued_message_receipts WHERE user_id = ? AND session_id = ? AND message_id = ?')
+        .run(candidate.userId, candidate.sessionId, selected.id);
+    }
   },
 
   /** Stops automatic consumption while retaining every pending item, including across restarts. */
@@ -165,6 +191,15 @@ export const sessionDraftsDb = {
   ): void {
     const db = getConnection();
 
+    const stored = draft.queuedMessage as { items?: Array<{ id?: string }>; id?: string } | null;
+    if (stored) {
+      const receipt = db.prepare('SELECT 1 FROM queued_message_receipts WHERE user_id = ? AND session_id = ? AND message_id = ?');
+      const items = (Array.isArray(stored.items) ? stored.items : [stored])
+        .filter((item) => !item.id || !receipt.get(userId, scope, item.id));
+      if (Array.isArray(stored.items) || items.length === 0) {
+        draft = { ...draft, queuedMessage: items.length ? { ...stored, items } : null };
+      }
+    }
     if (!draft.text && draft.queuedMessage === null) {
       db.prepare('DELETE FROM session_drafts WHERE user_id = ? AND draft_scope = ?')
         .run(userId, scope);

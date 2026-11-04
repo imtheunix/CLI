@@ -8,6 +8,9 @@ import { api } from '@/shared/api';
 import type { LoadBalancerContext } from '@/shared/types';
 import { readQueuedMessages, resetChatDrafts, writeQueuedMessage } from '@/shared/chatDrafts';
 
+const socket = vi.hoisted(() => ({ sendMessage: vi.fn(() => true), subscribe: vi.fn(() => () => {}) }));
+vi.mock('@/shared/context/WebSocketContext', () => ({ useWebSocket: () => socket }));
+
 vi.mock('@/shared/api', () => ({ api: {
   user: {
     saveDraft: vi.fn(async () => new Response('{}')),

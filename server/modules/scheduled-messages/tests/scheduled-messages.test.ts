@@ -399,17 +399,23 @@ test('paused queues survive reload, and a failed turn preserves and pauses the r
   });
 });
 
-test('Send now interrupts the running turn and sends the chosen item as the next turn', async () => {
+test('Send now injects the chosen item without cancelling the running turn', async () => {
   await withIsolatedDatabase(async (userId) => {
     const items = ['a', 'b', 'c'].map((id) => ({ id, content: id }));
     sessionDraftsDb.saveDraft(userId, SESSION_ID, { text: '', queuedMessage: { items, forceId: 'b' } });
     const running = chatRunRegistry.startRun({ appSessionId: SESSION_ID, provider: 'claude', providerSessionId: null, connection: null, userId });
     const runs: RunCall[] = [];
     const aborts: string[] = [];
-    assert.equal(await dispatchQueuedMessages(createRuntime(runs, 'ok', aborts)), 1);
-    assert.equal(running?.abortController.signal.aborted, true, 'the running turn is cancelled');
-    assert.deepEqual(aborts, [SESSION_ID], 'the provider is told to stop, as Stop does');
-    assert.deepEqual(runs.map((run) => run.command), ['b'], 'the chosen item is the next turn');
+    const injected: string[] = [];
+    const runtime = { ...createRuntime(runs, 'ok', aborts), inject: async (_provider: string, _sessionId: string, command: string) => { injected.push(command); return true; } };
+    assert.equal(await dispatchQueuedMessages(runtime), 1);
+    assert.equal(running?.abortController.signal.aborted, false);
+    assert.deepEqual(aborts, []);
+    assert.deepEqual(runs, []);
+    assert.deepEqual(injected, ['b']);
+    // A delayed browser write cannot re-create the delivered item.
+    sessionDraftsDb.saveDraft(userId, SESSION_ID, { text: '', queuedMessage: { items } });
+    assert.equal(await dispatchQueuedMessages({ ...runtime, inject: async () => false }), 0);
     const remaining = sessionDraftsDb.getDrafts(userId)[0].queuedMessage as { items: { id: string }[]; forceId?: string };
     assert.deepEqual(remaining.items.map((item) => item.id), ['a', 'c']);
     assert.equal(remaining.forceId, undefined);
@@ -426,7 +432,7 @@ test('Send now replaces a process held for background work', async () => {
   });
 });
 
-test('Send now cannot be claimed twice while its interrupt is in flight', async () => {
+test('Send now cannot be claimed twice while its injection is in flight', async () => {
   await withIsolatedDatabase(async (userId) => {
     const items = ['a', 'b', 'c'].map((id) => ({ id, content: id }));
     sessionDraftsDb.saveDraft(userId, SESSION_ID, { text: '', queuedMessage: { items, forceId: 'b' } });
@@ -436,7 +442,7 @@ test('Send now cannot be claimed twice while its interrupt is in flight', async 
     const abortPending = new Promise<void>((resolve) => { finishAbort = resolve; });
     const runtime = {
       ...createRuntime(runs),
-      abort: async () => { await abortPending; return true; },
+      inject: async (_provider: string, _sessionId: string, command: string) => { await abortPending; runs.push({ provider: 'claude', command, options: {} }); return true; },
     };
     const sending = dispatchQueuedMessages(runtime);
     try {
@@ -469,7 +475,7 @@ test('Send now dispatches the chosen item from an idle queue without aborting', 
   });
 });
 
-test('Send now interrupts a queued turn that is still running', async () => {
+test('Send now steers a queued turn that is still running', async () => {
   await withIsolatedDatabase(async (userId) => {
     const items = ['a', 'b', 'c'].map((id) => ({ id, content: id }));
     sessionDraftsDb.saveDraft(userId, SESSION_ID, { text: '', queuedMessage: { items } });
@@ -479,6 +485,7 @@ test('Send now interrupts a queued turn that is still running', async () => {
     const firstPending = new Promise<void>((resolve) => { finishFirst = resolve; });
     const runtime = {
       ...createRuntime(runs, 'ok', aborts),
+      inject: async (_provider: string, _sessionId: string, command: string) => { runs.push({ provider: 'claude', command, options: {} }); return true; },
       run: async (provider: string, command: string, options: Record<string, unknown>) => {
         runs.push({ provider, command, options });
         if (command === 'a') {
@@ -494,7 +501,7 @@ test('Send now interrupts a queued turn that is still running', async () => {
     try {
       sessionDraftsDb.saveDraft(userId, SESSION_ID, { text: '', queuedMessage: { items: [items[1], items[2]], forceId: 'c' } });
       await dispatchQueuedMessages(runtime);
-      assert.deepEqual(aborts, [SESSION_ID]);
+      assert.deepEqual(aborts, []);
       assert.deepEqual(runs.map((run) => run.command), ['a', 'c'], 'c goes out without waiting for a');
       assert.deepEqual((sessionDraftsDb.getDrafts(userId)[0].queuedMessage as { items: unknown[] }).items, [items[1]]);
     } finally {

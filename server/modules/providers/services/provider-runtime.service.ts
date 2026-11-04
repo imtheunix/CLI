@@ -87,6 +87,15 @@ export function createProviderRuntimeService(
       return (command, options, writer) => run(provider, command, options, writer);
     },
 
+    supportsInjection(providerName: LLMProvider): boolean {
+      return Boolean(dependencies.resolveProvider(providerName).runtime.inject);
+    },
+
+    async inject(providerName: LLMProvider, sessionId: string, command: string, options: AnyRecord): Promise<boolean> {
+      const { runtime } = dependencies.resolveProvider(providerName);
+      return Boolean(await runtime.inject?.(sessionId, command, options));
+    },
+
     async abort(providerName: LLMProvider, sessionId: string): Promise<boolean> {
       return Boolean(await dependencies.resolveProvider(providerName).runtime.abort(sessionId));
     },

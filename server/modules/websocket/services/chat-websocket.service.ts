@@ -1,3 +1,4 @@
+import { dispatchQueuedChatMessage } from '@/modules/websocket/services/queued-chat.service.js';
 import { sessionDraftsDb } from '@/modules/database/index.js';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
@@ -75,12 +76,18 @@ export type ProviderRuntimeGateway = {
     writer: ProviderRuntimeWriter,
   ): Promise<unknown>;
   abort(provider: LLMProvider, sessionId: string): Promise<boolean>;
+  /** Returns false when the runtime has no writable live query. */
+  supportsInjection?(provider: LLMProvider): boolean;
+  inject?(provider: LLMProvider, sessionId: string, command: string, options: AnyRecord): Promise<boolean>;
   stopBackgroundTask(provider: LLMProvider, sessionId: string, taskId: string): Promise<boolean>;
   /** Whether a provider runtime still holds background work for the session after its turn ended. */
   hasBackgroundWork(sessionId: string): boolean;
   resolveToolApproval(requestId: string, payload: ProviderPermissionDecision): void;
   getPendingApprovalsForSession(sessionId: string): unknown[];
 };
+
+// Provider promises outlive terminal stream events; replacements must wait for cleanup.
+const runtimeSettlements = new Map<string, Promise<void>>();
 
 type ChatWebSocketDependencies = {
   /** Central dispatcher for every provider SDK/CLI runtime. */
@@ -291,6 +298,9 @@ async function dispatchRun(
     projectPath: session.project_path ?? clientOptions.projectPath,
   };
 
+  let settle!: () => void;
+  const settlement = new Promise<void>((resolve) => { settle = resolve; });
+  runtimeSettlements.set(sessionId, settlement);
   let failure: string | null = null;
   try {
     // Runs only now that the session is reserved, because an edit rewinds the
@@ -326,6 +336,8 @@ async function dispatchRun(
     // a queued message can start the session's next run before this promise
     // settles, and the session-keyed completeRun would kill that new run.
     chatRunRegistry.completeRunIfCurrent(run, { exitCode: 1 });
+    settle();
+    if (runtimeSettlements.get(sessionId) === settlement) runtimeSettlements.delete(sessionId);
   }
 
   return { started: true, error: failure };
@@ -642,6 +654,7 @@ export async function runDetachedChatTurn(
      * a queued message sets it too: the user asked for it to go right away.
      */
     interruptActiveRun?: boolean;
+    steerActiveRun?: boolean;
     /** Lets the queue dispatcher release its preparation lock after reservation. */
     onReserved?: () => void;
   },
@@ -659,21 +672,42 @@ export async function runDetachedChatTurn(
 
   const activeRun = chatRunRegistry.getRun(input.sessionId);
   if (activeRun && activeRun.status === 'running') {
-    if (!input.interruptActiveRun) {
-      return { started: false, error: 'A run was already in progress for this session.' };
+    if (input.steerActiveRun) {
+      const attachments = filterAttachmentsToUploadStore(input.options?.attachments ?? []);
+      const injected = await dependencies.runtime.inject?.(provider, input.sessionId, input.content, {
+        ...input.options,
+        cwd: session.project_path,
+        images: attachments.filter(isImageAttachmentDescriptor),
+        files: attachments.filter((item) => !isImageAttachmentDescriptor(item)),
+      });
+      if (injected) {
+        input.onReserved?.();
+        return { started: true, error: null };
+      }
+      // The query may have completed while attachments were being prepared.
+      if (chatRunRegistry.isProcessing(input.sessionId) && !input.interruptActiveRun) {
+        return { started: false, error: 'A run is already in progress for this session.' };
+      }
     }
-    // Same shape as `chat.abort`: cancel the provider run and emit the
-    // terminal `complete` on its behalf, so every watching client sees the
-    // interrupted run end before this turn's stream begins. The interrupted
-    // run's own dispatch settles later through completeRunIfCurrent, which is
-    // scoped to that run and cannot touch the one started here.
-    // The abort signal has already cancelled the provider run, so a graceful
-    // interrupt that fails (Claude rejects one after the signal) is no error.
-    activeRun.abortController.abort();
-    await dependencies.runtime.abort(activeRun.provider, input.sessionId);
-    chatRunRegistry.completeRunIfCurrent(activeRun, { exitCode: 0, aborted: true });
+    if (chatRunRegistry.isProcessing(input.sessionId)) {
+      if (!input.interruptActiveRun) {
+        return { started: false, error: 'A run is already in progress for this session.' };
+      }
+      const settlement = runtimeSettlements.get(input.sessionId);
+      // Ask the live runtime first: aborting the SDK signal first closes the
+      // query before its interrupt control response can arrive.
+      try {
+        await dependencies.runtime.abort(activeRun.provider, input.sessionId);
+      } finally {
+        activeRun.abortController.abort();
+      }
+      await settlement;
+      chatRunRegistry.completeRunIfCurrent(activeRun, { exitCode: 0, aborted: true });
+    }
   }
 
+  const previousSettlement = runtimeSettlements.get(input.sessionId);
+  if (previousSettlement) await previousSettlement;
   return dispatchRun(
     null,
     input.userId,
@@ -710,6 +744,18 @@ export function handleChatConnection(
         case 'chat.edit-send':
           await handleChatEditSend(ws, userId, data, dependencies);
           return;
+        case 'chat.queue-send': {
+          const resolved = resolveSendTarget(ws, data, dependencies, 'chat.queue-send');
+          if (!resolved || userId === null || typeof data.messageId !== 'string') return;
+          if (!(dependencies.runtime.supportsInjection?.(resolved.provider) ?? resolved.provider === 'claude') && chatRunRegistry.isProcessing(resolved.sessionId) && data.allowInterrupt !== true) {
+            sendJson(ws, { kind: 'queue_interrupt_required', sessionId: resolved.sessionId, messageId: data.messageId });
+            return;
+          }
+          const candidate = sessionDraftsDb.requestQueuedDelivery(Number(userId), resolved.sessionId, data.messageId, data.allowInterrupt === true);
+          if (candidate) await dispatchQueuedChatMessage(candidate, dependencies.runtime, data.messageId, data.allowInterrupt === true, () => sendJson(ws, { kind: 'queue_updated', sessionId: resolved.sessionId }));
+          sendJson(ws, { kind: 'queue_updated', sessionId: resolved.sessionId });
+          return;
+        }
         case 'chat.send':
           await handleChatSend(ws, userId, data, dependencies);
           return;

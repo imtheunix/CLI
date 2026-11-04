@@ -313,3 +313,28 @@ test('a turn whose tool emits no task events still holds on the static rule', as
     assert.equal(script.released(), false, 'Monitor reports no task, so the launch rule decides');
   });
 });
+
+test('live Claude query receives steering input without an interrupt and echoes it at delivery', async () => {
+  const { claudeRuntime } = await import('@/modules/providers/list/claude/claude-runtime.provider.js');
+  await withRun(async ({ script, sent }) => {
+    script.emit(init());
+    await waitFor(() => script.stdin.length === 1);
+    assert.equal(await claudeRuntime.inject(SESSION_ID, 'use the new design', {}), true);
+    await waitFor(() => script.stdin.length === 2);
+    const input = script.stdin[1];
+    assert.equal(input.priority, 'next');
+    assert.equal((input.message as { content: string }).content, 'use the new design');
+    assert.ok(!sent.some((event) => event.content === 'use the new design'), 'no premature transcript bubble');
+    // The earlier result must not close stdin while the new input is unread.
+    script.emit(result());
+    await settle();
+    assert.equal(script.released(), false);
+    assert.ok(!sent.some((event) => event.kind === 'complete'));
+    script.emit({ ...input, session_id: NATIVE_ID, isReplay: true });
+    await waitFor(() => sent.some((event) => event.role === 'user' && event.content === 'use the new design'));
+    script.emit(result());
+    await waitFor(() => script.released());
+    assert.equal(sent.filter((event) => event.kind === 'complete').length, 1);
+    assert.equal(await claudeRuntime.inject(SESSION_ID, 'too late', {}), false);
+  });
+});

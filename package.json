@@ -47,6 +47,7 @@
     "build:server": "tsc -p server/tsconfig.json && tsc-alias -p server/tsconfig.json",
     "postbuild:server": "node scripts/promote-dist-server.mjs",
     "preview": "vite preview",
+    "check": "npm run typecheck && npm run lint && npm run build",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p server/tsconfig.json",
     "test": "tsx --tsconfig server/tsconfig.json --test \"server/**/*.test.ts\" \"server/**/*.test.js\"",
     "test:client": "cross-env NODE_ENV=development vitest run",
