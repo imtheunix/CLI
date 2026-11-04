@@ -74,6 +74,7 @@ async function withTestContext(
     dir: string;
     eventsLogPath: string;
     offsetPath: string;
+    stallsPath: string;
     config: OrchestratorConfig;
     runtime: ReturnType<typeof createTestRuntime>;
     hubSessionId: string;
@@ -88,6 +89,7 @@ async function withTestContext(
   const dbPath = path.join(dir, 'test.db');
   const eventsLogPath = path.join(dir, 'hub-events.log');
   const offsetPath = path.join(dir, 'hub-events.log.offset');
+  const stallsPath = path.join(dir, 'hub-events.log.stalls.json');
 
   closeConnection();
   process.env.DATABASE_PATH = dbPath;
@@ -129,6 +131,7 @@ async function withTestContext(
       dir,
       eventsLogPath,
       offsetPath,
+      stallsPath,
       config,
       runtime,
       hubSessionId,
@@ -520,5 +523,448 @@ test('tjob hub-wake --test sends wake on demand', async () => {
     assert.equal(runtime.turns.length, 1);
     assert.ok(runtime.turns[0].command.includes('[tjob] test wake: hub wake is active and responding'));
     runtime.finish(config.hub!.sessionId);
+  });
+});
+
+test('deliverMessage handles turn rejection without unhandled rejection and retains pending events', async () => {
+  await withTestContext(async ({ config, runtime, eventsLogPath, offsetPath, stallsPath, clock }) => {
+    const service = createHubWakeService({
+      config: () => config,
+      runtime: runtime.gateway,
+      now: () => clock.now,
+      eventsLogPath,
+      offsetPath,
+      stallsPath,
+      runTurn: async () => {
+        throw new Error('child process spawn error: simulated failure');
+      },
+    });
+    service.start();
+
+    appendHubEvent({
+      jobId: 'job-rejection',
+      state: 'review',
+      title: 'Failed launch job',
+      reason: 'waiting for review',
+    });
+
+    clock.advance(100);
+    await service.tick();
+
+    assert.equal(service.getPendingEvents().length, 1, 'pending event should be retained after delivery failure');
+    assert.equal(service.getStoredOffset(), 0, 'offset should NOT be committed on delivery failure');
+    service.stop();
+  });
+});
+
+test('deliverMessage timeout returns false without unhandled rejection if runTurn rejects after timeout', async () => {
+  await withTestContext(async ({ config, runtime, eventsLogPath, offsetPath, stallsPath, clock }) => {
+    let rejectLater!: (err: Error) => void;
+    const hangingTurn = new Promise<{ started: boolean; error: string | null }>((_, reject) => {
+      rejectLater = reject;
+    });
+
+    const service = createHubWakeService({
+      config: () => config,
+      runtime: runtime.gateway,
+      now: () => clock.now,
+      eventsLogPath,
+      offsetPath,
+      stallsPath,
+      turnTimeoutMs: 20,
+      runTurn: () => hangingTurn,
+    });
+    service.start();
+
+    appendHubEvent({
+      jobId: 'job-late-rejection',
+      state: 'review',
+      title: 'Late rejection job',
+      reason: 'waiting for review',
+    });
+
+    clock.advance(100);
+    await service.tick();
+
+    assert.equal(service.getPendingEvents().length, 1, 'pending event retained after timeout');
+    assert.equal(service.getStoredOffset(), 0, 'offset not committed on timeout');
+
+    // Turn rejects AFTER timeout has already returned false: must NOT crash process
+    rejectLater(new Error('late provider explosion'));
+    await new Promise((r) => setTimeout(r, 50));
+
+    service.stop();
+  });
+});
+
+test('serialized execution prevents race between readPendingEvents and wake dispatch (no lost events, no double delivery)', async () => {
+  await withTestContext(async ({ config, runtime, eventsLogPath, offsetPath, stallsPath, hubSessionId, clock }) => {
+    let onRunStarted: (() => void) | null = null;
+    const trackingGateway = {
+      ...runtime.gateway,
+      run: (provider: string, command: string, options: Record<string, unknown>) => {
+        const p = runtime.gateway.run(provider, command, options);
+        onRunStarted?.();
+        return p;
+      },
+    };
+
+    const service = createHubWakeService({
+      config: () => config,
+      runtime: trackingGateway,
+      now: () => clock.now,
+      eventsLogPath,
+      offsetPath,
+      stallsPath,
+    });
+    service.start();
+
+    // Event 1 appended
+    appendHubEvent({
+      jobId: 'job-1',
+      state: 'review',
+      title: 'Event One',
+      reason: 'waiting for review',
+      timestamp: clock.now.toISOString(),
+    });
+
+    // Advance clock past debounce for Event 1
+    clock.advance(100);
+
+    const runStartedPromise = new Promise<void>((resolve) => {
+      onRunStarted = resolve;
+    });
+
+    // Trigger tick - delivery begins
+    const tick1 = service.tick();
+    await runStartedPromise;
+
+    // While turn 1 is executing in runtime, Event 2 arrives
+    clock.advance(5);
+    appendHubEvent({
+      jobId: 'job-2',
+      state: 'merged',
+      title: 'Event Two',
+      reason: 'merged into main',
+      timestamp: clock.now.toISOString(),
+    });
+
+    // Complete turn 1
+    runtime.finish(hubSessionId);
+    await tick1;
+
+    assert.equal(runtime.turns.length, 1);
+    assert.ok(runtime.turns[0].command.includes('job-1'));
+    assert.ok(!runtime.turns[0].command.includes('job-2'), 'first turn must only include event 1');
+
+    // Debounce expires for Event 2
+    clock.advance(100);
+    await service.tick();
+
+    assert.equal(runtime.turns.length, 2, 'second turn delivered with event 2');
+    assert.ok(runtime.turns[1].command.includes('job-2'));
+    assert.ok(!runtime.turns[1].command.includes('job-1'), 'second turn must not re-deliver event 1');
+    runtime.finish(hubSessionId);
+
+    service.stop();
+  });
+});
+
+test('log truncation and rotation resets offsets and clears pendingEvents without missing subsequent writes', async () => {
+  await withTestContext(async ({ config, runtime, eventsLogPath, offsetPath, stallsPath, hubSessionId, clock }) => {
+    const service = createHubWakeService({
+      config: () => config,
+      runtime: runtime.gateway,
+      now: () => clock.now,
+      eventsLogPath,
+      offsetPath,
+      stallsPath,
+    });
+    service.start();
+
+    appendHubEvent({
+      jobId: 'job-pre-trunc',
+      state: 'review',
+      title: 'Pre-truncation job',
+      reason: 'waiting for review',
+      timestamp: clock.now.toISOString(),
+    });
+
+    clock.advance(100);
+    await service.tick();
+    assert.equal(runtime.turns.length, 1);
+    runtime.finish(hubSessionId);
+    assert.ok(service.getStoredOffset() > 0);
+
+    // Truncate the file to 0 bytes (logrotate)
+    writeFileSync(eventsLogPath, '', 'utf8');
+
+    // Append new event to the truncated log
+    appendHubEvent({
+      jobId: 'job-post-trunc',
+      state: 'turn_ended',
+      title: 'Post-truncation job',
+      reason: 'turn ended',
+      timestamp: clock.now.toISOString(),
+    });
+
+    clock.advance(100);
+    await service.tick();
+
+    assert.equal(runtime.turns.length, 2, 'post-truncation event delivered');
+    assert.ok(runtime.turns[1].command.includes('job-post-trunc'));
+    assert.ok(!runtime.turns[1].command.includes('job-pre-trunc'));
+    runtime.finish(hubSessionId);
+
+    service.stop();
+  });
+});
+
+test('persists and reconstructs stall-emission state across service restart (no duplicate stalls)', async () => {
+  await withTestContext(async ({ dir, config, runtime, eventsLogPath, offsetPath, stallsPath, clock }) => {
+    config.hub!.stallMin = 10;
+    config.hub!.debounceSec = 0;
+
+    const jobSessionId = 'stalled-restart-session';
+    const transcriptPath = path.join(dir, 'transcript-restart.jsonl');
+    writeFileSync(transcriptPath, 'line 1\n');
+    utimesSync(transcriptPath, clock.now, clock.now);
+
+    sessionsDb.createSession(
+      jobSessionId,
+      'claude',
+      dir,
+      'Restart Agent',
+      clock.now.toISOString(),
+      clock.now.toISOString(),
+      transcriptPath,
+    );
+
+    const job = orchestratorJobsDb.create({
+      id: 'stall-restart-job',
+      title: 'Stall Restart Job',
+      prompt: 'Do work',
+      repoPath: dir,
+      baseBranch: 'main',
+      branch: 'feature/stall-restart',
+      worktreePath: dir,
+      requestedBackend: 'claude',
+    });
+
+    orchestratorJobsDb.update(job.id, {
+      state: 'active',
+      session_id: jobSessionId,
+      in_turn: 1,
+    });
+
+    chatRunRegistry.startRun({
+      appSessionId: jobSessionId,
+      provider: 'claude',
+      providerSessionId: 'provider-job',
+      connection: null,
+      userId: null,
+    });
+
+    // Service 1 starts
+    const service1 = createHubWakeService({
+      config: () => config,
+      runtime: runtime.gateway,
+      now: () => clock.now,
+      eventsLogPath,
+      offsetPath,
+      stallsPath,
+    });
+    service1.start();
+
+    // 11 minutes in: exceeds stallMin (10m)
+    clock.advance(11 * 60);
+    await service1.tick();
+
+    assert.equal(runtime.turns.length, 1, 'stall event delivered to hub');
+    assert.ok(runtime.turns[0].command.includes('stall-restart-job'));
+    runtime.finish(config.hub!.sessionId);
+
+    // Stop Service 1 (simulating server restart)
+    service1.stop();
+
+    // Start Service 2 (fresh instance)
+    const service2 = createHubWakeService({
+      config: () => config,
+      runtime: runtime.gateway,
+      now: () => clock.now,
+      eventsLogPath,
+      offsetPath,
+      stallsPath,
+    });
+    service2.start();
+
+    // Tick 3 seconds after restart: must NOT duplicate stall event
+    clock.advance(3);
+    await service2.tick();
+    assert.equal(runtime.turns.length, 1, 'must NOT duplicate stall event after restart');
+
+    // Now job has new transcript activity!
+    clock.advance(60);
+    writeFileSync(transcriptPath, 'line 2\n');
+    utimesSync(transcriptPath, clock.now, clock.now);
+
+    // 11 minutes after new activity: stalls again
+    clock.advance(11 * 60);
+    await service2.tick();
+    assert.equal(runtime.turns.length, 2, 'emits new stall event after job has new activity and stalls again');
+    runtime.finish(config.hub!.sessionId);
+
+    service2.stop();
+  });
+});
+
+test('stalled job becoming inactive is pruned from stall emission state preventing memory leak', async () => {
+  await withTestContext(async ({ dir, config, runtime, eventsLogPath, offsetPath, stallsPath, clock }) => {
+    config.hub!.stallMin = 5;
+    config.hub!.debounceSec = 0;
+
+    const jobSessionId = 'pruned-session';
+    const transcriptPath = path.join(dir, 'transcript-pruned.jsonl');
+    writeFileSync(transcriptPath, 'line 1\n');
+    utimesSync(transcriptPath, clock.now, clock.now);
+
+    sessionsDb.createSession(
+      jobSessionId,
+      'claude',
+      dir,
+      'Pruned Agent',
+      clock.now.toISOString(),
+      clock.now.toISOString(),
+      transcriptPath,
+    );
+
+    const job = orchestratorJobsDb.create({
+      id: 'job-to-prune',
+      title: 'Pruned Job',
+      prompt: 'Do work',
+      repoPath: dir,
+      baseBranch: 'main',
+      branch: 'feature/pruned',
+      worktreePath: dir,
+      requestedBackend: 'claude',
+    });
+
+    orchestratorJobsDb.update(job.id, {
+      state: 'active',
+      session_id: jobSessionId,
+      in_turn: 1,
+    });
+
+    chatRunRegistry.startRun({
+      appSessionId: jobSessionId,
+      provider: 'claude',
+      providerSessionId: 'provider-pruned',
+      connection: null,
+      userId: null,
+    });
+
+    const service = createHubWakeService({
+      config: () => config,
+      runtime: runtime.gateway,
+      now: () => clock.now,
+      eventsLogPath,
+      offsetPath,
+      stallsPath,
+    });
+    service.start();
+
+    // Stall the job
+    clock.advance(6 * 60);
+    await service.tick();
+    assert.ok(service.getLastStallEmitted(job.id) !== undefined, 'job has stall state');
+    runtime.finish(config.hub!.sessionId);
+
+    // Job transitions to 'done' (no longer active)
+    orchestratorJobsDb.update(job.id, { state: 'done', in_turn: 0 });
+    chatRunRegistry.completeRun(jobSessionId, { exitCode: 0, aborted: false });
+
+    // Tick prunes the inactive job from lastStallEmitted
+    await service.tick();
+    assert.equal(service.getLastStallEmitted(job.id), undefined, 'inactive job pruned from stall state');
+
+    service.stop();
+  });
+});
+
+test('triggerWake distinguishes test vs non-test and enforces config validation', async () => {
+  await withTestContext(async ({ config, runtime, eventsLogPath, offsetPath, stallsPath, hubSessionId, clock }) => {
+    const service = createHubWakeService({
+      config: () => config,
+      runtime: runtime.gateway,
+      now: () => clock.now,
+      eventsLogPath,
+      offsetPath,
+      stallsPath,
+    });
+
+    // 1. triggerWake({ test: false }) when no pending events
+    const noEventsRes = await service.triggerWake({ test: false });
+    assert.equal(noEventsRes.success, true);
+    assert.equal(noEventsRes.message, 'No pending hub events to deliver.');
+    assert.equal(runtime.turns.length, 0);
+
+    // 2. triggerWake({ test: false }) with pending events
+    appendHubEvent({
+      jobId: 'job-manual',
+      state: 'review',
+      title: 'Manual wake job',
+      reason: 'waiting for review',
+    });
+    const withEventsRes = await service.triggerWake({ test: false });
+    assert.equal(withEventsRes.success, true);
+    assert.equal(withEventsRes.message, 'Wake delivered to hub session.');
+    assert.equal(runtime.turns.length, 1);
+    assert.ok(runtime.turns[0].command.includes('job-manual'));
+    runtime.finish(hubSessionId);
+
+    // 3. triggerWake when hub.wake is undefined or false throws HUB_WAKE_DISABLED
+    delete config.hub!.wake;
+    await assert.rejects(
+      async () => service.triggerWake({ test: false }),
+      (err: any) => err.code === 'HUB_WAKE_DISABLED',
+    );
+  });
+});
+
+test('non-existent hub session does not wedge debounce timing or crash', async () => {
+  await withTestContext(async ({ config, runtime, eventsLogPath, offsetPath, stallsPath, hubSessionId, clock }) => {
+    config.hub!.sessionId = 'missing-session-xyz';
+    const service = createHubWakeService({
+      config: () => config,
+      runtime: runtime.gateway,
+      now: () => clock.now,
+      eventsLogPath,
+      offsetPath,
+      stallsPath,
+    });
+    service.start();
+
+    appendHubEvent({
+      jobId: 'job-orphan',
+      state: 'review',
+      title: 'Orphan job',
+      reason: 'waiting for review',
+    });
+
+    clock.advance(100);
+    // tick attempts delivery to non-existent session and safely backs off
+    await service.tick();
+    assert.equal(runtime.turns.length, 0);
+
+    // Now restore session to real hub session
+    config.hub!.sessionId = hubSessionId;
+    clock.advance(100);
+    await service.tick();
+
+    assert.equal(runtime.turns.length, 1, 'turn delivered once session is available');
+    assert.ok(runtime.turns[0].command.includes('job-orphan'));
+    runtime.finish(hubSessionId);
+
+    service.stop();
   });
 });

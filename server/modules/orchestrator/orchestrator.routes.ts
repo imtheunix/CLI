@@ -104,8 +104,13 @@ export function createOrchestratorRouter(services: {
   }));
 
   // Before `/:id`, which would otherwise read "hub-wake" as a job id.
-  router.post('/hub-wake', asyncHandler(async (_req, res) => {
-    const result = await services.hubWake.triggerTestWake();
+  router.post('/hub-wake', asyncHandler(async (req, res) => {
+    const body = (req.body && typeof req.body === 'object' ? req.body : {}) as Record<string, unknown>;
+    const isTest = body.test === true || body.test === 'true';
+    const result = await services.hubWake.triggerWake({ test: isTest });
+    if (!result.success) {
+      throw new AppError(result.message, { code: 'HUB_DELIVERY_FAILED', statusCode: 502 });
+    }
     res.json(createApiSuccessResponse(result));
   }));
 
