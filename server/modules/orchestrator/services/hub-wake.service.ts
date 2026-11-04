@@ -14,7 +14,7 @@ import type { ProviderRuntimeGateway } from '@/modules/websocket/index.js';
 import { AppError } from '@/shared/index.js';
 
 import { appendHubEvent, getHubEventsLogPath, onHubEvent } from './hub-events.service.js';
-import type { HubEventInput, HubEventState } from './hub-events.service.js';
+import type { HubEventState } from './hub-events.service.js';
 import type { OrchestratorConfig } from './orchestrator-config.service.js';
 
 /** Maximum number of event lines shown in a wake turn before truncating with `+N more`. */
@@ -22,6 +22,49 @@ const MAX_WAKE_LINES = 20;
 
 /** Length of title before truncating in notification lines. */
 const MAX_TITLE_LENGTH = 50;
+
+/** Maximum bytes to read in one log file read chunk. */
+const MAX_READ_CHUNK = 64 * 1024;
+
+/** Upper bound on in-memory pending events buffer to prevent memory exhaustion. */
+const MAX_PENDING_EVENTS = 500;
+
+/** Simple async FIFO lock to serialize log reads and wake dispatches. */
+class AsyncLock {
+  private queue: Array<() => void> = [];
+  private locked = false;
+
+  async acquire(): Promise<() => void> {
+    if (this.locked) {
+      await new Promise<void>((resolve) => this.queue.push(resolve));
+    }
+    this.locked = true;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      const next = this.queue.shift();
+      if (next) {
+        next();
+      } else {
+        this.locked = false;
+      }
+    };
+  }
+
+  async runExclusive<T>(fn: () => Promise<T> | T): Promise<T> {
+    const release = await this.acquire();
+    try {
+      return await fn();
+    } finally {
+      release();
+    }
+  }
+
+  isLocked(): boolean {
+    return this.locked;
+  }
+}
 
 /** Parsed single-line event from hub-events.log. */
 export type LoggedHubEvent = {
@@ -95,6 +138,9 @@ export type HubWakeDependencies = {
   now?: () => Date;
   eventsLogPath?: string;
   offsetPath?: string;
+  stallsPath?: string;
+  turnTimeoutMs?: number;
+  runTurn?: typeof runDetachedChatTurn;
 };
 
 function resolveEventsLogPath(deps: HubWakeDependencies): string {
@@ -103,6 +149,10 @@ function resolveEventsLogPath(deps: HubWakeDependencies): string {
 
 function resolveOffsetPath(deps: HubWakeDependencies, logPath: string): string {
   return deps.offsetPath ?? `${logPath}.offset`;
+}
+
+function resolveStallsPath(deps: HubWakeDependencies, logPath: string): string {
+  return deps.stallsPath ?? `${logPath}.stalls.json`;
 }
 
 function firstUserId(): number | null {
@@ -117,6 +167,7 @@ function firstUserId(): number | null {
  */
 export function createHubWakeService(deps: HubWakeDependencies) {
   const now = deps.now ?? (() => new Date());
+  const lock = new AsyncLock();
   let unsubscribeEvents: (() => void) | null = null;
 
   let storedOffset: number | null = null;
@@ -127,9 +178,14 @@ export function createHubWakeService(deps: HubWakeDependencies) {
   let lastEventTimeMs = 0;
 
   const lastStallEmitted = new Map<string, number>();
+  let stallsLoaded = false;
 
   function getOffsetPath(): string {
     return resolveOffsetPath(deps, resolveEventsLogPath(deps));
+  }
+
+  function getStallsPath(): string {
+    return resolveStallsPath(deps, resolveEventsLogPath(deps));
   }
 
   function loadStoredOffset(): number {
@@ -165,6 +221,82 @@ export function createHubWakeService(deps: HubWakeDependencies) {
     storedOffset = offset;
   }
 
+  function ensureStallsLoaded(): void {
+    if (stallsLoaded) return;
+    stallsLoaded = true;
+
+    // 1. Load from file
+    const stallsFile = getStallsPath();
+    try {
+      if (fs.existsSync(stallsFile)) {
+        const content = fs.readFileSync(stallsFile, 'utf8');
+        const parsed = JSON.parse(content);
+        if (parsed && typeof parsed === 'object') {
+          for (const [k, v] of Object.entries(parsed)) {
+            if (typeof v === 'number' && Number.isFinite(v)) {
+              lastStallEmitted.set(k, v);
+            }
+          }
+        }
+      }
+    } catch {}
+
+    // 2. Load from appConfigDb
+    try {
+      const raw = appConfigDb.get('orchestrator.hub_wake_stalls');
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === 'object') {
+          for (const [k, v] of Object.entries(parsed)) {
+            if (typeof v === 'number' && Number.isFinite(v) && !lastStallEmitted.has(k)) {
+              lastStallEmitted.set(k, v);
+            }
+          }
+        }
+      }
+    } catch {}
+
+    // 3. Supplement / reconstruct from hub-events.log
+    const logPath = resolveEventsLogPath(deps);
+    try {
+      if (fs.existsSync(logPath)) {
+        const content = fs.readFileSync(logPath, 'utf8');
+        const lines = content.split('\n');
+        for (const line of lines) {
+          if (!line.includes('\tstalled\t')) continue;
+          const parsed = parseHubEventLine(line);
+          if (parsed && parsed.state === 'stalled') {
+            const timeMs = Date.parse(parsed.timestamp);
+            if (Number.isFinite(timeMs)) {
+              const current = lastStallEmitted.get(parsed.jobId) ?? 0;
+              if (timeMs > current) {
+                lastStallEmitted.set(parsed.jobId, timeMs);
+              }
+            }
+          }
+        }
+      }
+    } catch {}
+  }
+
+  function saveStallsState(): void {
+    const stallsFile = getStallsPath();
+    const data: Record<string, number> = {};
+    for (const [k, v] of lastStallEmitted.entries()) {
+      data[k] = v;
+    }
+    const json = JSON.stringify(data);
+    try {
+      fs.mkdirSync(path.dirname(stallsFile), { recursive: true });
+      fs.writeFileSync(stallsFile, json, 'utf8');
+    } catch (err) {
+      console.error('[HubWake] Failed to persist stalls file:', err);
+    }
+    try {
+      appConfigDb.set('orchestrator.hub_wake_stalls', json);
+    } catch {}
+  }
+
   /** Reads unread events from hub-events.log starting at the stored offset. */
   function readPendingEvents(): void {
     const logPath = resolveEventsLogPath(deps);
@@ -184,63 +316,76 @@ export function createHubWakeService(deps: HubWakeDependencies) {
       return;
     }
 
-    if (stat.size < storedOffset) {
-      // File was truncated or reset
+    if (stat.size < targetEndOffset || (storedOffset !== null && stat.size < storedOffset)) {
+      // File was truncated or reset/rotated
       storedOffset = 0;
       targetEndOffset = 0;
+      pendingEvents = [];
+      firstEventTimeMs = null;
+      lastEventTimeMs = 0;
+      saveStoredOffset(0);
     }
 
     if (stat.size <= targetEndOffset) {
       return;
     }
 
-    const bytesToRead = stat.size - targetEndOffset;
-    const buffer = Buffer.alloc(bytesToRead);
-    let bytesRead = 0;
-    try {
-      const fd = fs.openSync(logPath, 'r');
-      try {
-        bytesRead = fs.readSync(fd, buffer, 0, bytesToRead, targetEndOffset);
-      } finally {
-        fs.closeSync(fd);
-      }
-    } catch (err) {
-      console.error('[HubWake] Error reading hub events log:', err);
-      return;
-    }
-
-    if (bytesRead === 0) return;
-
-    const text = buffer.toString('utf8', 0, bytesRead);
-    const lastNewlineIndex = text.lastIndexOf('\n');
-    if (lastNewlineIndex === -1) {
-      // Incomplete line; wait for newline
-      return;
-    }
-
-    const completeChunk = text.slice(0, lastNewlineIndex);
-    const consumedBytes = Buffer.byteLength(text.slice(0, lastNewlineIndex + 1), 'utf8');
-    targetEndOffset += consumedBytes;
-
     const cfg = deps.config();
     const hubSessionId = cfg.hub?.sessionId;
-
     let newlyAdded = 0;
-    const lines = completeChunk.split('\n');
-    for (const line of lines) {
-      if (!line.trim()) continue;
-      const parsed = parseHubEventLine(line);
-      if (!parsed) continue;
-      // Do not generate or forward events originated by the hub session itself
-      if (hubSessionId && parsed.jobId === hubSessionId) continue;
-      pendingEvents.push(parsed);
-      newlyAdded += 1;
+
+    while (stat.size > targetEndOffset) {
+      const bytesToRead = Math.min(stat.size - targetEndOffset, MAX_READ_CHUNK);
+      const buffer = Buffer.alloc(bytesToRead);
+      let bytesRead = 0;
+      try {
+        const fd = fs.openSync(logPath, 'r');
+        try {
+          bytesRead = fs.readSync(fd, buffer, 0, bytesToRead, targetEndOffset);
+        } finally {
+          fs.closeSync(fd);
+        }
+      } catch (err) {
+        console.error('[HubWake] Error reading hub events log:', err);
+        return;
+      }
+
+      if (bytesRead === 0) break;
+
+      // Locate complete lines using raw newline bytes (0x0A) to ensure byte alignment
+      const lastNewlineByteIndex = buffer.subarray(0, bytesRead).lastIndexOf(0x0a);
+      if (lastNewlineByteIndex === -1) {
+        // Incomplete line; wait for newline to be appended
+        break;
+      }
+
+      const consumedBytes = lastNewlineByteIndex + 1;
+      const textChunk = buffer.toString('utf8', 0, lastNewlineByteIndex);
+      targetEndOffset += consumedBytes;
+
+      const lines = textChunk.split('\n');
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        const parsed = parseHubEventLine(line);
+        if (!parsed) continue;
+        // Do not generate or forward events originated by the hub session itself
+        if (hubSessionId && parsed.jobId === hubSessionId) continue;
+        pendingEvents.push(parsed);
+        newlyAdded += 1;
+
+        const eventTime = Date.parse(parsed.timestamp);
+        const effectiveTime = Number.isFinite(eventTime) ? eventTime : now().getTime();
+        if (firstEventTimeMs === null || effectiveTime < firstEventTimeMs) {
+          firstEventTimeMs = effectiveTime;
+        }
+        if (effectiveTime > lastEventTimeMs) {
+          lastEventTimeMs = effectiveTime;
+        }
+      }
     }
 
-    if (newlyAdded > 0) {
-      const nowMs = now().getTime();
-      if (firstEventTimeMs === null) firstEventTimeMs = nowMs;
-      lastEventTimeMs = nowMs;
+    if (pendingEvents.length > MAX_PENDING_EVENTS) {
+      pendingEvents = pendingEvents.slice(-MAX_PENDING_EVENTS);
     }
   }
 
@@ -288,12 +433,31 @@ export function createHubWakeService(deps: HubWakeDependencies) {
     const stallMin = cfg.hub.stallMin ?? 30;
     const stallMs = stallMin * 60_000;
 
+    ensureStallsLoaded();
+
     const activeJobs = orchestratorJobsDb.listByState(['active']);
+    const activeJobIds = new Set(activeJobs.map((j) => j.id));
+
+    // Prune entries for jobs that are no longer active to prevent unbounded memory growth
+    let pruned = false;
+    for (const jobId of lastStallEmitted.keys()) {
+      if (!activeJobIds.has(jobId)) {
+        lastStallEmitted.delete(jobId);
+        pruned = true;
+      }
+    }
+    if (pruned) {
+      saveStallsState();
+    }
+
     for (const job of activeJobs) {
       if (!job.session_id) continue;
       const isWorking = chatRunRegistry.isProcessing(job.session_id) || Boolean(job.in_turn);
       if (!isWorking) {
-        lastStallEmitted.delete(job.id);
+        if (lastStallEmitted.has(job.id)) {
+          lastStallEmitted.delete(job.id);
+          saveStallsState();
+        }
         continue;
       }
 
@@ -355,10 +519,12 @@ export function createHubWakeService(deps: HubWakeDependencies) {
             reason: `no transcript activity for ${stallMin}m`,
           });
           lastStallEmitted.set(job.id, nowMs);
+          saveStallsState();
         }
       } else {
         if (lastStallEmitted.has(job.id)) {
           lastStallEmitted.delete(job.id);
+          saveStallsState();
         }
       }
     }
@@ -379,77 +545,227 @@ export function createHubWakeService(deps: HubWakeDependencies) {
     if (session.effort) options.effort = session.effort;
 
     wakeInFlight = true;
+    let timer: NodeJS.Timeout | null = null;
     try {
-      const turn = runDetachedChatTurn({
-        sessionId: hubSessionId,
-        userId: firstUserId(),
-        content: message,
-        options,
-      }, { runtime: deps.runtime });
+      let startedResolved = false;
+      let resolveStarted: (started: boolean) => void;
+      const startedPromise = new Promise<boolean>((resolve) => {
+        resolveStarted = resolve;
+      });
 
-      const started = await Promise.race([
-        turn.then((result) => result.started),
-        new Promise<boolean>((resolve) => setTimeout(() => resolve(true), 2_000)),
-      ]);
+      // Safety timeout: if neither onReserved nor turn resolution settles within timeoutMs, fail safely.
+      // Resolves to false (never false-positive true) to prevent event loss.
+      const timeoutMs = deps.turnTimeoutMs ?? 5_000;
+      timer = setTimeout(() => {
+        if (!startedResolved) {
+          startedResolved = true;
+          resolveStarted(false);
+        }
+      }, timeoutMs);
 
-      return started;
+      const runTurn = deps.runTurn ?? runDetachedChatTurn;
+      const turn = runTurn(
+        {
+          sessionId: hubSessionId,
+          userId: firstUserId(),
+          content: message,
+          options,
+          onReserved: () => {
+            if (!startedResolved) {
+              startedResolved = true;
+              if (timer) clearTimeout(timer);
+              resolveStarted(true);
+            }
+          },
+        },
+        { runtime: deps.runtime },
+      );
+
+      // Settle on turn start or startup failure; always catch to avoid unhandled rejections.
+      turn
+        .then((result) => {
+          if (!startedResolved) {
+            startedResolved = true;
+            if (timer) clearTimeout(timer);
+            resolveStarted(Boolean(result?.started));
+          }
+        })
+        .catch((err) => {
+          console.error('[HubWake] Detached chat turn execution error:', err);
+          if (!startedResolved) {
+            startedResolved = true;
+            if (timer) clearTimeout(timer);
+            resolveStarted(false);
+          }
+        });
+
+      return await startedPromise;
     } finally {
+      if (timer) clearTimeout(timer);
       wakeInFlight = false;
     }
   }
 
   /** Delivers all coalesced pending events if debounce has elapsed and the hub session is idle. */
   async function flushPendingIfEligible(): Promise<boolean> {
-    const cfg = deps.config();
-    if (!cfg.hub?.wake || !cfg.hub.sessionId) {
-      return false;
-    }
-    readPendingEvents();
-    if (pendingEvents.length === 0) {
-      return false;
-    }
-
-    const nowMs = now().getTime();
-    const debounceSec = cfg.hub.debounceSec ?? 90;
-    const debounceMs = debounceSec * 1000;
-
-    // Must wait for quiet debounce period or max coalescing window
-    if (firstEventTimeMs !== null) {
-      const timeSinceLast = nowMs - lastEventTimeMs;
-      const timeSinceFirst = nowMs - firstEventTimeMs;
-      if (timeSinceLast < debounceMs && timeSinceFirst < debounceMs * 2) {
+    return lock.runExclusive(async () => {
+      const cfg = deps.config();
+      if (!cfg.hub?.wake || !cfg.hub.sessionId) {
         return false;
       }
-    }
+      readPendingEvents();
+      if (pendingEvents.length === 0) {
+        return false;
+      }
 
-    if (isHubBusy(cfg.hub.sessionId, nowMs)) {
+      const session = sessionsDb.getSessionById(cfg.hub.sessionId);
+      if (!session) {
+        // Hub session does not exist. Reset debounce timers to prevent tight loop.
+        firstEventTimeMs = null;
+        lastEventTimeMs = 0;
+        return false;
+      }
+
+      const nowMs = now().getTime();
+      const debounceSec = cfg.hub.debounceSec ?? 90;
+      const debounceMs = debounceSec * 1000;
+
+      // Must wait for quiet debounce period or max coalescing window
+      if (firstEventTimeMs !== null) {
+        const timeSinceLast = nowMs - lastEventTimeMs;
+        const timeSinceFirst = nowMs - firstEventTimeMs;
+        if (timeSinceLast < debounceMs && timeSinceFirst < debounceMs * 2) {
+          return false;
+        }
+      }
+
+      if (isHubBusy(cfg.hub.sessionId, nowMs)) {
+        return false;
+      }
+
+      const eventsToDeliver = [...pendingEvents];
+      const offsetToCommit = targetEndOffset;
+      const message = buildHubWakeMessage(eventsToDeliver);
+
+      const delivered = await deliverMessage(cfg.hub.sessionId, message);
+      if (delivered) {
+        saveStoredOffset(offsetToCommit);
+        pendingEvents = pendingEvents.slice(eventsToDeliver.length);
+        firstEventTimeMs = pendingEvents.length > 0 ? lastEventTimeMs : null;
+        if (pendingEvents.length === 0) {
+          lastEventTimeMs = 0;
+        }
+        return true;
+      }
+      // Delivery failed: reset debounce window to prevent rapid retry loop
+      firstEventTimeMs = nowMs;
       return false;
-    }
+    });
+  }
 
-    const eventsToDeliver = [...pendingEvents];
-    const offsetToCommit = targetEndOffset;
-    const message = buildHubWakeMessage(eventsToDeliver);
+  /**
+   * Sends one wake on demand (e.g. for `tjob hub-wake [--test]`).
+   */
+  async function triggerWake(options: { test?: boolean } = {}): Promise<{ success: boolean; message: string }> {
+    return lock.runExclusive(async () => {
+      const cfg = deps.config();
+      if (!cfg.hub?.sessionId) {
+        throw new AppError('Hub session is not configured in orchestrator.json', {
+          code: 'HUB_NOT_CONFIGURED',
+          statusCode: 400,
+        });
+      }
+      if (!cfg.hub.wake) {
+        throw new AppError('Hub wake is disabled in orchestrator.json', {
+          code: 'HUB_WAKE_DISABLED',
+          statusCode: 400,
+        });
+      }
+      const session = sessionsDb.getSessionById(cfg.hub.sessionId);
+      if (!session) {
+        throw new AppError(`Hub session "${cfg.hub.sessionId}" was not found`, {
+          code: 'HUB_SESSION_NOT_FOUND',
+          statusCode: 404,
+        });
+      }
 
-    const delivered = await deliverMessage(cfg.hub.sessionId, message);
-    if (delivered) {
-      saveStoredOffset(offsetToCommit);
-      pendingEvents = pendingEvents.slice(eventsToDeliver.length);
-      firstEventTimeMs = null;
-      lastEventTimeMs = 0;
-      return true;
-    }
-    return false;
+      const nowMs = now().getTime();
+      if (isHubBusy(cfg.hub.sessionId, nowMs)) {
+        if (options.test) {
+          appendHubEvent({
+            jobId: 'test',
+            state: 'turn_ended',
+            title: 'test wake',
+            reason: 'manual test requested',
+          });
+          return {
+            success: true,
+            message: 'Hub session is currently busy; test wake queued for delivery when idle.',
+          };
+        }
+        return {
+          success: true,
+          message: 'Hub session is currently busy; wake queued for delivery when idle.',
+        };
+      }
+
+      readPendingEvents();
+      let message: string;
+      let offsetToCommit: number | null = null;
+      let deliveredCount = 0;
+      if (pendingEvents.length > 0) {
+        deliveredCount = pendingEvents.length;
+        offsetToCommit = targetEndOffset;
+        message = buildHubWakeMessage(pendingEvents);
+      } else if (options.test) {
+        message = '[tjob] test wake: hub wake is active and responding';
+      } else {
+        return {
+          success: true,
+          message: 'No pending hub events to deliver.',
+        };
+      }
+
+      const delivered = await deliverMessage(cfg.hub.sessionId, message);
+      if (!delivered) {
+        return {
+          success: false,
+          message: 'Failed to deliver wake turn to hub session.',
+        };
+      }
+
+      if (offsetToCommit !== null) {
+        saveStoredOffset(offsetToCommit);
+        pendingEvents = pendingEvents.slice(deliveredCount);
+        firstEventTimeMs = pendingEvents.length > 0 ? lastEventTimeMs : null;
+        if (pendingEvents.length === 0) {
+          lastEventTimeMs = 0;
+        }
+      }
+
+      return {
+        success: true,
+        message: options.test ? 'Test wake delivered to hub session.' : 'Wake delivered to hub session.',
+      };
+    });
   }
 
   return {
     start(): void {
+      ensureStallsLoaded();
       unsubscribeEvents = onHubEvent((event) => {
         const cfg = deps.config();
         if (!cfg.hub?.wake || !cfg.hub.sessionId) return;
         if (event.jobId === cfg.hub.sessionId) return;
-        readPendingEvents();
+        lock.runExclusive(() => {
+          readPendingEvents();
+        }).catch((err) => {
+          console.error('[HubWake] Error reading pending events after hub event:', err);
+        });
       });
-      readPendingEvents();
+      lock.runExclusive(() => {
+        readPendingEvents();
+      }).catch(() => {});
     },
 
     stop(): void {
@@ -465,74 +781,25 @@ export function createHubWakeService(deps: HubWakeDependencies) {
     },
 
     /**
-     * Sends one test wake on demand for `tjob hub-wake --test`.
+     * Sends one wake on demand for `tjob hub-wake [--test]`.
+     */
+    triggerWake,
+
+    /**
+     * Sends one test wake on demand for backward compatibility and `tjob hub-wake --test`.
      */
     async triggerTestWake(): Promise<{ success: boolean; message: string }> {
-      const cfg = deps.config();
-      if (!cfg.hub?.sessionId) {
-        throw new AppError('Hub session is not configured in orchestrator.json', {
-          code: 'HUB_NOT_CONFIGURED',
-          statusCode: 400,
-        });
-      }
-      if (cfg.hub.wake === false) {
-        throw new AppError('Hub wake is disabled in orchestrator.json (wake: false)', {
-          code: 'HUB_WAKE_DISABLED',
-          statusCode: 400,
-        });
-      }
-      const session = sessionsDb.getSessionById(cfg.hub.sessionId);
-      if (!session) {
-        throw new AppError(`Hub session "${cfg.hub.sessionId}" was not found`, {
-          code: 'HUB_SESSION_NOT_FOUND',
-          statusCode: 404,
-        });
-      }
-
-      const nowMs = now().getTime();
-      if (isHubBusy(cfg.hub.sessionId, nowMs)) {
-        appendHubEvent({
-          jobId: 'test',
-          state: 'turn_ended',
-          title: 'test wake',
-          reason: 'manual test requested',
-        });
-        return {
-          success: true,
-          message: 'Hub session is currently busy; test wake queued for delivery when idle.',
-        };
-      }
-
-      readPendingEvents();
-      let message: string;
-      let offsetToCommit: number | null = null;
-      let deliveredCount = 0;
-      if (pendingEvents.length > 0) {
-        deliveredCount = pendingEvents.length;
-        offsetToCommit = targetEndOffset;
-        message = buildHubWakeMessage(pendingEvents);
-      } else {
-        message = '[tjob] test wake: hub wake is active and responding';
-      }
-
-      const delivered = await deliverMessage(cfg.hub.sessionId, message);
-      if (delivered && offsetToCommit !== null) {
-        saveStoredOffset(offsetToCommit);
-        pendingEvents = pendingEvents.slice(deliveredCount);
-        firstEventTimeMs = null;
-        lastEventTimeMs = 0;
-      }
-
-      return {
-        success: true,
-        message: 'Test wake delivered to hub session.',
-      };
+      return triggerWake({ test: true });
     },
 
     /** Direct testing inspection helpers */
     getPendingEvents: () => [...pendingEvents],
     getStoredOffset: () => storedOffset ?? loadStoredOffset(),
     isHubBusy: (sessionId: string) => isHubBusy(sessionId, now().getTime()),
+    getLastStallEmitted: (jobId: string) => {
+      ensureStallsLoaded();
+      return lastStallEmitted.get(jobId);
+    },
   };
 }
 
