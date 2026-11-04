@@ -1,6 +1,7 @@
 import type { RequestHandler } from 'express';
 
 import type { OrchestratorBackend } from '@/modules/database/index.js';
+import { reattachActiveTurns } from '@/modules/detached-turns/index.js';
 import { chatRunRegistry } from '@/modules/websocket/index.js';
 import type { ProviderRuntimeGateway } from '@/modules/websocket/index.js';
 
@@ -54,6 +55,13 @@ export function createOrchestratorModule(input: { runtime: ProviderRuntimeGatewa
     async start(): Promise<void> {
       getOrchestratorToken();
       unsubscribe = chatRunRegistry.onRunCompleted((completion) => jobs.handleRunCompleted(completion));
+      await reattachActiveTurns({
+        onTurnCompleted: (turn, exitCode) => {
+          if (turn.job_id) {
+            jobs.handleRunCompleted({ appSessionId: turn.session_id, exitCode, aborted: false });
+          }
+        },
+      }).catch((error) => console.error('[DetachedTurns] Reattach failed', error));
       await jobs.recover().catch((error) => console.error('[Orchestrator] Recovery failed', error));
       timer = setInterval(() => void tick(), TICK_INTERVAL_MS);
       timer.unref?.();

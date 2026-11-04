@@ -21,6 +21,7 @@ import {
   createCompleteMessage,
   createNormalizedMessage,
 } from '@/shared/index.js';
+import { abortTurn } from '@/modules/detached-turns/index.js';
 import { notifyRunFailed, notifyRunStopped } from '@/modules/notifications/index.js';
 import { getCodexPathOverride } from '@/modules/providers/list/codex/codex-cli-path.js';
 import type { AnyRecord, ProviderRuntimeContext, ProviderRuntimeWriter } from '@/shared/index.js';
@@ -509,10 +510,11 @@ async function queryCodex(
  * @returns {boolean} - Whether abort was successful
  */
 function abortCodexSession(sessionId: string) {
+  const detachedAborted = abortTurn(sessionId);
   const session = activeCodexSessions.get(sessionId);
 
   if (!session) {
-    return false;
+    return detachedAborted;
   }
 
   session.status = 'aborted';

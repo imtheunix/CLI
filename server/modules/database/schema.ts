@@ -301,6 +301,20 @@ CREATE TABLE IF NOT EXISTS superseded_provider_sessions (
 );
 `;
 
+export const RUNNING_TURNS_TABLE_SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS running_turns (
+    unit_name TEXT PRIMARY KEY,
+    job_id TEXT,
+    session_id TEXT NOT NULL,
+    backend TEXT NOT NULL,
+    log_path TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'running',
+    exit_code INTEGER,
+    completed_at TEXT
+);
+`;
+
 export const INIT_SCHEMA_SQL = `
 -- Initialize authentication database
 PRAGMA foreign_keys = ON;
@@ -354,4 +368,8 @@ ${USER_PREFERENCES_TABLE_SCHEMA_SQL}
 ${SESSION_DRAFTS_TABLE_SCHEMA_SQL}
 
 ${SUPERSEDED_PROVIDER_SESSIONS_TABLE_SCHEMA_SQL}
+
+${RUNNING_TURNS_TABLE_SCHEMA_SQL}
+CREATE INDEX IF NOT EXISTS idx_running_turns_status ON running_turns(status);
+CREATE INDEX IF NOT EXISTS idx_running_turns_session ON running_turns(session_id);
 `;

@@ -33,3 +33,6 @@ export type {
   OrchestratorJobState,
   OrchestratorMergeStep,
 } from './repositories/orchestrator-jobs.db.js';
+// runningTurnsDb: used by the detached-turns module to persist in-flight turns across server restarts.
+export { runningTurnsDb } from './repositories/running-turns.db.js';
+export type { RunningTurnRow } from './repositories/running-turns.db.js';
