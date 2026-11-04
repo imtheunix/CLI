@@ -93,6 +93,8 @@ async function withIsolatedDatabase(runTest: () => Promise<void>): Promise<void>
 
   closeConnection();
   process.env.DATABASE_PATH = path.join(tempDirectory, 'auth.db');
+  // Prevent the connection bootstrap from copying the checkout's legacy database.
+  await fsp.writeFile(process.env.DATABASE_PATH, '');
   await initializeDatabase();
 
   try {
@@ -111,7 +113,11 @@ async function withIsolatedDatabase(runTest: () => Promise<void>): Promise<void>
 test('LabsProvider groups records by (source, caller, instance) or (source, caller, day)', async () => {
   await withIsolatedDatabase(async () => {
     const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'labs-grouping-'));
-    const baseSec = Math.floor(Date.now() / 1000) - 3600; // 1 hour ago
+    // Deliberately cross UTC midnight, safely inside the provider's 30-day window.
+    const fixtureTime = new Date();
+    fixtureTime.setUTCDate(fixtureTime.getUTCDate() - 2);
+    fixtureTime.setUTCHours(23, 58, 0, 0);
+    const baseSec = fixtureTime.getTime() / 1000;
     const fakeServer = createFakeControlRoom({
       requests: [
         {
@@ -131,7 +137,7 @@ test('LabsProvider groups records by (source, caller, instance) or (source, call
         },
         {
           id: 2,
-          at: baseSec + 30,
+          at: baseSec + 180,
           source: '3beira-workers',
           caller: 'workflow',
           instance: 'inst-alpha',
@@ -184,7 +190,8 @@ test('LabsProvider groups records by (source, caller, instance) or (source, call
       const updatedCount = await provider.sessionSynchronizer.synchronize();
       assert.equal(updatedCount, 3);
 
-      const today = new Date(baseSec * 1000).toISOString().slice(0, 10);
+      const outsideWorkflowDay = new Date((baseSec + 300) * 1000).toISOString().slice(0, 10);
+      assert.notEqual(outsideWorkflowDay, fixtureTime.toISOString().slice(0, 10));
 
       // 1. Check workflow instance session
       const workflowSession = sessionsDb.getSessionByProviderSessionId('labs:3beira-workers:workflow:inst-alpha');
@@ -193,22 +200,22 @@ test('LabsProvider groups records by (source, caller, instance) or (source, call
       assert.equal(workflowSession.custom_name, '3beira-workers/workflow (inst-alpha)');
       assert.equal(workflowSession.project_path, 'LABS agents');
       assert.equal(new Date(workflowSession.created_at).getTime(), baseSec * 1000);
-      assert.equal(new Date(workflowSession.updated_at).getTime(), (baseSec + 30) * 1000);
+      assert.equal(new Date(workflowSession.updated_at).getTime(), (baseSec + 180) * 1000);
 
       // 2. Check lab outside-workflow session (no instance, no caller -> source (day))
-      const labSession = sessionsDb.getSessionByProviderSessionId(`labs:lab::${today}`);
+      const labSession = sessionsDb.getSessionByProviderSessionId(`labs:lab::${outsideWorkflowDay}`);
       assert.ok(labSession);
       assert.equal(labSession.provider, 'labs');
-      assert.equal(labSession.custom_name, `lab (${today})`);
+      assert.equal(labSession.custom_name, `lab (${outsideWorkflowDay})`);
       assert.equal(labSession.project_path, 'LABS agents');
       assert.equal(new Date(labSession.created_at).getTime(), (baseSec + 300) * 1000);
       assert.equal(new Date(labSession.updated_at).getTime(), (baseSec + 300) * 1000);
 
       // 3. Check 3beira-workers/planner outside-workflow session
-      const plannerSession = sessionsDb.getSessionByProviderSessionId(`labs:3beira-workers:planner:${today}`);
+      const plannerSession = sessionsDb.getSessionByProviderSessionId(`labs:3beira-workers:planner:${outsideWorkflowDay}`);
       assert.ok(plannerSession);
       assert.equal(plannerSession.provider, 'labs');
-      assert.equal(plannerSession.custom_name, `3beira-workers/planner (${today})`);
+      assert.equal(plannerSession.custom_name, `3beira-workers/planner (${outsideWorkflowDay})`);
       assert.equal(plannerSession.project_path, 'LABS agents');
       assert.equal(new Date(plannerSession.created_at).getTime(), (baseSec + 400) * 1000);
       assert.equal(new Date(plannerSession.updated_at).getTime(), (baseSec + 400) * 1000);
