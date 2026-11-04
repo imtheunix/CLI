@@ -1,7 +1,8 @@
 import { AbstractProvider } from '@/modules/providers/shared/base/abstract.provider.js';
 import { ClaudeProviderAuth } from '@/modules/providers/list/claude/claude-auth.provider.js';
 import { ClaudeProviderModels } from '@/modules/providers/list/claude/claude-models.provider.js';
-import { claudeRuntime } from '@/modules/providers/list/claude/claude-runtime.provider.js';
+import { claudeRuntime, createClaudeTurnLineParser } from '@/modules/providers/list/claude/claude-runtime.provider.js';
+import { registerBackendLineParser } from '@/modules/detached-turns/index.js';
 import { ClaudeForkProvider } from '@/modules/providers/list/claude/claude-fork.provider.js';
 import { ClaudeMcpProvider } from '@/modules/providers/list/claude/claude-mcp.provider.js';
 import { ClaudeSessionSynchronizer } from '@/modules/providers/list/claude/claude-session-synchronizer.provider.js';
@@ -29,5 +30,7 @@ export class ClaudeProvider extends AbstractProvider {
 
   constructor() {
     super('claude');
+    // A turn reattached after a server restart streams through the live path's normalization.
+    registerBackendLineParser('claude', createClaudeTurnLineParser((raw, sessionId) => this.sessions.normalizeMessage(raw, sessionId)));
   }
 }

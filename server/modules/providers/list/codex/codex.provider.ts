@@ -2,7 +2,8 @@ import { AbstractProvider } from '@/modules/providers/shared/base/abstract.provi
 import { CodexProviderAuth } from '@/modules/providers/list/codex/codex-auth.provider.js';
 import { CodexForkProvider } from '@/modules/providers/list/codex/codex-fork.provider.js';
 import { CodexProviderModels } from '@/modules/providers/list/codex/codex-models.provider.js';
-import { codexRuntime } from '@/modules/providers/list/codex/codex-runtime.provider.js';
+import { codexRuntime, createCodexTurnLineParser } from '@/modules/providers/list/codex/codex-runtime.provider.js';
+import { registerBackendLineParser } from '@/modules/detached-turns/index.js';
 import { CodexMcpProvider } from '@/modules/providers/list/codex/codex-mcp.provider.js';
 import { CodexSessionSynchronizer } from '@/modules/providers/list/codex/codex-session-synchronizer.provider.js';
 import { CodexSessionsProvider } from '@/modules/providers/list/codex/codex-sessions.provider.js';
@@ -29,5 +30,7 @@ export class CodexProvider extends AbstractProvider {
 
   constructor() {
     super('codex');
+    // A turn reattached after a server restart streams through the live path's normalization.
+    registerBackendLineParser('codex', createCodexTurnLineParser((raw, sessionId) => this.sessions.normalizeMessage(raw, sessionId)));
   }
 }

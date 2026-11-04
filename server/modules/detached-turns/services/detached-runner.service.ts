@@ -3,13 +3,25 @@ import type { ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { orchestratorJobsDb, runningTurnsDb } from '@/modules/database/index.js';
 import type { RunningTurnRow } from '@/modules/database/index.js';
 import type { NormalizedMessage, ProviderRuntimeWriter } from '@/shared/types.js';
 
+import {
+  attachRelayedProcess,
+  exitStatusCode,
+  launchRelayUnit,
+  readRelayExit,
+} from '../relay/relay-process.js';
+
 let cachedSystemdRunAvailable: boolean | null = null;
 const fallbackProcesses = new Map<string, ChildProcess>();
+/** Relayed units this server process drives itself (not reattached ones). */
+const attachedUnits = new Set<string>();
+
+const DETACHED_EXEC = fileURLToPath(new URL('../relay/detached-exec.js', import.meta.url));
 
 export type DetachedTurnExecution = {
   unitName: string;
@@ -18,7 +30,7 @@ export type DetachedTurnExecution = {
   promise: Promise<{ exitCode: number }>;
 };
 
-export type LineHandler = (line: string, writer?: ProviderRuntimeWriter) => void;
+export type LineHandler = (line: string, writer?: ProviderRuntimeWriter, sessionId?: string | null) => void;
 
 /** Line parsers registered per backend to parse stdout/stderr JSONL lines into stream messages. */
 const backendLineParsers = new Map<string, LineHandler>();
@@ -108,6 +120,12 @@ export function isTurnAlive(unitName: string): boolean {
 
 /** Retrieves exit code of a completed unit from systemd or process/log inspection. */
 export function getUnitExitCode(unitName: string, logPath?: string): number {
+  // A relayed turn records its CLI's own exit status.
+  const relayStatus = readRelayExit(logPath || getTurnLogPath(unitName));
+  if (relayStatus) {
+    return exitStatusCode(relayStatus);
+  }
+
   const fallbackChild = fallbackProcesses.get(unitName);
   if (fallbackChild) {
     if (fallbackChild.exitCode !== null) {
@@ -392,6 +410,153 @@ export function spawnDetachedTurn(input: {
   };
 }
 
+export type RelayedTurnProcess = ReturnType<typeof attachRelayedProcess>;
+
+/**
+ * Spawns a CLI that keeps stdin open across its turn (Claude's stream-json)
+ * in a relayed systemd unit, recorded in running_turns so a restarted server
+ * reattaches to it. Returns a ChildProcess-shaped handle, or null when
+ * systemd-run is unavailable or the unit did not start: the caller then
+ * spawns the CLI directly, as before.
+ */
+export function spawnRelayedTurn(input: {
+  command: string;
+  args: string[];
+  cwd: string;
+  sessionId: string;
+  backend: string;
+  jobId?: string | null;
+  env?: Record<string, string | undefined>;
+  protocol?: 'claude' | null;
+  signal?: AbortSignal;
+}): RelayedTurnProcess | null {
+  if (!isSystemdRunAvailable()) {
+    return null;
+  }
+  const unitName = generateUnitName(input.jobId || input.sessionId);
+  const logPath = getTurnLogPath(unitName);
+  runningTurnsDb.recordTurn({
+    unitName,
+    jobId: input.jobId ?? null,
+    sessionId: input.sessionId,
+    backend: input.backend,
+    logPath,
+  });
+
+  const env: Record<string, string | undefined> = { ...process.env, ...(input.env || {}) };
+  delete env._;
+  const launched = launchRelayUnit({
+    unitName,
+    command: input.command,
+    args: input.args,
+    cwd: input.cwd,
+    env,
+    logPath,
+    protocol: input.protocol ?? null,
+  });
+  if (!launched) {
+    console.warn(`[DetachedTurns] systemd-run could not start ${unitName}; spawning ${input.backend} directly`);
+    runningTurnsDb.deleteTurn(unitName);
+    return null;
+  }
+
+  attachedUnits.add(unitName);
+  const child = attachRelayedProcess({ unitName, logPath, signal: input.signal });
+  child.once('exit', (code: number | null, signal: string | null) => {
+    attachedUnits.delete(unitName);
+    runningTurnsDb.completeTurn(unitName, exitStatusCode({ code, signal }));
+  });
+  return child;
+}
+
+/**
+ * For an SDK that spawns its CLI itself (Codex): records a turn and returns
+ * the wrapper executable and environment that make the SDK's child a relayed
+ * unit. Null when systemd-run is unavailable: the SDK spawns the CLI directly.
+ * `complete` is called once the SDK's run is over.
+ */
+export function prepareDetachedExec(input: {
+  command: string | undefined;
+  sessionId: string | null | undefined;
+  backend: string;
+  jobId?: string | null;
+}): { executable: string; env: Record<string, string>; unitName: string; complete: () => void } | null {
+  if (!input.command || !input.sessionId || !isSystemdRunAvailable()) {
+    return null;
+  }
+  // The build does not keep the executable bit.
+  try {
+    fs.accessSync(DETACHED_EXEC, fs.constants.X_OK);
+  } catch {
+    try {
+      fs.chmodSync(DETACHED_EXEC, 0o755);
+    } catch {
+      return null;
+    }
+  }
+
+  const unitName = generateUnitName(input.jobId || input.sessionId);
+  const logPath = getTurnLogPath(unitName);
+  runningTurnsDb.recordTurn({
+    unitName,
+    jobId: input.jobId ?? null,
+    sessionId: input.sessionId,
+    backend: input.backend,
+    logPath,
+  });
+  attachedUnits.add(unitName);
+
+  const env: Record<string, string> = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (typeof value === 'string') env[key] = value;
+  }
+  env.CLI_DETACHED_UNIT = unitName;
+  env.CLI_DETACHED_LOG = logPath;
+  env.CLI_DETACHED_COMMAND = input.command;
+
+  return {
+    executable: DETACHED_EXEC,
+    env,
+    unitName,
+    complete: () => {
+      attachedUnits.delete(unitName);
+      if (runningTurnsDb.getTurn(unitName)?.status === 'running' && !isTurnAlive(unitName)) {
+        runningTurnsDb.completeTurn(unitName, getUnitExitCode(unitName, logPath));
+      }
+    },
+  };
+}
+
+function stopUnit(unitName: string): Promise<void> {
+  return new Promise((resolve) => {
+    const stop = spawn('systemctl', ['--user', 'stop', `${unitName}.service`], { stdio: 'ignore' });
+    stop.on('error', () => resolve());
+    stop.on('close', () => resolve());
+  });
+}
+
+/**
+ * Stops a backend's detached turns for a session that this server process
+ * does not drive itself: ones reattached after a restart. A new turn calls
+ * this before it spawns, so a session never has two live CLI processes.
+ */
+export async function retireDetachedSessionTurns(sessionId: string, backend: string): Promise<number> {
+  const turns = runningTurnsDb.listRunningTurns().filter((turn) => (
+    turn.session_id === sessionId
+    && turn.backend === backend
+    && !attachedUnits.has(turn.unit_name)
+    && !fallbackProcesses.has(turn.unit_name)
+  ));
+  for (const turn of turns) {
+    if (isTurnAlive(turn.unit_name)) {
+      console.log(`[DetachedTurns] Retiring reattached ${backend} turn ${turn.unit_name} for session ${sessionId}`);
+      await stopUnit(turn.unit_name);
+    }
+    runningTurnsDb.completeTurn(turn.unit_name, getUnitExitCode(turn.unit_name, turn.log_path));
+  }
+  return turns.length;
+}
+
 /** Stops an in-flight turn for a session. */
 export function abortTurn(sessionId: string): boolean {
   const turn = runningTurnsDb.getRunningTurnBySession(sessionId);
@@ -494,7 +659,7 @@ export async function reattachActiveTurns(options: {
             isAlive: () => isTurnAlive(turn.unit_name),
             onLine: (line) => {
               if (run) {
-                parser(line, run.writer);
+                parser(line, run.writer, turn.session_id);
               }
             },
           });

@@ -21,10 +21,12 @@ import {
   createCompleteMessage,
   createNormalizedMessage,
 } from '@/shared/index.js';
-import { abortTurn } from '@/modules/detached-turns/index.js';
 import { notifyRunFailed, notifyRunStopped } from '@/modules/notifications/index.js';
 import { getCodexPathOverride } from '@/modules/providers/list/codex/codex-cli-path.js';
+import { abortTurn, prepareDetachedExec, retireDetachedSessionTurns } from '@/modules/detached-turns/index.js';
+import type { LineHandler } from '@/modules/detached-turns/index.js';
 import type { AnyRecord, ProviderRuntimeContext, ProviderRuntimeWriter } from '@/shared/index.js';
+import type { NormalizedMessage } from '@/shared/types.js';
 
 type ActiveCodexSession = {
   thread: Thread;
@@ -79,7 +81,35 @@ function extractCodexTokenBudget(event: AnyRecord) {
  * @param {object} event - SDK event
  * @returns {object} - Transformed event for WebSocket
  */
-function transformCodexEvent(event: AnyRecord): AnyRecord {
+/**
+ * Line parser for a reattached Codex turn's log (the CLI's JSONL events):
+ * the same filtering, transform and normalization as the live loop.
+ */
+export function createCodexTurnLineParser(
+  normalizeMessage: (raw: unknown, sessionId: string | null) => NormalizedMessage[],
+): LineHandler {
+  return (line, writer, sessionId = null) => {
+    if (!writer) return;
+    let event: AnyRecord;
+    try {
+      event = JSON.parse(line);
+    } catch {
+      return;
+    }
+    if (!event || typeof event !== 'object' || typeof event.type !== 'string') return;
+    if (
+      (event.type === 'item.started' || event.type === 'item.updated')
+      && !PROGRESSIVE_CODEX_ITEM_TYPES.has(event.item?.type)
+    ) {
+      return;
+    }
+    for (const msg of normalizeMessage(transformCodexEvent(event), sessionId)) {
+      writer.send(msg);
+    }
+  };
+}
+
+export function transformCodexEvent(event: AnyRecord): AnyRecord {
   // Map SDK event types to a consistent format
   switch (event.type) {
     case 'item.started':
@@ -309,9 +339,26 @@ async function queryCodex(
   // Session-map key: the app session id when the caller supplied one, else
   // the provider-native thread id once captured (legacy/direct API callers).
   const sessionKey = () => sessionId || capturedSessionId || null;
+  // The CLI runs in a relayed systemd unit through a wrapper so the turn
+  // outlives a server restart (detached-turns reattaches to its log). Not with
+  // the SDK's bundled binary, whose path only the SDK resolves: that one, and
+  // any turn without systemd-run, is spawned directly as before.
+  // A CLI a previous server instance left running on this thread is stopped
+  // first, so one thread never has two processes acting on it.
+  if (sessionId) {
+    await retireDetachedSessionTurns(sessionId, 'codex');
+  }
+  const detached = prepareDetachedExec({
+    command: getCodexPathOverride(),
+    sessionId,
+    backend: 'codex',
+    jobId: typeof (options as { jobId?: unknown }).jobId === 'string' ? (options as { jobId: string }).jobId : null,
+  });
 
   try {
-    codex = new Codex({ codexPathOverride: getCodexPathOverride() });
+    codex = detached
+      ? new Codex({ codexPathOverride: detached.executable, env: detached.env })
+      : new Codex({ codexPathOverride: getCodexPathOverride() });
 
     const threadOptions: ThreadOptions = {
       workingDirectory,
@@ -494,6 +541,7 @@ async function queryCodex(
     }
 
   } finally {
+    detached?.complete();
     // Update session status
     if (sessionKey()) {
       const session = activeCodexSessions.get(sessionKey() || '');
