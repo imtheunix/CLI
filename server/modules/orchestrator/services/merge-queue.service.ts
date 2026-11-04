@@ -4,6 +4,7 @@ import path from 'node:path';
 import { orchestratorJobsDb } from '@/modules/database/index.js';
 import type { OrchestratorJobRow, OrchestratorMergeStep } from '@/modules/database/index.js';
 
+import { appendHubEvent } from './hub-events.service.js';
 import type { JobsService } from './jobs.service.js';
 import type { OrchestratorConfig } from './orchestrator-config.service.js';
 import {
@@ -62,12 +63,18 @@ export function createMergeQueueService(deps: {
   const inFlight = new Set<string>();
 
   function setStep(job: OrchestratorJobRow, step: OrchestratorMergeStep, extra: Parameters<typeof orchestratorJobsDb.update>[1] = {}): OrchestratorJobRow {
-    return orchestratorJobsDb.update(job.id, { merge_step: step, ...extra }) as OrchestratorJobRow;
+    const updated = orchestratorJobsDb.update(job.id, { merge_step: step, ...extra }) as OrchestratorJobRow;
+    if (step === 'merged') {
+      const reason = extra && 'last_error' in extra && extra.last_error ? String(extra.last_error) : 'merged';
+      appendHubEvent({ jobId: job.id, state: 'merged', title: job.title, reason });
+    }
+    return updated;
   }
 
   /** Stops the job in the queue until `tjob retry`; the agent is told when it may be able to help. */
   async function block(job: OrchestratorJobRow, reason: string, tellAgent: boolean): Promise<void> {
     setStep(job, 'blocked', { last_error: reason });
+    appendHubEvent({ jobId: job.id, state: 'blocked', title: job.title, reason });
     console.warn(`[Orchestrator] Job ${job.id} is blocked: ${reason.split('\n')[0]}`);
     if (tellAgent) {
       await deps.jobs.notify(job, `CI/CD queue: job ${job.id} is blocked.\n\n${reason}\n\nIf it is something in the code, fix it, commit, and run tjob done ${job.id} again. Infrastructure (CI, k8s, secrets, tunnels) is for a person: say so and stop.`);
@@ -77,6 +84,7 @@ export function createMergeQueueService(deps: {
   /** Hands the branch back to its agent with what went wrong; the agent runs `tjob done` again when fixed. */
   async function backToAgent(job: OrchestratorJobRow, message: string): Promise<void> {
     console.warn(`[Orchestrator] Job ${job.id} goes back to its agent: ${message.split('\n')[0]}`);
+    appendHubEvent({ jobId: job.id, state: 'merge_failed', title: job.title, reason: message });
     await deps.jobs.reopenWithMessage(job, `CI/CD queue: ${message}\n\nFix it, commit, and run tjob done ${job.id} again. If it is infrastructure (CI, k8s, secrets, tunnels), say so and stop: that is for a person.`);
   }
 

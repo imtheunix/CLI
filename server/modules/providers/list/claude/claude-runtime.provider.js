@@ -43,6 +43,7 @@ import {
   getReportedClaudeContextWindow,
   rememberClaudeContextWindow
 } from '@/modules/providers/services/provider-token-usage.service.js';
+import { abortTurn } from '@/modules/detached-turns/index.js';
 import { createCompleteMessage, createNormalizedMessage } from '@/shared/utils.js';
 
 const activeSessions = new Map();
@@ -1595,11 +1596,12 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
  * @returns {boolean} True if session was aborted, false if not found
  */
 async function abortClaudeSDKSession(sessionId) {
+  const detachedAborted = abortTurn(sessionId);
   const session = getSession(sessionId);
 
   if (!session) {
     console.log(`Session ${sessionId} not found`);
-    return false;
+    return detachedAborted;
   }
 
   try {

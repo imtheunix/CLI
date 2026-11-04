@@ -15,6 +15,7 @@ import type { ProviderRuntimeGateway } from '@/modules/websocket/index.js';
 import { AppError } from '@/shared/index.js';
 
 import { detectGlmQuotaReset, getGlmQuotaReset, recordGlmQuotaReset } from './glm-quota.service.js';
+import { appendHubEvent } from './hub-events.service.js';
 import { isInGlmPeakHours, pickBackend } from './balancer.service.js';
 import { modelLabel, resolveRequestedModel } from './orchestrator-config.service.js';
 import type { OrchestratorConfig } from './orchestrator-config.service.js';
@@ -345,8 +346,12 @@ export function createJobsService(deps: {
       if (!await hasCommitsAhead(job.worktree_path, job.base_branch)) {
         throw new AppError(`The branch has no commits ahead of origin/${job.base_branch}`, { code: 'JOB_EMPTY', statusCode: 409 });
       }
-      orchestratorJobsDb.update(id, { state: 'done', merge_step: deps.config().review ? 'review' : 'queued', merge_attempts: 0,
+      const mergeStep = deps.config().review ? 'review' : 'queued';
+      orchestratorJobsDb.update(id, { state: 'done', merge_step: mergeStep, merge_attempts: 0,
                                        pushed_sha: null, last_error: null });
+      if (mergeStep === 'review') {
+        appendHubEvent({ jobId: job.id, state: 'review', title: job.title, reason: 'waiting for review' });
+      }
       return view(orchestratorJobsDb.get(id) as OrchestratorJobRow);
     },
 
@@ -431,6 +436,16 @@ export function createJobsService(deps: {
         in_turn: 0,
         ...(completion.exitCode !== 0 && !completion.aborted ? { last_error: `The last turn ended with exit code ${completion.exitCode}` } : {}),
       });
+      if (job.state === 'active') {
+        appendHubEvent({
+          jobId: job.id,
+          state: 'turn_ended',
+          title: job.title,
+          reason: completion.exitCode === 0
+            ? 'turn ended without tjob done'
+            : (completion.aborted ? 'turn was aborted' : `turn ended with exit code ${completion.exitCode}`),
+        });
+      }
     },
 
     /**

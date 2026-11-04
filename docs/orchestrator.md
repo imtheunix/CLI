@@ -74,3 +74,14 @@ tjob ls | show <id> | done <id> | cancel <id> | retry <id> | resume <id>
 `--model` takes a model the backend offers, as its full id or the part after the `/` (`--model glm-5.3` for the full GLM). Any other is refused, naming the ones offered. With `--backend auto`, the model picks the backend. `tjob ls` shows each job's model.
 
 It talks to the local server with the token in `~/.cloudcli/orchestrator.token` (0600), sent on curl's stdin.
+
+## Hub events log
+
+When a job changes state (`review`, `blocked`, `merge_failed`, `turn_ended`, `merged`), the orchestrator appends one tab-separated line to `~/.cache/cli/hub-events.log` (mode `0600`):
+
+```text
+<iso-timestamp>\t<job-id>\t<state>\t<title>\t<reason>
+```
+
+A hub or watching process can follow this file with `tail -F ~/.cache/cli/hub-events.log` without polling the server or injecting messages into sessions.
+

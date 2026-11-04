@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 
+import { abortTurn, spawnDetachedTurn } from '@/modules/detached-turns/index.js';
 import { AgySessionSynchronizer } from '@/modules/providers/list/agy/agy-session-synchronizer.provider.js';
 import { AbstractProvider } from '@/modules/providers/shared/base/abstract.provider.js';
 import type { IProviderRuntime, IProviderSessions, IProviderModels, IProviderAuth, IProviderMcp, IProviderSkills, IProviderSessionSynchronizer } from '@/shared/interfaces.js';
@@ -369,50 +370,40 @@ export class AgyProvider extends AbstractProvider {
       };
       // The detached-turn runner echoes the prompt live; this is its durable copy.
       appendFileSync(file, JSON.stringify({ event: 'user', content: command, id: randomUUID(), timestamp: new Date().toISOString() }) + '\n', { mode: 0o600 });
-      await new Promise<void>((resolve) => {
-        const child = spawn('agy', args, { cwd: options.cwd || options.projectPath || process.cwd(), stdio: ['ignore', 'pipe', 'pipe'] });
-        this.processes.set(sessionId, child);
-        let buffer = '';
-        let failed = false;
-        let settled = false;
-        const finish = (code: number) => {
-          if (settled) return;
-          settled = true;
-          options.abortController?.signal.removeEventListener('abort', abort);
-          if (this.processes.get(sessionId) === child) this.processes.delete(sessionId);
-          writer.send(createCompleteMessage({ provider: 'agy', sessionId, exitCode: failed ? 1 : code, aborted: Boolean(options.abortController?.signal.aborted) }));
-          resolve();
-        };
-        const abort = () => { child.kill('SIGTERM'); };
-        options.abortController?.signal.addEventListener('abort', abort, { once: true });
-        if (options.abortController?.signal.aborted) abort();
-        const line = (value: string) => {
-          if (!value.trim()) return;
-          let event: AnyRecord;
-          try { event = JSON.parse(value); } catch { record({ event: 'error', content: value }); failed = true; return; }
-          const id = event.conversation_id ?? event.init?.conversation_id ?? event.result?.conversation_id;
-          if (typeof id === 'string') writer.setSessionId?.(id);
-          if (event.event === 'error') failed = true;
-          if (event.event === 'result' && event.result?.status !== 'SUCCESS') {
-            failed = true;
-            record({ event: 'error', content: event.result?.error ?? event.result?.response ?? 'agy turn failed' });
-          }
-          record(event);
-        };
-        child.stdout?.on('data', (data: Buffer) => {
-          buffer += data.toString();
-          const lines = buffer.split(/\r?\n/);
-          buffer = lines.pop() ?? '';
-          lines.forEach(line);
-        });
-        child.stderr?.on('data', (data: Buffer) => {
-          record({ event: 'error', content: data.toString() });
-        });
-        child.on('error', (error) => { failed = true; record({ event: 'error', content: error.message }); finish(1); });
-        child.on('close', (code) => { line(buffer); finish(code ?? 1); });
+      let failed = false;
+      const line = (value: string) => {
+        if (!value.trim()) return;
+        let event: AnyRecord;
+        try { event = JSON.parse(value); } catch { record({ event: 'error', content: value }); failed = true; return; }
+        const id = event.conversation_id ?? event.init?.conversation_id ?? event.result?.conversation_id;
+        if (typeof id === 'string') writer.setSessionId?.(id);
+        if (event.event === 'error') failed = true;
+        if (event.event === 'result' && event.result?.status !== 'SUCCESS') {
+          failed = true;
+          record({ event: 'error', content: event.result?.error ?? event.result?.response ?? 'agy turn failed' });
+        }
+        record(event);
+      };
+
+      const turnExecution = spawnDetachedTurn({
+        command: 'agy',
+        args,
+        cwd: options.cwd || options.projectPath || process.cwd(),
+        sessionId,
+        backend: 'agy',
+        jobId: typeof options.jobId === 'string' ? options.jobId : null,
+        onLine: (val) => line(val),
+        signal: options.abortController?.signal,
       });
+
+      const { exitCode } = await turnExecution.promise;
+      writer.send(createCompleteMessage({ provider: 'agy', sessionId, exitCode: failed ? 1 : exitCode, aborted: Boolean(options.abortController?.signal.aborted) }));
     },
-    abort: (sessionId) => this.processes.get(sessionId)?.kill('SIGTERM') ?? false,
+    abort: (sessionId) => {
+      const detachedStopped = abortTurn(sessionId);
+      const proc = this.processes.get(sessionId);
+      return detachedStopped || (proc?.kill('SIGTERM') ?? false);
+    },
   };
 
   constructor() { super('agy'); }

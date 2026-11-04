@@ -3,12 +3,13 @@ import fsSync from 'node:fs';
 import crossSpawn from 'cross-spawn';
 import Database from 'better-sqlite3';
 
+import { abortTurn, spawnDetachedTurn } from '@/modules/detached-turns/index.js';
+import { notifyRunFailed, notifyRunStopped } from '@/modules/notifications/index.js';
 import {
   appendFilesInputTag,
   appendImagesInputTag,
   normalizeAttachmentDescriptors
 } from '@/shared/image-attachments.js';
-import { notifyRunFailed, notifyRunStopped } from '@/modules/notifications/index.js';
 import { createCompleteMessage, createNormalizedMessage, flattenPromptForWindowsShell, getOpenCodeDatabasePath, stripAnsiSequences } from '@/shared/utils.js';
 
 // cross-spawn resolves .cmd shims/PATHEXT on Windows and delegates to
@@ -288,128 +289,88 @@ async function spawnOpenCode(command, options = {}, ws, context) {
       }
 
       if (options.abortController?.signal.aborted) { resolve(); return; }
-      opencodeProcess = spawnFunction('opencode', args, {
-        signal: options.abortController?.signal,
+
+      const turnExecution = spawnDetachedTurn({
+        command: 'opencode',
+        args,
         cwd: workingDir,
-        stdio: ['pipe', 'pipe', 'pipe'],
-        env: { ...process.env, ...permissionOptions.env },
+        sessionId: processKey,
+        backend: 'glm',
+        jobId: typeof options.jobId === 'string' ? options.jobId : null,
+        env: permissionOptions.env,
+        onLine: (line) => {
+          const trimmed = line.trim();
+          if (trimmed.startsWith('{')) {
+            processOpenCodeOutputLine(trimmed);
+          } else {
+            const stderrText = stripAnsiSequences(trimmed);
+            if (stderrText.trim()) {
+              ws.send(createNormalizedMessage({
+                kind: 'error',
+                content: stderrText,
+                sessionId: capturedSessionId || sessionId || null,
+                provider: 'opencode',
+              }));
+            }
+          }
+        },
+        signal: options.abortController?.signal,
       });
 
-      activeOpenCodeProcesses.set(processKey, opencodeProcess);
-      opencodeProcess.sessionId = processKey;
-      opencodeProcess.stdin.end();
+      const { exitCode: code } = await turnExecution.promise;
+      const finalSessionId = sessionId || capturedSessionId || processKey;
+      activeOpenCodeProcesses.delete(finalSessionId);
+      activeOpenCodeProcesses.delete(processKey);
+      if (options.abortController?.signal.aborted) { resolve(); return; }
 
-      opencodeProcess.stdout.on('data', (data) => {
-        stdoutLineBuffer += data.toString();
-        const completeLines = stdoutLineBuffer.split(/\r?\n/);
-        stdoutLineBuffer = completeLines.pop() || '';
-
-        completeLines.forEach((line) => {
-          processOpenCodeOutputLine(line.trim());
-        });
-      });
-
-      opencodeProcess.stderr.on('data', (data) => {
-        // opencode styles its stderr for a terminal; the chat renders plain
-        // text, so the escapes have to go before the text is surfaced. A chunk
-        // that was styling only cleans down to nothing and is not an error.
-        const stderrText = stripAnsiSequences(data.toString());
-        if (!stderrText.trim()) {
-          return;
-        }
-
+      // OpenCode's own database is keyed by the provider-native id.
+      const tokenBudget = readOpenCodeTokenUsage(capturedSessionId);
+      if (tokenBudget) {
         ws.send(createNormalizedMessage({
-          kind: 'error',
-          content: stderrText,
-          sessionId: capturedSessionId || sessionId || null,
+          kind: 'status',
+          text: 'token_budget',
+          tokenBudget,
+          sessionId: finalSessionId,
           provider: 'opencode',
         }));
-      });
+      }
 
-      opencodeProcess.on('close', async (code) => {
-        const finalSessionId = sessionId || capturedSessionId || processKey;
-        if (activeOpenCodeProcesses.get(finalSessionId) === opencodeProcess) activeOpenCodeProcesses.delete(finalSessionId);
-        if (activeOpenCodeProcesses.get(processKey) === opencodeProcess) activeOpenCodeProcesses.delete(processKey);
-        if (options.abortController?.signal.aborted || opencodeProcess.aborted) { resolve(); return; }
+      // Terminal complete — skipped for aborted runs (abort-session
+      // already sent the aborted complete on this run's behalf).
+      if (!completeSent && !options.abortController?.signal.aborted) {
+        completeSent = true;
+        ws.send(createCompleteMessage({ provider: 'opencode', sessionId: finalSessionId, exitCode: code }));
+      }
 
-        if (stdoutLineBuffer.trim()) {
-          processOpenCodeOutputLine(stdoutLineBuffer.trim());
-          stdoutLineBuffer = '';
-        }
+      if (code === 0) {
+        notifyTerminalState({ code });
+        resolve();
+        return;
+      }
 
-        // OpenCode's own database is keyed by the provider-native id.
-        const tokenBudget = readOpenCodeTokenUsage(capturedSessionId);
-        if (tokenBudget) {
+      if (code === 127 || code === null) {
+        const installed = await context.isProviderInstalled();
+        if (!installed) {
           ws.send(createNormalizedMessage({
-            kind: 'status',
-            text: 'token_budget',
-            tokenBudget,
+            kind: 'error',
+            content: 'OpenCode CLI is not installed. Install it from https://opencode.ai/docs/',
             sessionId: finalSessionId,
             provider: 'opencode',
           }));
         }
+      }
 
-        // Terminal complete — skipped for aborted runs (abort-session
-        // already sent the aborted complete on this run's behalf).
-        if (!completeSent && !opencodeProcess.aborted && !options.abortController?.signal.aborted) {
-          completeSent = true;
-          ws.send(createCompleteMessage({ provider: 'opencode', sessionId: finalSessionId, exitCode: code }));
-        }
-
-        if (code === 0) {
-          notifyTerminalState({ code });
-          resolve();
-          return;
-        }
-
-        if (code === 127 || code === null) {
-          const installed = await context.isProviderInstalled();
-          if (!installed) {
-            ws.send(createNormalizedMessage({
-              kind: 'error',
-              content: 'OpenCode CLI is not installed. Install it from https://opencode.ai/docs/',
-              sessionId: finalSessionId,
-              provider: 'opencode',
-            }));
-          }
-        }
-
-        notifyTerminalState({ code });
-        reject(new Error(code === null ? 'OpenCode CLI process was terminated' : `OpenCode CLI exited with code ${code}`));
-      });
-
-      opencodeProcess.on('error', async (error) => {
-        const finalSessionId = sessionId || capturedSessionId || processKey;
-        if (activeOpenCodeProcesses.get(finalSessionId) === opencodeProcess) activeOpenCodeProcesses.delete(finalSessionId);
-        if (activeOpenCodeProcesses.get(processKey) === opencodeProcess) activeOpenCodeProcesses.delete(processKey);
-        if (options.abortController?.signal.aborted || opencodeProcess.aborted) { resolve(); return; }
-
-        const installed = await context.isProviderInstalled();
-        const errorContent = !installed
-          ? 'OpenCode CLI is not installed. Install it from https://opencode.ai/docs/'
-          : error.message;
-
-        ws.send(createNormalizedMessage({
-          kind: 'error',
-          content: errorContent,
-          sessionId: finalSessionId,
-          provider: 'opencode',
-        }));
-        if (!completeSent && !opencodeProcess.aborted && !options.abortController?.signal.aborted) {
-          completeSent = true;
-          ws.send(createCompleteMessage({ provider: 'opencode', sessionId: finalSessionId, exitCode: 1 }));
-        }
-        notifyTerminalState({ error });
-        reject(error);
-      });
+      notifyTerminalState({ code });
+      reject(new Error(code === null ? 'OpenCode CLI process was terminated' : `OpenCode CLI exited with code ${code}`));
     }).catch(reject);
   });
 }
 
 function abortOpenCodeSession(sessionId) {
+  const detachedAborted = abortTurn(sessionId);
   const process = activeOpenCodeProcesses.get(sessionId);
   if (!process) {
-    return false;
+    return detachedAborted;
   }
 
   // The abort handler sends the terminal complete (aborted: true); flag the
