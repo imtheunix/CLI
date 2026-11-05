@@ -338,3 +338,37 @@ test('live Claude query receives steering input without an interrupt and echoes 
     assert.equal(await claudeRuntime.inject(SESSION_ID, 'too late', {}), false);
   });
 });
+
+test('the model re-invoked after a result is a new turn: working again, and its own result completes it', async () => {
+  await withRun(async ({ script, sent }) => {
+    const assistantText = (text: string) => ({
+      type: 'assistant', session_id: NATIVE_ID, parent_tool_use_id: null,
+      message: { role: 'assistant', content: [{ type: 'text', text }] },
+    });
+    script.emit(init());
+    script.emit(toolUse('toolu_wf', 'Workflow', { script: 'export const meta = {}' }));
+    script.emit(taskStarted('wf1', 'toolu_wf', 'local_workflow'));
+    script.emit(ack('toolu_wf', 'Workflow launched in background. Task ID: wf1', { status: 'async_launched', taskId: 'wf1', taskType: 'local_workflow' }));
+    script.emit(result());
+    await settle();
+    const ends = () => sent.filter((message) => message.kind === 'complete').length;
+    const resumed = () => sent.filter((message) => message.kind === 'status' && message.turnResumed);
+    assert.equal(ends(), 1);
+    assert.equal(resumed().length, 0);
+
+    // The workflow reports in; Claude Code re-invokes the model on it.
+    script.emit(taskNotification('wf1', 'toolu_wf', 'completed'));
+    script.emit(assistantText('The workflow finished; here is the report.'));
+    await settle();
+    assert.equal(resumed().length, 1, 'the resumed turn tells the run it is working again');
+    assert.equal(resumed()[0].sessionId, NATIVE_ID);
+    assert.equal(ends(), 1);
+
+    script.emit(result());
+    await settle();
+    assert.equal(ends(), 2, 'the resumed turn ends with a complete of its own');
+    assert.equal(script.released(), true);
+    const kinds = sent.filter((message) => message.kind === 'complete' || message.turnResumed).map((message) => message.kind);
+    assert.deepEqual(kinds, ['complete', 'status', 'complete']);
+  });
+});

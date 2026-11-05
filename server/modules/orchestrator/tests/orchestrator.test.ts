@@ -14,8 +14,10 @@ import { loadOrchestratorConfig } from '../services/orchestrator-config.service.
 import type { OrchestratorConfig } from '../services/orchestrator-config.service.js';
 import { checkEnvironment, resolveCheckCommand, runCommand } from '../services/workspace.service.js';
 import { chatRunRegistry } from '@/modules/websocket/index.js';
+import type { NormalizedMessage } from '@/shared/types.js';
 
 type Turn = { sessionId: string; command: string; options: Record<string, unknown> };
+type TurnWriter = { send: (message: NormalizedMessage) => void };
 
 function git(cwd: string, ...args: string[]): string {
   return execFileSync('git', args, { cwd, encoding: 'utf8', env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } }).trim();
@@ -31,8 +33,11 @@ function commitFile(cwd: string, file: string, content: string, message: string)
 function createRuntime() {
   const turns: Turn[] = [];
   const open = new Map<string, () => void>();
-  return {
+  const writers = new Map<string, TurnWriter>();
+  const runtime = {
     turns,
+    /** Each turn's run writer, for tests that speak for the provider. */
+    writers,
     finish(sessionId: string, options: { aborted?: boolean } = {}) {
       chatRunRegistry.completeRun(sessionId, { exitCode: 0, aborted: options.aborted });
       open.get(sessionId)?.();
@@ -44,13 +49,15 @@ function createRuntime() {
       resolveToolApproval: () => undefined,
       getPendingApprovalsForSession: () => [],
       abort: async () => true,
-      run: (_provider: string, command: string, options: Record<string, unknown>) => {
+      run: (_provider: string, command: string, options: Record<string, unknown>, writer: TurnWriter) => {
         const sessionId = String(options.sessionId);
         turns.push({ sessionId, command, options });
+        writers.set(sessionId, writer);
         return new Promise<void>((resolve) => open.set(sessionId, resolve));
       },
     },
   };
+  return runtime;
 }
 
 async function eventually(check: () => boolean, what: string): Promise<void> {
@@ -1041,4 +1048,57 @@ test('each merge step\'s start is recorded, and the job view shows how long each
       { step: 'rebase', at: at(0) }, { step: 'check', at: at(5) }, { step: 'check:run', at: at(20) },
     ], Date.parse(at(50))).map((entry) => entry.durationMs), [5000, 15000, 30000]);
   });
+});
+
+/**
+ * Claude Code re-invokes the model when background work a turn started
+ * reports back, after that turn's `result`; the runtime then tells the run it
+ * is working again (a `turnResumed` status) and completes it once more on the
+ * next `result` (provider side: claude-turn-resumed.test.ts). The job must
+ * show working again and each end must reach the hub, as often as it
+ * happens. Seen live on TSGE job 241870f9: one turn_ended, then 20 more
+ * minutes of work and a final report the hub never heard of.
+ */
+test('a claude turn that goes on after its result is working again, and each of its ends wakes the hub', async () => {
+  const previousLog = process.env.CLI_HUB_EVENTS_LOG;
+  const logDir = await mkdtemp(path.join(tmpdir(), 'hub-events-'));
+  const log = path.join(logDir, 'hub-events.log');
+  process.env.CLI_HUB_EVENTS_LOG = log;
+  const turnEnds = (jobId: string) => (existsSync(log)
+    ? readFileSync(log, 'utf8').split('\n').filter((line) => line.split('\t')[1] === jobId && line.split('\t')[2] === 'turn_ended').length
+    : 0);
+
+  try {
+    await withWorkspace(async ({ repo, runtime, jobs }) => {
+      const created = await jobs.create({ title: 'resumed', prompt: 'do it', repoPath: repo, backend: 'claude', baseBranch: null });
+      await eventually(() => runtime.turns.length === 1, 'the turn to start');
+      const sessionId = runtime.turns[0].sessionId;
+      const writer = runtime.writers.get(sessionId)!;
+      const say = (message: Partial<NormalizedMessage>) => writer.send({ provider: 'claude', sessionId: 'native-1', ...message } as NormalizedMessage);
+      const states: Array<string | null> = [];
+      const ends: number[] = [];
+      const look = () => { states.push(jobs.get(created.id)!.activity); ends.push(turnEnds(created.id)); };
+
+      // What the Claude runtime sends for: assistant, result, (task reports in) assistant, result, assistant, result.
+      say({ kind: 'text', role: 'assistant', content: 'Started the workflow.' });
+      look();
+      for (let resumed = 0; resumed < 2; resumed += 1) {
+        say({ kind: 'complete', exitCode: 0 });
+        look();
+        say({ kind: 'status', text: 'Working on background results', turnResumed: true, canInterrupt: true });
+        say({ kind: 'text', role: 'assistant', content: 'Final report.' });
+        look();
+      }
+      say({ kind: 'complete', exitCode: 0 });
+      look();
+
+      assert.deepEqual(states, ['working', 'waiting', 'working', 'waiting', 'working', 'waiting']);
+      assert.deepEqual(ends, [0, 1, 1, 2, 2, 3], 'one turn_ended (one hub wake) per end');
+      runtime.finish(sessionId);
+    });
+  } finally {
+    if (previousLog === undefined) delete process.env.CLI_HUB_EVENTS_LOG;
+    else process.env.CLI_HUB_EVENTS_LOG = previousLog;
+    await rm(logDir, { recursive: true, force: true });
+  }
 });
