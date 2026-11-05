@@ -141,6 +141,10 @@ test('jobs go to the least busy backend, each a named session in its own worktre
     const turn = runtime.turns.find((t) => t.sessionId === first.session_id)!;
     assert.match(turn.command, /do one/);
     assert.match(turn.command, new RegExp(`tjob done ${first.id}`));
+    // Jobs test only what they changed; the queue runs the gate once (the person, 2026-11-04).
+    assert.match(turn.command, /Test only what you changed/);
+    assert.match(turn.command, /Never run the whole test suite or the project's merge gate yourself/);
+    assert.doesNotMatch(turn.command, /the project's checks pass/);
     assert.equal(turn.options.permissionMode, 'bypassPermissions');
     assert.equal(turn.options.cwd, first.worktree_path);
   });

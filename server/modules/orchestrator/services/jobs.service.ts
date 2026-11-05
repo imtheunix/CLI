@@ -99,7 +99,9 @@ function buildJobPrompt(job: OrchestratorJobRow, label: string, projectMapGuidan
     '- Commit your work on this branch with a descriptive, topic-led message. Never push, never use --no-verify, never touch secrets, k8s, CI or tunnels.',
     '- If you need a decision from the person, ask it and end your turn: they answer in this session. Being stopped mid-turn is not the end of the job: a change of direction or more context is coming.',
     `- Only when the person tells you they do not want this job anymore, run: tjob cancel ${job.id} (and tjob resume ${job.id} if they want it back later).`,
-    `- When the code is complete, committed, and the project's checks pass, run: tjob done ${job.id}`,
+    // The person, 2026-11-04: "a tjob should never run tests on things he didnt touched".
+    "- Test only what you changed: the tests of the files, modules, crates or packages your diff touches, plus their direct dependents only when you changed a public interface. Never run the whole test suite or the project's merge gate yourself: the CI/CD queue runs the gate once after tjob done, and CI runs everything after the merge.",
+    `- When the code is complete and committed, and the tests of what you changed pass, run: tjob done ${job.id}`,
     `  That hands the branch to the orchestrating session for review; once approved it goes to the CI/CD queue (rebase onto ${job.base_branch}, checks, push, deploy). If anything fails there, you get a message here.`,
   ].join('\n');
 }
