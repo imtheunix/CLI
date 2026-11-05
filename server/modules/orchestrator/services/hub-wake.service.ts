@@ -121,6 +121,12 @@ export function formatHubEventLine(event: LoggedHubEvent): string {
   return `[tjob] ${event.jobId} ${shortTitle}: ${desc}`;
 }
 
+/** A logged event waiting for delivery, with the log byte offset just past its line. */
+type PendingHubEvent = LoggedHubEvent & { endOffset: number };
+
+/** Outcome of handing a wake message to the hub session. */
+type DeliveryOutcome = 'started' | 'refused' | 'pending';
+
 /** Builds the consolidated wake turn text from a list of logged events (newest last). */
 export function buildHubWakeMessage(events: LoggedHubEvent[]): string {
   const displayEvents = events.slice(0, MAX_WAKE_LINES);
@@ -172,8 +178,16 @@ export function createHubWakeService(deps: HubWakeDependencies) {
 
   let storedOffset: number | null = null;
   let targetEndOffset = 0;
-  let pendingEvents: LoggedHubEvent[] = [];
+  let pendingEvents: PendingHubEvent[] = [];
+  /**
+   * True from the moment a wake turn is handed to the chat path until it is
+   * reserved or refused. A turn can stay undecided past the start timeout
+   * (runDetachedChatTurn waits for the hub's previous provider run to settle)
+   * and still start later, so the hub counts as busy until the turn decides.
+   */
   let wakeInFlight = false;
+  /** Bumped when the log is truncated, so a late commit for the old log is ignored. */
+  let logGeneration = 0;
   let firstEventTimeMs: number | null = null;
   let lastEventTimeMs = 0;
 
@@ -219,6 +233,26 @@ export function createHubWakeService(deps: HubWakeDependencies) {
       appConfigDb.set('orchestrator.hub_wake_offset', String(offset));
     } catch {}
     storedOffset = offset;
+  }
+
+  /**
+   * Marks every event up to `offset` as delivered: persists the offset (never
+   * backwards) and drops those events from the pending buffer. Called the moment
+   * a wake turn is reserved, before the provider receives the message, so a
+   * delivered event is never offered again, not even after a restart.
+   */
+  function commitDelivered(offset: number, generation: number): void {
+    if (generation !== logGeneration) return;
+    if (storedOffset === null || offset > storedOffset) {
+      saveStoredOffset(offset);
+    }
+    pendingEvents = pendingEvents.filter((event) => event.endOffset > offset);
+    if (pendingEvents.length === 0) {
+      firstEventTimeMs = null;
+      lastEventTimeMs = 0;
+    } else {
+      firstEventTimeMs = lastEventTimeMs;
+    }
   }
 
   function ensureStallsLoaded(): void {
@@ -318,6 +352,7 @@ export function createHubWakeService(deps: HubWakeDependencies) {
 
     if (stat.size < targetEndOffset || (storedOffset !== null && stat.size < storedOffset)) {
       // File was truncated or reset/rotated
+      logGeneration += 1;
       storedOffset = 0;
       targetEndOffset = 0;
       pendingEvents = [];
@@ -359,18 +394,21 @@ export function createHubWakeService(deps: HubWakeDependencies) {
         break;
       }
 
-      const consumedBytes = lastNewlineByteIndex + 1;
-      const textChunk = buffer.toString('utf8', 0, lastNewlineByteIndex);
-      targetEndOffset += consumedBytes;
+      const chunkStart = targetEndOffset;
+      targetEndOffset += lastNewlineByteIndex + 1;
 
-      const lines = textChunk.split('\n');
-      for (const line of lines) {
+      let lineStart = 0;
+      while (lineStart <= lastNewlineByteIndex) {
+        const lineEnd = buffer.indexOf(0x0a, lineStart);
+        const line = buffer.toString('utf8', lineStart, lineEnd);
+        const endOffset = chunkStart + lineEnd + 1;
+        lineStart = lineEnd + 1;
         if (!line.trim()) continue;
         const parsed = parseHubEventLine(line);
         if (!parsed) continue;
         // Do not generate or forward events originated by the hub session itself
         if (hubSessionId && parsed.jobId === hubSessionId) continue;
-        pendingEvents.push(parsed);
+        pendingEvents.push({ ...parsed, endOffset });
         newlyAdded += 1;
 
         const eventTime = Date.parse(parsed.timestamp);
@@ -530,12 +568,25 @@ export function createHubWakeService(deps: HubWakeDependencies) {
     }
   }
 
-  /** Delivers a message to the hub session as a normal turn. */
-  async function deliverMessage(hubSessionId: string, message: string): Promise<boolean> {
+  /**
+   * Delivers a message to the hub session as a normal turn.
+   *
+   * `commitOffset` (with the log generation it belongs to) is committed the
+   * moment the turn is reserved, before the provider sees the message. Resolves
+   * 'started' or 'refused' once the turn decides, or 'pending' when it is still
+   * undecided after the start timeout: the wake then stays in flight (the hub
+   * counts as busy) and commits or releases itself when the turn decides, so the
+   * same events are never handed to a second turn while the first may still start.
+   */
+  async function deliverMessage(
+    hubSessionId: string,
+    message: string,
+    commit: { offset: number; generation: number } | null,
+  ): Promise<DeliveryOutcome> {
     const session = sessionsDb.getSessionById(hubSessionId);
     if (!session) {
       console.warn(`[HubWake] Hub session "${hubSessionId}" not found in database.`);
-      return false;
+      return 'refused';
     }
 
     const options: Record<string, unknown> = {
@@ -545,65 +596,61 @@ export function createHubWakeService(deps: HubWakeDependencies) {
     if (session.effort) options.effort = session.effort;
 
     wakeInFlight = true;
+    let decided = false;
+    let timedOut = false;
     let timer: NodeJS.Timeout | null = null;
+    let resolveOutcome!: (outcome: DeliveryOutcome) => void;
+    const outcome = new Promise<DeliveryOutcome>((resolve) => {
+      resolveOutcome = resolve;
+    });
+
+    const decide = (started: boolean) => {
+      if (decided) return;
+      decided = true;
+      if (timer) clearTimeout(timer);
+      if (started && commit) commitDelivered(commit.offset, commit.generation);
+      wakeInFlight = false;
+      if (timedOut) {
+        console.warn(`[HubWake] Wake turn ${started ? 'started' : 'was refused'} after the start timeout.`);
+      }
+      resolveOutcome(started ? 'started' : 'refused');
+    };
+
+    const timeoutMs = deps.turnTimeoutMs ?? 5_000;
+    timer = setTimeout(() => {
+      timer = null;
+      if (decided) return;
+      timedOut = true;
+      resolveOutcome('pending');
+    }, timeoutMs);
+
+    const runTurn = deps.runTurn ?? runDetachedChatTurn;
+    let turn: ReturnType<typeof runDetachedChatTurn>;
     try {
-      let startedResolved = false;
-      let resolveStarted: (started: boolean) => void;
-      const startedPromise = new Promise<boolean>((resolve) => {
-        resolveStarted = resolve;
-      });
-
-      // Safety timeout: if neither onReserved nor turn resolution settles within timeoutMs, fail safely.
-      // Resolves to false (never false-positive true) to prevent event loss.
-      const timeoutMs = deps.turnTimeoutMs ?? 5_000;
-      timer = setTimeout(() => {
-        if (!startedResolved) {
-          startedResolved = true;
-          resolveStarted(false);
-        }
-      }, timeoutMs);
-
-      const runTurn = deps.runTurn ?? runDetachedChatTurn;
-      const turn = runTurn(
+      turn = runTurn(
         {
           sessionId: hubSessionId,
           userId: firstUserId(),
           content: message,
           options,
-          onReserved: () => {
-            if (!startedResolved) {
-              startedResolved = true;
-              if (timer) clearTimeout(timer);
-              resolveStarted(true);
-            }
-          },
+          onReserved: () => decide(true),
         },
         { runtime: deps.runtime },
       );
-
-      // Settle on turn start or startup failure; always catch to avoid unhandled rejections.
-      turn
-        .then((result) => {
-          if (!startedResolved) {
-            startedResolved = true;
-            if (timer) clearTimeout(timer);
-            resolveStarted(Boolean(result?.started));
-          }
-        })
-        .catch((err) => {
-          console.error('[HubWake] Detached chat turn execution error:', err);
-          if (!startedResolved) {
-            startedResolved = true;
-            if (timer) clearTimeout(timer);
-            resolveStarted(false);
-          }
-        });
-
-      return await startedPromise;
-    } finally {
-      if (timer) clearTimeout(timer);
-      wakeInFlight = false;
+    } catch (err) {
+      console.error('[HubWake] Detached chat turn execution error:', err);
+      decide(false);
+      return outcome;
     }
+
+    turn
+      .then((result) => decide(Boolean(result?.started)))
+      .catch((err) => {
+        console.error('[HubWake] Detached chat turn execution error:', err);
+        decide(false);
+      });
+
+    return outcome;
   }
 
   /** Delivers all coalesced pending events if debounce has elapsed and the hub session is idle. */
@@ -643,23 +690,15 @@ export function createHubWakeService(deps: HubWakeDependencies) {
         return false;
       }
 
-      const eventsToDeliver = [...pendingEvents];
-      const offsetToCommit = targetEndOffset;
-      const message = buildHubWakeMessage(eventsToDeliver);
+      const message = buildHubWakeMessage(pendingEvents);
+      const commit = { offset: targetEndOffset, generation: logGeneration };
 
-      const delivered = await deliverMessage(cfg.hub.sessionId, message);
-      if (delivered) {
-        saveStoredOffset(offsetToCommit);
-        pendingEvents = pendingEvents.slice(eventsToDeliver.length);
-        firstEventTimeMs = pendingEvents.length > 0 ? lastEventTimeMs : null;
-        if (pendingEvents.length === 0) {
-          lastEventTimeMs = 0;
-        }
-        return true;
+      const outcome = await deliverMessage(cfg.hub.sessionId, message, commit);
+      if (outcome === 'refused') {
+        // Delivery failed: reset debounce window to prevent rapid retry loop
+        firstEventTimeMs = nowMs;
       }
-      // Delivery failed: reset debounce window to prevent rapid retry loop
-      firstEventTimeMs = nowMs;
-      return false;
+      return outcome === 'started';
     });
   }
 
@@ -711,11 +750,9 @@ export function createHubWakeService(deps: HubWakeDependencies) {
 
       readPendingEvents();
       let message: string;
-      let offsetToCommit: number | null = null;
-      let deliveredCount = 0;
+      let commit: { offset: number; generation: number } | null = null;
       if (pendingEvents.length > 0) {
-        deliveredCount = pendingEvents.length;
-        offsetToCommit = targetEndOffset;
+        commit = { offset: targetEndOffset, generation: logGeneration };
         message = buildHubWakeMessage(pendingEvents);
       } else if (options.test) {
         message = '[tjob] test wake: hub wake is active and responding';
@@ -726,21 +763,18 @@ export function createHubWakeService(deps: HubWakeDependencies) {
         };
       }
 
-      const delivered = await deliverMessage(cfg.hub.sessionId, message);
-      if (!delivered) {
+      const outcome = await deliverMessage(cfg.hub.sessionId, message, commit);
+      if (outcome === 'refused') {
         return {
           success: false,
           message: 'Failed to deliver wake turn to hub session.',
         };
       }
-
-      if (offsetToCommit !== null) {
-        saveStoredOffset(offsetToCommit);
-        pendingEvents = pendingEvents.slice(deliveredCount);
-        firstEventTimeMs = pendingEvents.length > 0 ? lastEventTimeMs : null;
-        if (pendingEvents.length === 0) {
-          lastEventTimeMs = 0;
-        }
+      if (outcome === 'pending') {
+        return {
+          success: true,
+          message: 'Wake turn is waiting for the hub session to settle; it will not be sent twice.',
+        };
       }
 
       return {
@@ -793,7 +827,7 @@ export function createHubWakeService(deps: HubWakeDependencies) {
     },
 
     /** Direct testing inspection helpers */
-    getPendingEvents: () => [...pendingEvents],
+    getPendingEvents: (): LoggedHubEvent[] => pendingEvents.map(({ endOffset: _endOffset, ...event }) => event),
     getStoredOffset: () => storedOffset ?? loadStoredOffset(),
     isHubBusy: (sessionId: string) => isHubBusy(sessionId, now().getTime()),
     getLastStallEmitted: (jobId: string) => {
