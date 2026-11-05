@@ -390,6 +390,12 @@ export type NormalizedMessage = {
   summary?: string;
   tokenBudget?: unknown;
   /**
+   * Set on the `status` a runtime sends when its stream goes on after the
+   * turn's `complete` (Claude Code re-invoking the model when background work
+   * reports back): the run is working again, and owes another `complete`.
+   */
+  turnResumed?: boolean;
+  /**
    * Timeline of everything a subagent did, attached to the `tool_use` that
    * spawned it. Present for Claude `Agent`/`Task` calls and Codex
    * `spawn_agent` calls; absent for every other tool.

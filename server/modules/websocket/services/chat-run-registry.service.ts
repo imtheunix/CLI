@@ -117,6 +117,7 @@ function evictRunLater(run: ChatRun): void {
  * 4. Flip the run to `completed` when the terminal `complete` event passes by.
  */
 function decorateAndRecordEvent(run: ChatRun, message: NormalizedMessage): NormalizedMessage | null {
+  if (message.kind === 'status' && message.turnResumed && !resumeRun(run)) return null;
   // A superseded process can wind down after the next run has already started.
   if (runs.get(run.appSessionId) !== run) return null;
   // Exactly-one-complete contract: when a run is aborted the chat handler
@@ -172,6 +173,26 @@ function decorateAndRecordEvent(run: ChatRun, message: NormalizedMessage): Norma
   }
 
   return outbound;
+}
+
+/**
+ * Puts a completed run back to running when its runtime reports the stream
+ * went on after the turn's `complete`: the session is working again (jobs,
+ * the UI's processing state), and the next `complete` ends that turn the
+ * same way, listeners included, as many times as it happens. A run evicted
+ * meanwhile takes its slot back unless a newer run holds it; an aborted or
+ * superseded one stays down.
+ */
+function resumeRun(run: ChatRun): boolean {
+  const current = runs.get(run.appSessionId);
+  if ((current && current !== run) || run.abortController.signal.aborted) return false;
+  if (run.status === 'completed') {
+    run.status = 'running';
+    run.completedAt = null;
+    run.startedAt = Date.now();
+  }
+  runs.set(run.appSessionId, run);
+  return true;
 }
 
 /**

@@ -615,6 +615,11 @@ export function createClaudeTurnLineParser(normalizeMessage) {
     const message = parse(line);
     if (!message) return;
     const sid = track(message, writer, sessionId);
+    // The model re-invoked after the `result`: a new turn, owed its own complete.
+    if (completeSent && resumesTurn(message)) {
+      completeSent = false;
+      writer?.send(createTurnResumedMessage(sid));
+    }
 
     const transformed = transformMessage(message);
     for (const msg of normalizeMessage(transformed, sid)) {
@@ -922,6 +927,26 @@ function extractCumulativeTokenBudget(sdkMessage, reportedContextWindow = undefi
 // no foreground option at all, so every call returns a task id immediately and
 // reports back in a later turn.
 const DEFERRED_WORK_TOOLS = new Set(['Monitor', 'ScheduleWakeup', 'CronCreate', 'TaskCreate', 'Workflow']);
+
+/**
+ * Whether a stream message after the turn's `result` is the model working
+ * again: Claude Code re-invokes it when background work it started (a
+ * Workflow, a background Bash or Agent) reports back. Subagent traffic and
+ * system events (task notifications) are not.
+ *
+ * @param {Object} sdkMessage - SDK stream message
+ * @returns {boolean}
+ */
+export function resumesTurn(sdkMessage) {
+  return Boolean(sdkMessage)
+    && (sdkMessage.type === 'assistant' || sdkMessage.type === 'stream_event')
+    && !sdkMessage.parent_tool_use_id;
+}
+
+/** The status that tells the run registry a completed turn is working again. */
+function createTurnResumedMessage(sessionId) {
+  return createNormalizedMessage({ kind: 'status', text: 'Working on background results', turnResumed: true, canInterrupt: true, sessionId, provider: 'claude' });
+}
 
 /**
  * Detects tool calls that keep working after the turn's `result` arrives.
@@ -1262,6 +1287,8 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
   // The client is told the turn is over as soon as `result` lands, even though
   // the process lingers, so the UI never waits out the idle hold.
   let turnCompleteSent = false;
+  // Set once the stream went on after a `result` (see `resumesTurn`).
+  let resumedAfterResult = false;
   // Set when a turn starts background work, cleared when the next `result`
   // arrives — only turns with work still outstanding hold their process open.
   let backgroundWorkPending = false;
@@ -1529,13 +1556,23 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
       if (!turnCompleteSent && !abortPending) {
         turnCompleteSent = true;
         ws.send(createCompleteMessage({ provider: 'claude', sessionId: capturedSessionId || sessionId || null, exitCode: 0 }));
-        notifyRunStopped({
-          userId: ws?.userId || null,
-          provider: 'claude',
-          sessionId: sessionId || capturedSessionId || null,
-          sessionName: sessionSummary,
-          stopReason: 'completed'
-        });
+        if (!resumedAfterResult) {
+          notifyRunStopped({
+            userId: ws?.userId || null,
+            provider: 'claude',
+            sessionId: sessionId || capturedSessionId || null,
+            sessionName: sessionSummary,
+            stopReason: 'completed'
+          });
+        } else if (heldForBackgroundWork && !stillOutstanding) {
+          // A resumed turn's result: the work it was re-invoked for is done.
+          notifyBackgroundWorkCompleted({
+            userId: ws?.userId || null,
+            provider: 'claude',
+            sessionId: sessionId || capturedSessionId || null,
+            sessionName: sessionSummary
+          });
+        }
       } else if (heldForBackgroundWork && !abortPending && !stillOutstanding) {
         // A result after the turn already reported complete means the work we
         // held the process open for has finished and pushed a follow-up turn
@@ -1584,6 +1621,14 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
       // the client or this session's registry, which belong to its successor.
       if (supersededInstances.has(queryInstance)) {
         continue;
+      }
+      // The model re-invoked after the turn's `result` (background work
+      // reported back): a new turn for the run, the jobs and the hub, which
+      // its own `result` completes again.
+      if (turnCompleteSent && resumesTurn(message)) {
+        turnCompleteSent = false;
+        resumedAfterResult = true;
+        ws.send(createTurnResumedMessage(capturedSessionId || sessionId || null));
       }
       // Capture session ID from first message
       if (message.session_id && !capturedSessionId) {
