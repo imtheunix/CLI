@@ -1149,3 +1149,56 @@ test('a restart after a late-starting wake does not deliver the event again (off
     second.stop();
   });
 });
+
+test('a wake undecided past wakeAbandonMs releases its events; the next wake delivers them once and a late start drops nothing newer', async () => {
+  await withTestContext(async ({ config, runtime, eventsLogPath, offsetPath, stallsPath, hubSessionId, clock }) => {
+    config.hub = { ...config.hub!, wakeAbandonMs: 250 };
+    const turns = createLateStartingTurns();
+    const service = createHubWakeService({
+      config: () => config,
+      runtime: runtime.gateway,
+      now: () => clock.now,
+      eventsLogPath,
+      offsetPath,
+      stallsPath,
+      turnTimeoutMs: 20,
+      runTurn: turns.runTurn,
+    });
+    service.start();
+
+    appendHubEvent({ jobId: 'job-stuck', state: 'review', title: 'Stuck', reason: 'waiting for review', timestamp: clock.now.toISOString() });
+    clock.advance(100);
+    await service.tick(); // wake A never decides
+    assert.equal(turns.contents.length, 1);
+    assert.equal(service.isHubBusy(hubSessionId), true, 'busy while wake A is within the bound');
+
+    await waitForTimers(300); // past wakeAbandonMs
+    assert.equal(service.isHubBusy(hubSessionId), false, 'abandoned wake releases the hub');
+    assert.equal(service.getPendingEvents().length, 1, 'abandoned events are released, not lost');
+    assert.equal(service.getStoredOffset(), 0);
+
+    clock.advance(200);
+    await service.tick(); // wake B redelivers
+    assert.equal(turns.contents.length, 2);
+    assert.ok(turns.contents[1].includes('job-stuck'));
+
+    appendHubEvent({ jobId: 'job-newer', state: 'merged', title: 'Newer', reason: 'pushed', timestamp: clock.now.toISOString() });
+    await waitForTimers();
+    turns.release(0); // abandoned wake A starts late, while B is undecided
+    await waitForTimers();
+    assert.deepEqual(service.getPendingEvents().map((event) => event.jobId), ['job-newer'], 'late start keeps the newer event');
+    assert.equal(service.isHubBusy(hubSessionId), true, 'A deciding late does not release wake B');
+
+    turns.release(1);
+    await waitForTimers();
+    clock.advance(200);
+    await service.tick();
+    assert.equal(turns.contents.length, 3);
+    assert.ok(turns.contents[2].includes('job-newer'));
+    assert.ok(!turns.contents[2].includes('job-stuck'), 'the released event is delivered once by the next wake only');
+    turns.release(2);
+    await waitForTimers();
+    assert.equal(service.getStoredOffset(), readFileSync(eventsLogPath).length);
+    service.stop();
+  });
+});

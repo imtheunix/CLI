@@ -15,6 +15,7 @@ import { AppError } from '@/shared/index.js';
 
 import { appendHubEvent, getHubEventsLogPath, onHubEvent } from './hub-events.service.js';
 import type { HubEventState } from './hub-events.service.js';
+import { DEFAULT_WAKE_ABANDON_MS } from './orchestrator-config.service.js';
 import type { OrchestratorConfig } from './orchestrator-config.service.js';
 
 /** Maximum number of event lines shown in a wake turn before truncating with `+N more`. */
@@ -180,12 +181,14 @@ export function createHubWakeService(deps: HubWakeDependencies) {
   let targetEndOffset = 0;
   let pendingEvents: PendingHubEvent[] = [];
   /**
-   * True from the moment a wake turn is handed to the chat path until it is
-   * reserved or refused. A turn can stay undecided past the start timeout
-   * (runDetachedChatTurn waits for the hub's previous provider run to settle)
-   * and still start later, so the hub counts as busy until the turn decides.
+   * The wake turn handed to the chat path and not yet reserved or refused. A
+   * turn can stay undecided past the start timeout (runDetachedChatTurn waits
+   * for the hub's previous provider run to settle) and still start later, so
+   * the hub counts as busy until the turn decides, or until it is abandoned
+   * after hub.wakeAbandonMs so a turn that never decides cannot silence the hub.
    */
-  let wakeInFlight = false;
+  let wakeInFlight: number | null = null;
+  let wakeSequence = 0;
   /** Bumped when the log is truncated, so a late commit for the old log is ignored. */
   let logGeneration = 0;
   let firstEventTimeMs: number | null = null;
@@ -457,7 +460,7 @@ export function createHubWakeService(deps: HubWakeDependencies) {
    * a wake turn is currently in flight, or the person was typing in the last 60 seconds.
    */
   function isHubBusy(sessionId: string, nowMs: number): boolean {
-    if (wakeInFlight) return true;
+    if (wakeInFlight !== null) return true;
     if (chatRunRegistry.isProcessing(sessionId)) return true;
     if (deps.runtime.hasBackgroundWork?.(sessionId)) return true;
     if (isUserTyping(sessionId, nowMs)) return true;
@@ -581,7 +584,7 @@ export function createHubWakeService(deps: HubWakeDependencies) {
   async function deliverMessage(
     hubSessionId: string,
     message: string,
-    commit: { offset: number; generation: number } | null,
+    commit: { offset: number; generation: number; eventCount: number } | null,
   ): Promise<DeliveryOutcome> {
     const session = sessionsDb.getSessionById(hubSessionId);
     if (!session) {
@@ -595,10 +598,12 @@ export function createHubWakeService(deps: HubWakeDependencies) {
     if (session.model) options.model = session.model;
     if (session.effort) options.effort = session.effort;
 
-    wakeInFlight = true;
+    const wakeId = ++wakeSequence;
+    wakeInFlight = wakeId;
     let decided = false;
     let timedOut = false;
     let timer: NodeJS.Timeout | null = null;
+    let abandonTimer: NodeJS.Timeout | null = null;
     let resolveOutcome!: (outcome: DeliveryOutcome) => void;
     const outcome = new Promise<DeliveryOutcome>((resolve) => {
       resolveOutcome = resolve;
@@ -608,10 +613,14 @@ export function createHubWakeService(deps: HubWakeDependencies) {
       if (decided) return;
       decided = true;
       if (timer) clearTimeout(timer);
+      if (abandonTimer) clearTimeout(abandonTimer);
+      // Safe after abandonment too: the commit only moves the offset forward and
+      // drops pending events up to this wake's offset, which this turn delivered;
+      // events a newer wake reserved were already committed past that offset.
       if (started && commit) commitDelivered(commit.offset, commit.generation);
-      wakeInFlight = false;
+      if (wakeInFlight === wakeId) wakeInFlight = null;
       if (timedOut) {
-        console.warn(`[HubWake] Wake turn ${started ? 'started' : 'was refused'} after the start timeout.`);
+        console.warn(`[HubWake] Wake turn #${wakeId} ${started ? 'started' : 'was refused'} after the start timeout.`);
       }
       resolveOutcome(started ? 'started' : 'refused');
     };
@@ -623,6 +632,19 @@ export function createHubWakeService(deps: HubWakeDependencies) {
       timedOut = true;
       resolveOutcome('pending');
     }, timeoutMs);
+
+    const abandonMs = deps.config().hub?.wakeAbandonMs ?? DEFAULT_WAKE_ABANDON_MS;
+    abandonTimer = setTimeout(() => {
+      abandonTimer = null;
+      if (decided || wakeInFlight !== wakeId) return;
+      // Release the hub: the events were never committed, so the next tick
+      // offers them again. A rare duplicate is cheaper than a silent hub.
+      wakeInFlight = null;
+      console.warn(
+        `[HubWake] Abandoned wake turn #${wakeId} (${commit?.eventCount ?? 0} events) still undecided after ${abandonMs} ms; its events are released for redelivery.`,
+      );
+    }, abandonMs);
+    abandonTimer.unref?.();
 
     const runTurn = deps.runTurn ?? runDetachedChatTurn;
     let turn: ReturnType<typeof runDetachedChatTurn>;
@@ -691,7 +713,7 @@ export function createHubWakeService(deps: HubWakeDependencies) {
       }
 
       const message = buildHubWakeMessage(pendingEvents);
-      const commit = { offset: targetEndOffset, generation: logGeneration };
+      const commit = { offset: targetEndOffset, generation: logGeneration, eventCount: pendingEvents.length };
 
       const outcome = await deliverMessage(cfg.hub.sessionId, message, commit);
       if (outcome === 'refused') {
@@ -750,9 +772,9 @@ export function createHubWakeService(deps: HubWakeDependencies) {
 
       readPendingEvents();
       let message: string;
-      let commit: { offset: number; generation: number } | null = null;
+      let commit: { offset: number; generation: number; eventCount: number } | null = null;
       if (pendingEvents.length > 0) {
-        commit = { offset: targetEndOffset, generation: logGeneration };
+        commit = { offset: targetEndOffset, generation: logGeneration, eventCount: pendingEvents.length };
         message = buildHubWakeMessage(pendingEvents);
       } else if (options.test) {
         message = '[tjob] test wake: hub wake is active and responding';
