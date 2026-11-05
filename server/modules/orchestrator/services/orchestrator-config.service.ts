@@ -69,12 +69,17 @@ export type OrchestratorConfig = {
   hub?: HubWakeConfig;
 };
 
+/** Default bound on an undecided hub wake turn before it is abandoned. */
+export const DEFAULT_WAKE_ABANDON_MS = 10 * 60_000;
+
 /** Hub notification configuration options. */
 export type HubWakeConfig = {
   sessionId: string;
   wake?: boolean;
   debounceSec?: number;
   stallMin?: number;
+  /** A wake turn still undecided after this many ms is abandoned and its events released (default 10 min). */
+  wakeAbandonMs?: number;
 };
 
 /** Jobs/balancer services: ordinary auto-selection ties, cheapest first. Agy is reserved for quota fallback or explicit requests. */
@@ -177,6 +182,7 @@ export function loadOrchestratorConfig(file = path.join(os.homedir(), '.config/c
         wake: typeof hub.wake === 'boolean' ? hub.wake : true,
         debounceSec: typeof hub.debounceSec === 'number' && hub.debounceSec >= 0 ? hub.debounceSec : 90,
         stallMin: typeof hub.stallMin === 'number' && hub.stallMin >= 0 ? hub.stallMin : 30,
+        wakeAbandonMs: typeof hub.wakeAbandonMs === 'number' && hub.wakeAbandonMs > 0 ? hub.wakeAbandonMs : DEFAULT_WAKE_ABANDON_MS,
       };
     }
   }
