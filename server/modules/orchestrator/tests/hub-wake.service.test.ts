@@ -968,3 +968,184 @@ test('non-existent hub session does not wedge debounce timing or crash', async (
     service.stop();
   });
 });
+
+/**
+ * A runTurn that behaves like runDetachedChatTurn while the hub's previous
+ * provider run is still settling: it stays undecided past the start timeout,
+ * then reserves the session (onReserved) and starts once `release` is called.
+ */
+function createLateStartingTurns() {
+  const contents: string[] = [];
+  const gates: Array<(started: boolean) => void> = [];
+  const runTurn = ((input: { content: string; onReserved?: () => void }) => {
+    contents.push(input.content);
+    return new Promise<{ started: boolean; error: string | null }>((resolve) => {
+      gates.push((started) => {
+        if (started) input.onReserved?.();
+        resolve({ started, error: started ? null : 'A run is already in progress for this session.' });
+      });
+    });
+  }) as unknown as NonNullable<Parameters<typeof createHubWakeService>[0]['runTurn']>;
+  return {
+    contents,
+    runTurn,
+    release(index: number, started = true) {
+      gates[index](started);
+    },
+  };
+}
+
+const waitForTimers = (ms = 40) => new Promise((resolve) => setTimeout(resolve, ms));
+
+test('a single logged event is delivered once over two wake cycles when the turn starts after the timeout', async () => {
+  await withTestContext(async ({ config, runtime, eventsLogPath, offsetPath, stallsPath, clock }) => {
+    const turns = createLateStartingTurns();
+    const service = createHubWakeService({
+      config: () => config,
+      runtime: runtime.gateway,
+      now: () => clock.now,
+      eventsLogPath,
+      offsetPath,
+      stallsPath,
+      turnTimeoutMs: 20,
+      runTurn: turns.runTurn,
+    });
+    service.start();
+
+    appendHubEvent({ jobId: 'hub-corpus', state: 'turn_ended', title: 'hub-detached turn', reason: 'clean exit' });
+
+    clock.advance(100);
+    await service.tick(); // wake cycle 1: the turn is still undecided at the timeout
+    assert.equal(turns.contents.length, 1);
+
+    clock.advance(5);
+    await service.tick(); // still undecided: must not hand the event to a second turn
+    assert.equal(turns.contents.length, 1, 'no second turn while the first may still start');
+
+    turns.release(0); // the first turn starts late
+    await waitForTimers();
+    assert.equal(service.getStoredOffset(), readFileSync(eventsLogPath).length, 'late start commits the offset');
+    assert.equal(service.getPendingEvents().length, 0);
+
+    clock.advance(200);
+    await service.tick(); // wake cycle 2
+    assert.equal(turns.contents.length, 1, 'the event must not be delivered a second time');
+    service.stop();
+  });
+});
+
+test('an event logged during an in-flight wake is delivered once, without repeating the earlier one', async () => {
+  await withTestContext(async ({ config, runtime, eventsLogPath, offsetPath, stallsPath, clock }) => {
+    const turns = createLateStartingTurns();
+    const service = createHubWakeService({
+      config: () => config,
+      runtime: runtime.gateway,
+      now: () => clock.now,
+      eventsLogPath,
+      offsetPath,
+      stallsPath,
+      turnTimeoutMs: 20,
+      runTurn: turns.runTurn,
+    });
+    service.start();
+
+    appendHubEvent({ jobId: 'job-a', state: 'merged', title: 'Event A', reason: 'pushed e937275', timestamp: clock.now.toISOString() });
+    clock.advance(100);
+    await service.tick();
+    assert.equal(turns.contents.length, 1);
+
+    appendHubEvent({ jobId: 'job-b', state: 'review', title: 'Event B', reason: 'waiting for review', timestamp: clock.now.toISOString() });
+    await waitForTimers();
+    clock.advance(200);
+    await service.tick();
+    assert.equal(turns.contents.length, 1, 'nothing is sent while the first wake is in flight');
+
+    turns.release(0);
+    await waitForTimers();
+    assert.deepEqual(service.getPendingEvents().map((event) => event.jobId), ['job-b']);
+
+    clock.advance(200);
+    await service.tick();
+    assert.equal(turns.contents.length, 2);
+    assert.ok(turns.contents[1].includes('job-b'));
+    assert.ok(!turns.contents[1].includes('job-a'), 'event A must not be delivered again');
+    turns.release(1);
+    await waitForTimers();
+
+    clock.advance(200);
+    await service.tick();
+    assert.equal(turns.contents.length, 2, 'no further wakes');
+    service.stop();
+  });
+});
+
+test('a wake turn refused after the timeout keeps its events and delivers them once later', async () => {
+  await withTestContext(async ({ config, runtime, eventsLogPath, offsetPath, stallsPath, clock }) => {
+    const turns = createLateStartingTurns();
+    const service = createHubWakeService({
+      config: () => config,
+      runtime: runtime.gateway,
+      now: () => clock.now,
+      eventsLogPath,
+      offsetPath,
+      stallsPath,
+      turnTimeoutMs: 20,
+      runTurn: turns.runTurn,
+    });
+    service.start();
+
+    appendHubEvent({ jobId: 'job-refused', state: 'review', title: 'Refused', reason: 'waiting for review' });
+    clock.advance(100);
+    await service.tick();
+    turns.release(0, false);
+    await waitForTimers();
+    assert.equal(service.getStoredOffset(), 0, 'a refused turn commits nothing');
+    assert.equal(service.getPendingEvents().length, 1, 'a refused turn loses nothing');
+
+    clock.advance(200);
+    await service.tick();
+    assert.equal(turns.contents.length, 2);
+    turns.release(1);
+    await waitForTimers();
+    clock.advance(200);
+    await service.tick();
+    assert.equal(turns.contents.length, 2);
+    service.stop();
+  });
+});
+
+test('a restart after a late-starting wake does not deliver the event again (offset persisted at reservation)', async () => {
+  await withTestContext(async ({ config, runtime, eventsLogPath, offsetPath, stallsPath, clock }) => {
+    const turns = createLateStartingTurns();
+    const options = {
+      config: () => config,
+      runtime: runtime.gateway,
+      now: () => clock.now,
+      eventsLogPath,
+      offsetPath,
+      stallsPath,
+      turnTimeoutMs: 20,
+      runTurn: turns.runTurn,
+    };
+    const first = createHubWakeService(options);
+    first.start();
+
+    appendHubEvent({ jobId: 'job-restart', state: 'merged', title: 'Restart', reason: 'pushed' });
+    clock.advance(100);
+    await first.tick();
+    turns.release(0);
+    await waitForTimers();
+    first.stop();
+
+    assert.equal(readFileSync(offsetPath, 'utf8').trim(), String(readFileSync(eventsLogPath).length));
+
+    const second = createHubWakeService(options);
+    second.start();
+    await waitForTimers();
+    clock.advance(200);
+    await second.tick();
+    assert.equal(turns.contents.length, 1, 'the restarted service must not redeliver');
+    assert.equal(second.getPendingEvents().length, 0);
+    second.stop();
+  });
+});
