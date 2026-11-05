@@ -192,6 +192,30 @@ test('a model the backend does not offer is refused, naming the ones it does', a
   });
 });
 
+test('job guidance per repository from orchestrator.json is added to that repository job prompts', async () => {
+  const guidance = 'Heavy work: run it with `tsge-compute run` from your worktree.\nNever run it directly on the workstation.';
+  await withWorkspace(async ({ repo, runtime, jobs, job }) => {
+    const created = await jobs.create({ title: 'guided', prompt: 'do guided', repoPath: repo, backend: null, baseBranch: null });
+    await eventually(() => job(created.id).state === 'active', 'guided to start');
+    const turn = runtime.turns.find((t) => t.sessionId === job(created.id).session_id)!;
+    assert.match(turn.command, new RegExp(`For this repository \\(${path.basename(repo)}\\):`));
+    assert.match(turn.command, /- Heavy work: run it with `tsge-compute run` from your worktree\./);
+    assert.match(turn.command, /- Never run it directly on the workstation\./);
+  }, (config) => { config.jobGuidance = { demo: guidance }; });
+});
+
+test('job guidance is read per repository from orchestrator.json, blank or non-text entries ignored', async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'orchestrator-config-'));
+  try {
+    const file = path.join(dir, 'orchestrator.json');
+    assert.deepEqual(loadOrchestratorConfig(file).jobGuidance, {});
+    writeFileSync(file, JSON.stringify({ jobGuidance: { tsge: '  Heavy work on the pool.  ', blank: '   ', wrong: 3 } }));
+    assert.deepEqual(loadOrchestratorConfig(file).jobGuidance, { tsge: 'Heavy work on the pool.' });
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test('the default model per backend and the peak-hours rule come from orchestrator.json, with no rebuild', async () => {
   const dir = await mkdtemp(path.join(tmpdir(), 'orchestrator-config-'));
   try {

@@ -85,7 +85,13 @@ function firstUserId(): number | null {
 }
 
 /** The first turn of a job: the task, plus how a job ends. */
-function buildJobPrompt(job: OrchestratorJobRow, label: string, projectMapGuidance: string, continuation = false): string {
+function buildJobPrompt(
+  job: OrchestratorJobRow,
+  label: string,
+  projectMapGuidance: string,
+  continuation = false,
+  repoGuidance = '',
+): string {
   return [
     `You are ${label}, working on job ${job.id} — "${job.title}".`,
     `You are in your own git worktree (${job.worktree_path}), on branch ${job.branch}, made from origin/${job.base_branch} of ${job.repo_path}.`,
@@ -103,6 +109,7 @@ function buildJobPrompt(job: OrchestratorJobRow, label: string, projectMapGuidan
     "- Test only what you changed: the tests of the files, modules, crates or packages your diff touches, plus their direct dependents only when you changed a public interface. Never run the whole test suite or the project's merge gate yourself: the CI/CD queue runs the gate once after tjob done, and CI runs everything after the merge.",
     `- When the code is complete and committed, and the tests of what you changed pass, run: tjob done ${job.id}`,
     `  That hands the branch to the orchestrating session for review; once approved it goes to the CI/CD queue (rebase onto ${job.base_branch}, checks, push, deploy). If anything fails there, you get a message here.`,
+    ...(repoGuidance ? ['', `For this repository (${path.basename(job.repo_path)}):`, ...repoGuidance.split('\n').map((line) => `- ${line}`)] : []),
   ].join('\n');
 }
 
@@ -205,7 +212,8 @@ export function createJobsService(deps: {
         if (backendConfig.effort) sessionsDb.setSessionEffort(sessionId, backendConfig.effort);
       }
       const ready = orchestratorJobsDb.update(job.id, { session_id: sessionId, state: 'active' }) as OrchestratorJobRow;
-      await sendTurn(ready, buildJobPrompt(ready, label, projectMapGuidance, continuation));
+      const repoGuidance = deps.config().jobGuidance[path.basename(ready.repo_path)] ?? '';
+      await sendTurn(ready, buildJobPrompt(ready, label, projectMapGuidance, continuation, repoGuidance));
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.error(`[Orchestrator] Job ${job.id} could not start`, message);

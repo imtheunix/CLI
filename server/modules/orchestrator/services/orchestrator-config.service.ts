@@ -39,6 +39,12 @@ export type OrchestratorConfig = {
   conflictResolver: { command: string; model: string };
   /** Per-repository check commands (keyed by the repository folder's name), run before a push: a light gate, not the full suite. */
   checks: Record<string, string>;
+  /**
+   * Per-repository lines added to every job prompt (keyed by the repository folder's name), e.g. where heavy
+   * work runs (the person, 2026-11-05: a load balancer over the workstation and the VM pool, defined in the
+   * job's initial prompt).
+   */
+  jobGuidance: Record<string, string>;
   /** At most this many merge checks run at once on the workstation; the others wait in `check` for a slot. */
   maxConcurrentChecks: number;
   /** Per-repository deploy waiting, keyed by folder name; absent entries default to true. */
@@ -109,6 +115,7 @@ function defaults(): OrchestratorConfig {
     checks: {
       tribeiracli: 'npm run typecheck && npm run lint',
     },
+    jobGuidance: {},
     maxConcurrentChecks: 1,
     waitForDeploy: {},
     baseBranches: { tribeira: 'develop' },
@@ -145,6 +152,11 @@ export function loadOrchestratorConfig(file = path.join(os.homedir(), '.config/c
   if (typeof override.worktreesRoot === 'string') config.worktreesRoot = override.worktreesRoot;
   config.conflictResolver = { ...config.conflictResolver, ...(override.conflictResolver as object ?? {}) };
   config.checks = { ...config.checks, ...(override.checks as Record<string, string> ?? {}) };
+  if (override.jobGuidance && typeof override.jobGuidance === 'object') {
+    for (const [repo, text] of Object.entries(override.jobGuidance as Record<string, unknown>)) {
+      if (typeof text === 'string' && text.trim()) config.jobGuidance[repo] = text.trim();
+    }
+  }
   if (typeof override.maxConcurrentChecks === 'number' && override.maxConcurrentChecks >= 1) {
     config.maxConcurrentChecks = Math.floor(override.maxConcurrentChecks);
   }
