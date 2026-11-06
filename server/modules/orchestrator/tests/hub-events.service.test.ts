@@ -1,13 +1,18 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
+import { fileURLToPath } from 'node:url';
 
 import {
   appendHubEvent,
+  enableLiveHubEvents,
   getHubEventsLogPath,
   getLiveHubEventsLogPath,
+  isLiveHubEventsLogPath,
+  isLiveHubProcess,
   isTestEnvironment,
 } from '../services/hub-events.service.js';
 
@@ -83,5 +88,53 @@ test('under test, hub events never go to the live log the real hub wake tails', 
   } finally {
     if (prevEnv !== undefined) process.env.CLI_HUB_EVENTS_LOG = prevEnv;
     else delete process.env.CLI_HUB_EVENTS_LOG;
+  }
+});
+
+test('only the live server opts in to the live log: enableLiveHubEvents is a no-op under test', () => {
+  enableLiveHubEvents();
+  assert.equal(isLiveHubProcess(), false);
+  assert.equal(isLiveHubEventsLogPath(getLiveHubEventsLogPath()), true);
+  assert.equal(isLiveHubEventsLogPath(path.join(path.dirname(getLiveHubEventsLogPath()), '.', 'hub-events.log')), true);
+  assert.equal(isLiveHubEventsLogPath(path.join(tmpdir(), 'hub-events.log')), false);
+});
+
+test("the suite's event-producing tests, run with the live server's environment and no test runner, leave the live log untouched", () => {
+  // Regression (2026-11-06, job 23cf3edb): after 59cd8214 keyed the guard on
+  // NODE_TEST_CONTEXT / NODE_ENV=test, ~110 fixture events still reached the live log at
+  // 13:59-14:02 UTC. A test file run directly (`tsx file.test.ts`, no --test) from a shell
+  // that inherited the server's environment (NODE_ENV=production, the live DATABASE_PATH,
+  // CLI_HUB_EVENTS_LOG) has no test marker; only the server's own opt-in may reach the log.
+  const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..');
+  const home = mkdtempSync(path.join(tmpdir(), 'hub-events-live-shape-'));
+  const liveLog = path.join(home, '.cache', 'cli', 'hub-events.log');
+  try {
+    const env: NodeJS.ProcessEnv = {
+      PATH: process.env.PATH,
+      HOME: home,
+      NODE_ENV: 'production',
+      DATABASE_PATH: path.join(home, '.local', 'share', 'cloudcli', 'auth.db'),
+      CLI_HUB_EVENTS_LOG: liveLog,
+      GIT_CONFIG_COUNT: '2',
+      GIT_CONFIG_KEY_0: 'user.name',
+      GIT_CONFIG_VALUE_0: 'test',
+      GIT_CONFIG_KEY_1: 'user.email',
+      GIT_CONFIG_VALUE_1: 'test@example.invalid',
+    };
+    const result = spawnSync(
+      path.join(repo, 'node_modules', '.bin', 'tsx'),
+      [
+        '--tsconfig', 'server/tsconfig.json',
+        '--test-name-pattern', 'merged when no CI picks it up|failing checks go back to the agent',
+        'server/modules/orchestrator/tests/orchestrator.test.ts',
+      ],
+      { cwd: repo, env, encoding: 'utf8', timeout: 120_000 },
+    );
+    const output = `${result.stdout}${result.stderr}`;
+    assert.match(output, /# tests 2\b/, output.slice(-2000));
+    assert.match(output, /# pass 2\b/, output.slice(-2000));
+    assert.equal(existsSync(liveLog), false, 'fixture events reached the live hub events log');
+  } finally {
+    rmSync(home, { recursive: true, force: true });
   }
 });

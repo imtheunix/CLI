@@ -38,19 +38,63 @@ export function getLiveHubEventsLogPath(): string {
 }
 
 /**
+ * Every path the live log may be reached by: $HOME's, and the account's real home from
+ * the password database (a run with a temporary HOME can still name the real log in
+ * CLI_HUB_EVENTS_LOG), resolved through symlinks.
+ */
+export function isLiveHubEventsLogPath(candidate: string): boolean {
+  const homes = new Set([os.homedir()]);
+  try {
+    homes.add(os.userInfo().homedir);
+  } catch {
+    // no passwd entry: $HOME is the only home
+  }
+  const resolve = (file: string) => {
+    const absolute = path.resolve(file);
+    try {
+      return path.join(fs.realpathSync(path.dirname(absolute)), path.basename(absolute));
+    } catch {
+      return absolute;
+    }
+  };
+  const target = resolve(candidate);
+  for (const home of homes) {
+    const live = path.join(home, '.cache', 'cli', 'hub-events.log');
+    if (target === path.resolve(live) || target === resolve(live)) return true;
+  }
+  return false;
+}
+
+/**
+ * Set only by the server entrypoint (server/index.ts). An in-process flag, never an
+ * environment variable: shells, agents and test runs the live server starts inherit its
+ * environment (NODE_ENV=production, the live DATABASE_PATH, HOME), and a test file run
+ * directly (`tsx file.test.ts`, no --test) has no NODE_TEST_CONTEXT, so neither the
+ * environment nor the runner can tell such a process from the server.
+ */
+let liveHubProcess = false;
+
+/** Used by server/index.ts at startup: this process is the live server, whose hub wake tails the live log. */
+export function enableLiveHubEvents(): void {
+  if (!isTestEnvironment()) liveHubProcess = true;
+}
+
+/** True only in the live server process (see enableLiveHubEvents), never under test. */
+export function isLiveHubProcess(): boolean {
+  return liveHubProcess && !isTestEnvironment();
+}
+
+/**
  * Used by Orchestrator and tests to resolve the destination log for hub state events.
- * Under test, the live log is never returned: without CLI_HUB_EVENTS_LOG (or with it set
- * to the live log) events go to a per-process file in the temp directory, so a test's
- * fixture events cannot wake the real hub.
+ * Only the live server writes the live log: any other process (a test file, run by the
+ * runner or directly, a helper, a spawned script) that would resolve it, from the default
+ * or from an inherited CLI_HUB_EVENTS_LOG, gets a per-process file in the temp directory,
+ * so fixture events cannot wake the real hub.
  */
 export function getHubEventsLogPath(): string {
-  const configured = process.env.CLI_HUB_EVENTS_LOG;
-  const live = getLiveHubEventsLogPath();
-  if (isTestEnvironment()) {
-    if (configured && path.resolve(configured) !== live) return configured;
-    return path.join(os.tmpdir(), `cli-test-hub-events-${process.pid}.log`);
-  }
-  return configured || live;
+  const target = process.env.CLI_HUB_EVENTS_LOG || getLiveHubEventsLogPath();
+  if (!isLiveHubEventsLogPath(target) || isLiveHubProcess()) return target;
+  return path.join(os.tmpdir(), `cli-test-hub-events-${process.pid}.log`);
 }
 
 /** Sanitize a text field so the output is strictly a single line without tab separators. */

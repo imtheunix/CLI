@@ -35,6 +35,8 @@ export function runCommand(
 const SERVER_ONLY_VARIABLES = [
   'NODE_ENV', 'DATABASE_PATH', 'HOST', 'SERVER_PORT', 'PORT',
   'CLAUDE_CLI_PATH', 'CLAUDE_CODE_EXECUTABLE', 'CLAUDE_CODE_EXECPATH',
+  // The live hub's events log: a check's tests must never write it.
+  'CLI_HUB_EVENTS_LOG',
 ];
 
 /**

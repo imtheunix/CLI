@@ -311,8 +311,8 @@ test("a JavaScript job's linked node_modules does not leave its worktree dirty",
 });
 
 test("checks run without the server's own settings or secrets, as in a plain shell", async () => {
-  const env = checkEnvironment({ DATABASE_PATH: '/live/auth.db', NODE_ENV: 'production', CLAUDE_CLI_PATH: '/bin/claude', PLANS_CLIENT_SECRET: 's', HOME: '/home/x' });
-  assert.deepEqual(Object.keys(env).sort(), ['CLAUDE_CLI_PATH', 'DATABASE_PATH', 'NODE_ENV', 'PLANS_CLIENT_SECRET']);
+  const env = checkEnvironment({ DATABASE_PATH: '/live/auth.db', NODE_ENV: 'production', CLAUDE_CLI_PATH: '/bin/claude', PLANS_CLIENT_SECRET: 's', CLI_HUB_EVENTS_LOG: '/home/x/.cache/cli/hub-events.log', HOME: '/home/x' });
+  assert.deepEqual(Object.keys(env).sort(), ['CLAUDE_CLI_PATH', 'CLI_HUB_EVENTS_LOG', 'DATABASE_PATH', 'NODE_ENV', 'PLANS_CLIENT_SECRET']);
   const previous = process.env.DATABASE_PATH;
   process.env.DATABASE_PATH = '/live/auth.db';
   try {

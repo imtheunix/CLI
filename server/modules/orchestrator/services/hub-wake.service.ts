@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 
 import {
@@ -16,8 +17,8 @@ import { AppError } from '@/shared/index.js';
 import {
   appendHubEvent,
   getHubEventsLogPath,
-  getLiveHubEventsLogPath,
-  isTestEnvironment,
+  isLiveHubEventsLogPath,
+  isLiveHubProcess,
   onHubEvent,
 } from './hub-events.service.js';
 import type { HubEventState } from './hub-events.service.js';
@@ -158,17 +159,29 @@ export type HubWakeDependencies = {
 };
 
 /**
- * Why a wake must not be delivered from this process, or null when it may. Under test
- * (see isTestEnvironment) a wake reaches the chat path only through an injected runTurn,
- * or when both the database (DATABASE_PATH) and the events log are the test's own
- * temporary ones: the live database holds the real hub session.
+ * Why a wake must not be delivered from this process, or null when it may. Outside the
+ * live server (see isLiveHubProcess: any test, run by the runner or directly, or another
+ * process that inherited the server's environment) a wake reaches the chat path only
+ * through an injected runTurn, or when both the database (DATABASE_PATH) and the events
+ * log are temporary ones: the live database holds the real hub session.
  */
 export function hubWakeTestGuard(deps: Pick<HubWakeDependencies, 'runTurn' | 'eventsLogPath'>): string | null {
-  if (!isTestEnvironment() || deps.runTurn) return null;
-  if (!process.env.DATABASE_PATH) return 'under test without an isolated DATABASE_PATH';
-  const logPath = path.resolve(resolveEventsLogPath(deps));
-  if (logPath === getLiveHubEventsLogPath()) return 'under test with the live hub events log';
+  if (isLiveHubProcess() || deps.runTurn) return null;
+  const databasePath = process.env.DATABASE_PATH;
+  if (!databasePath || !isInTempDirectory(databasePath)) return 'not the live server, without an isolated DATABASE_PATH';
+  if (isLiveHubEventsLogPath(resolveEventsLogPath(deps))) return 'not the live server, with the live hub events log';
   return null;
+}
+
+function isInTempDirectory(file: string): boolean {
+  const resolved = path.resolve(file);
+  const roots = new Set([path.resolve(os.tmpdir())]);
+  try {
+    roots.add(fs.realpathSync(os.tmpdir()));
+  } catch {
+    // tmpdir missing: the unresolved root only
+  }
+  return [...roots].some((root) => resolved.startsWith(root + path.sep));
 }
 
 function resolveEventsLogPath(deps: Pick<HubWakeDependencies, 'eventsLogPath'>): string {

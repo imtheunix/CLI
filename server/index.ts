@@ -33,7 +33,7 @@ import { commandsRoutes } from './modules/commands/index.js';
 import { settingsRoutes } from './modules/settings/index.js';
 
 import { createAgentModule } from './modules/agent/index.js';
-import { createOrchestratorModule } from './modules/orchestrator/index.js';
+import { createOrchestratorModule, enableLiveHubEvents } from './modules/orchestrator/index.js';
 import projectModuleRoutes from './modules/projects/projects.routes.js';
 import notificationRoutes from './modules/notifications/notifications.routes.js';
 import { userRoutes } from './modules/user/index.js';
@@ -93,7 +93,9 @@ const agentRoutes = createAgentModule({
 });
 
 // Coding jobs balanced over Claude, GPT and GLM, each a chat session, and the
-// CI/CD queue their finished branches go through.
+// CI/CD queue their finished branches go through. Only this process writes the live
+// hub events log and wakes the real hub (tests and helpers never call this).
+enableLiveHubEvents();
 const orchestrator = createOrchestratorModule({ runtime: providerRuntimeService, authenticate: authenticateToken });
 
 // Single WebSocket server that handles chat, shell, and plugin proxy paths.
