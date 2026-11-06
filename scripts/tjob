@@ -51,7 +51,7 @@ else:
     j = data["job"]
     print(line(j))
     if mode == "show":
-        for k in ("repo_path", "base_branch", "branch", "worktree_path", "session_id", "model", "pushed_sha", "last_error"):
+        for k in ("repo_path", "base_branch", "branch", "worktree_path", "session_id", "model", "pushed_sha", "checkLogPath", "last_error"):
             if j.get(k): print("  %s: %s" % (k, j[k]))
         def took(ms):
             if ms is None: return ""

@@ -8,13 +8,16 @@ import test from 'node:test';
 
 import { closeConnection, initializeDatabase, orchestratorJobsDb, sessionsDb, userDb } from '@/modules/database/index.js';
 import type { OrchestratorJobRow } from '@/modules/database/index.js';
+import { chatRunRegistry } from '@/modules/websocket/index.js';
+import type { NormalizedMessage } from '@/shared/types.js';
+
 import { createJobsService, mergeStepTimings } from '../services/jobs.service.js';
 import { createMergeQueueService } from '../services/merge-queue.service.js';
 import { loadOrchestratorConfig } from '../services/orchestrator-config.service.js';
 import type { OrchestratorConfig } from '../services/orchestrator-config.service.js';
 import { checkEnvironment, resolveCheckCommand, runCommand } from '../services/workspace.service.js';
-import { chatRunRegistry } from '@/modules/websocket/index.js';
-import type { NormalizedMessage } from '@/shared/types.js';
+import { getHubEventsLogPath, onHubEvent } from '../services/hub-events.service.js';
+import { buildHubWakeMessage, parseHubEventLine } from '../services/hub-wake.service.js';
 
 type Turn = { sessionId: string; command: string; options: Record<string, unknown> };
 type TurnWriter = { send: (message: NormalizedMessage) => void };
@@ -411,6 +414,68 @@ test('failing checks go back to the agent, whose job takes its slot again', asyn
     assert.equal(git(ctx.upstream, 'ls-remote', 'origin', 'main').split('\t')[0], git(ctx.repo, 'rev-parse', 'origin/main'));
   }, (config) => { config.checks = { demo: 'printf "ok 1 - fine\\nnot ok 2 - broken\\n# fail 1\\n"; false' }; });
 });
+
+test('a check failing after 500 lines exposes the failing tail in the agent and hub messages and retains the full log', async () => {
+  await withWorkspace(async (ctx) => {
+    const id = await finishedJob(ctx, (worktree) => commitFile(worktree, 'feature.txt', 'f', 'feature'));
+    assert.equal(ctx.jobs.get(id)!.checkLogPath, null);
+    const reasons: string[] = [];
+    const off = onHubEvent((event) => {
+      if (event.jobId === id && event.state === 'merge_failed') reasons.push(event.reason);
+    });
+    try {
+      const queue = createMergeQueueService({ jobs: ctx.jobs, config: () => ctx.config });
+      await drain(queue, () => ctx.job(id), ['none']);
+      const message = ctx.runtime.turns.at(-1)!.command;
+      assert.match(message, /FAILED: final step/);
+      assert.match(message, /Exit code: 23; duration: \d+ ms; timeout: no; signal: none/);
+      assert.doesNotMatch(message, /Compiling 1\n/);
+      const logPath = ctx.jobs.get(id)!.checkLogPath!;
+      assert.ok(logPath.startsWith(path.join(ctx.config.worktreesRoot, 'demo', '.state', id)));
+      assert.match(message, /Full check log:/);
+      assert.ok(message.includes(logPath));
+      const log = readFileSync(logPath, 'utf8');
+      assert.equal(log.split('\n').length, 502);
+      assert.match(log, /^Compiling 1\nCompiling 2\n/);
+      assert.match(log, /Compiling 500\nFAILED: final step\n$/);
+      assert.equal(git(ctx.job(id).worktree_path, 'status', '--porcelain'), '');
+      assert.equal(reasons.length, 1);
+      assert.ok(reasons[0].includes('FAILED: final step'));
+      const event = readFileSync(getHubEventsLogPath(), 'utf8').trimEnd().split('\n')
+        .map(parseHubEventLine).find((entry) => entry?.jobId === id && entry.state === 'merge_failed')!;
+      assert.ok(event);
+      const wake = buildHubWakeMessage([event]);
+      assert.match(wake, /FAILED: final step/);
+      assert.ok(wake.includes(logPath));
+    } finally {
+      off();
+    }
+  }, (config) => {
+    config.checks = { demo: 'for i in {1..500}; do if ((i % 2)); then echo "Compiling $i"; else echo "Compiling $i" >&2; fi; done; echo "FAILED: final step"; exit 23' };
+  });
+});
+
+for (const outcome of ['timeout', 'signal'] as const) {
+  test(`a check terminated by ${outcome} reports its duration and termination details`, async () => {
+    await withWorkspace(async (ctx) => {
+      const id = await finishedJob(ctx, (worktree) => commitFile(worktree, 'feature.txt', 'f', 'feature'));
+      const queue = createMergeQueueService({
+        jobs: ctx.jobs, config: () => ctx.config,
+        // Avoid host login-shell startup consuming the fixture's short timeout.
+        run: (command, args, options) => runCommand(command, command === 'nice' ? args.map((arg) => arg === '-lc' ? '-c' : arg) : args,
+          command === 'nice' && outcome === 'timeout' ? { ...options!, timeoutMs: 1_000 } : options),
+      });
+      await drain(queue, () => ctx.job(id), ['none']);
+      const message = ctx.runtime.turns.at(-1)!.command;
+      assert.match(message, /Exit code: none \(terminated by signal\); duration: \d+ ms/);
+      assert.ok(message.includes(outcome === 'timeout' ? 'timeout: yes (CHECK_TIMEOUT_MS=1200000); signal: SIGTERM' : 'timeout: no; signal: SIGTERM'));
+      assert.match(message, /check started/);
+      assert.match(readFileSync(ctx.jobs.get(id)!.checkLogPath!, 'utf8'), /check started/);
+    }, (config) => {
+      config.checks = { demo: outcome === 'timeout' ? 'echo "check started"; sleep 30' : 'echo "check started"; kill -TERM $$' };
+    });
+  });
+}
 
 test('main moving during the queue sends the job back to rebase, not to a failed push', async () => {
   await withWorkspace(async (ctx) => {

@@ -23,6 +23,7 @@ import type { OrchestratorConfig } from './orchestrator-config.service.js';
 import { prepareJobProjectMap } from './project-map.service.js';
 import {
   hasCommitsAhead,
+  getCheckLogPath,
   isDirty,
   isGitRepository,
   listGitRepositories,
@@ -48,6 +49,8 @@ export type OrchestratorJobView = OrchestratorJobRow & {
   quotaFallback: boolean;
   /** `tjob show`: each CI/CD queue step, when it began and how long it took (so far, for the current one). */
   mergeSteps: OrchestratorMergeStepTiming[];
+  /** `tjob show`: full output of the latest merge check, retained outside the worktree. */
+  checkLogPath: string | null;
 };
 
 export type OrchestratorMergeStepTiming = OrchestratorMergeStepEvent & { durationMs: number | null };
@@ -151,6 +154,7 @@ export function createJobsService(deps: {
       quotaFallback: job.backend === 'agy' && Boolean(job.last_error?.startsWith('GLM quota-exhausted')),
       activity: job.state === 'active' ? (processing ? 'working' : 'waiting') : null,
       mergeSteps: mergeStepTimings(readMergeStepHistory(job), now().getTime()),
+      checkLogPath: existsSync(getCheckLogPath(job.worktree_path)) ? getCheckLogPath(job.worktree_path) : null,
       model: job.model ?? (session as { model?: string | null } | null)?.model ?? null,
     };
   }

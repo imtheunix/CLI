@@ -9,6 +9,7 @@ import type { JobsService } from './jobs.service.js';
 import type { OrchestratorConfig } from './orchestrator-config.service.js';
 import {
   checkEnvironment,
+  getCheckLogPath,
   readOriginRepository,
   resolveCheckCommand,
   revParse,
@@ -183,18 +184,22 @@ export function createMergeQueueService(deps: {
       orchestratorJobsDb.recordMergeStep(job.id, 'check:run');
       const command = await resolveCheckCommand(job.repo_path, job.worktree_path, deps.config().checks);
       if (command) {
+        const logPath = getCheckLogPath(job.worktree_path);
+        const started = now();
         // Below the agents' own work on the CPU: the workstation stays usable while a gate runs.
         const result = await run('nice', ['-n', '10', '/bin/bash', '-lc', command], {
           cwd: job.worktree_path,
           timeoutMs: CHECK_TIMEOUT_MS,
           env: checkEnvironment(),
+          logPath,
         });
-        if (result.code !== 0) {
+        if (result.code !== 0 || result.timedOut || result.signal) {
           const output = result.stdout + result.stderr;
           // The tail of a long test run is its summary; the failing tests' names are further up.
           const failing = output.split('\n').filter((line) => /^\s*not ok\b/.test(line)).slice(0, 30);
           const failingList = failing.length > 0 ? `Failing:\n\n\`\`\`\n${failing.join('\n')}\n\`\`\`\n\n` : '';
-          await backToAgent(job, `after rebasing onto origin/${job.base_branch}, \`${command}\` failed:\n\n${failingList}\`\`\`\n${tail(output)}\n\`\`\``);
+          const details = `Exit code: ${result.signal ? 'none (terminated by signal)' : result.code}; duration: ${result.durationMs ?? Math.max(0, now() - started)} ms; timeout: ${result.timedOut ? `yes (CHECK_TIMEOUT_MS=${CHECK_TIMEOUT_MS})` : 'no'}; signal: ${result.signal ?? 'none'}.`;
+          await backToAgent(job, `after rebasing onto origin/${job.base_branch}, \`${command}\` failed:\n\n${failingList}\`\`\`\n${tail(output)}\n\`\`\`\n\n${details}\nFull check log: ${logPath}`);
           return;
         }
       }

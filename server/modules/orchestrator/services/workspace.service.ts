@@ -1,21 +1,86 @@
-import { execFile } from 'node:child_process';
-import { existsSync, promises as fs } from 'node:fs';
+import { execFile, spawn } from 'node:child_process';
+import { createReadStream, existsSync, promises as fs } from 'node:fs';
 import path from 'node:path';
+import { createInterface } from 'node:readline';
 
-/** What a finished command left behind. `code` is 0 on success. */
-export type CommandResult = { code: number; stdout: string; stderr: string };
+/** Used by jobs and the merge queue. `code` is the exit status, or 1 if no status exists; `signal` explains termination. */
+export type CommandResult = { code: number; stdout: string; stderr: string; signal?: NodeJS.Signals | null; timedOut?: boolean; durationMs?: number };
+
+/** Used by the queue and job view: check artifacts live in job state outside the git worktree. */
+export function getCheckLogPath(worktreePath: string): string {
+  return path.join(path.dirname(worktreePath), '.state', path.basename(worktreePath), 'merge-check.log');
+}
+
+/** Stream both descriptors to the same file, keeping order and avoiding execFile's maxBuffer cutoff. */
+async function runLoggedCommand(file: string, argv: string[], options: {
+  cwd: string; timeoutMs?: number; env?: NodeJS.ProcessEnv; logPath: string;
+}): Promise<CommandResult> {
+  await fs.mkdir(path.dirname(options.logPath), { recursive: true });
+  const log = await fs.open(options.logPath, 'w', 0o600);
+  const started = Date.now();
+  let timedOut = false;
+  let durationMs = 0;
+  let termination: { code: number; signal: NodeJS.Signals | null; error?: string };
+  try {
+    termination = await new Promise((resolve) => {
+      const child = spawn(file, argv, {
+        cwd: options.cwd,
+        env: { ...process.env, GIT_TERMINAL_PROMPT: '0', ...options.env },
+        stdio: ['ignore', log.fd, log.fd],
+        detached: true,
+      });
+      let escalation: ReturnType<typeof setTimeout> | undefined;
+      const killGroup = (signal: NodeJS.Signals) => {
+        if (!child.pid) return;
+        try { process.kill(-child.pid, signal); } catch { /* already exited */ }
+      };
+      const timeout = setTimeout(() => {
+        timedOut = true;
+        killGroup('SIGTERM');
+        escalation = setTimeout(() => killGroup('SIGKILL'), 1_000);
+      }, options.timeoutMs ?? 10 * 60_000);
+      child.once('error', (error) => {
+        clearTimeout(timeout);
+        resolve({ code: 1, signal: null, error: error.message });
+      });
+      child.once('close', (code, signal) => {
+        clearTimeout(timeout);
+        // The shell may exit before descendants: ensure timed-out checks cannot keep running/writing.
+        if (timedOut) killGroup('SIGKILL');
+        clearTimeout(escalation);
+        resolve({ code: code ?? 1, signal });
+      });
+    });
+    durationMs = Date.now() - started;
+    if (termination.error) await log.write(`${termination.error}\n`);
+  } finally {
+    await log.close();
+  }
+  const lines: string[] = [];
+  const reader = createInterface({ input: createReadStream(options.logPath), crlfDelay: Infinity });
+  for await (const line of reader) {
+    lines.push(line);
+    if (lines.length > 60) lines.shift();
+  }
+  return { code: termination.code, signal: termination.signal, timedOut, durationMs, stdout: lines.join('\n'), stderr: '' };
+}
 
 /**
  * Used by the jobs and CI/CD queue services for every git, check and resolver
  * command. Never throws for a failing command; the caller reads `code`.
  * Arguments are passed as an array, never through a shell, except `shell`
  * commands, which are the repository check commands from the config.
+ * With `logPath`, stdout and stderr share a full log file; `stdout` returns
+ * its last 60 lines and the result includes elapsed time and termination details.
  */
 export function runCommand(
   command: string,
   args: string[],
-  options: { cwd: string; timeoutMs?: number; shell?: boolean; env?: NodeJS.ProcessEnv } = { cwd: process.cwd() },
+  options: { cwd: string; timeoutMs?: number; shell?: boolean; env?: NodeJS.ProcessEnv; logPath?: string } = { cwd: process.cwd() },
 ): Promise<CommandResult> {
+  if (options.logPath) {
+    return runLoggedCommand(options.shell ? '/bin/bash' : command, options.shell ? ['-lc', command] : args, { ...options, logPath: options.logPath });
+  }
   return new Promise((resolve) => {
     const file = options.shell ? '/bin/bash' : command;
     const argv = options.shell ? ['-lc', command] : args;
