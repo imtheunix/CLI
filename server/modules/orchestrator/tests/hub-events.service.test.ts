@@ -4,7 +4,12 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 
-import { appendHubEvent, getHubEventsLogPath } from '../services/hub-events.service.js';
+import {
+  appendHubEvent,
+  getHubEventsLogPath,
+  getLiveHubEventsLogPath,
+  isTestEnvironment,
+} from '../services/hub-events.service.js';
 
 test('appendHubEvent appends formatted single-line event to log file', () => {
   const dir = mkdtempSync(path.join(tmpdir(), 'hub-events-test-'));
@@ -56,5 +61,27 @@ test('appendHubEvent appends formatted single-line event to log file', () => {
       delete process.env.CLI_HUB_EVENTS_LOG;
     }
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('under test, hub events never go to the live log the real hub wake tails', () => {
+  // Regression (2026-11-06): orchestrator tests run by the merge queue appended fixture
+  // events to ~/.cache/cli/hub-events.log and the live hub was woken ~57 times.
+  assert.equal(isTestEnvironment(), true, 'node --test must be detected as a test environment');
+  assert.equal(isTestEnvironment({ NODE_ENV: 'test' }), true);
+  assert.equal(isTestEnvironment({ NODE_ENV: 'production' }), false);
+
+  const live = getLiveHubEventsLogPath();
+  const prevEnv = process.env.CLI_HUB_EVENTS_LOG;
+  try {
+    delete process.env.CLI_HUB_EVENTS_LOG;
+    assert.notEqual(path.resolve(getHubEventsLogPath()), live);
+    assert.ok(getHubEventsLogPath().startsWith(tmpdir()));
+
+    process.env.CLI_HUB_EVENTS_LOG = live;
+    assert.notEqual(path.resolve(getHubEventsLogPath()), live, 'an inherited live CLI_HUB_EVENTS_LOG is ignored under test');
+  } finally {
+    if (prevEnv !== undefined) process.env.CLI_HUB_EVENTS_LOG = prevEnv;
+    else delete process.env.CLI_HUB_EVENTS_LOG;
   }
 });

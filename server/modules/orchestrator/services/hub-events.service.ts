@@ -23,9 +23,34 @@ export function onHubEvent(listener: HubEventListener): () => void {
   };
 }
 
-/** Used by Orchestrator and tests to resolve the destination log for hub state events. */
+/**
+ * True inside a test run: node --test (and tsx --test) sets NODE_TEST_CONTEXT in every
+ * test file process and its children; NODE_ENV=test covers other runners. The merge
+ * queue's checks run `npm test` on the workstation, so a test must never reach the live hub.
+ */
+export function isTestEnvironment(env: NodeJS.ProcessEnv = process.env): boolean {
+  return Boolean(env.NODE_TEST_CONTEXT) || env.NODE_ENV === 'test';
+}
+
+/** The events log the live server's hub wake tails (~/.cache/cli/hub-events.log). */
+export function getLiveHubEventsLogPath(): string {
+  return path.join(os.homedir(), '.cache', 'cli', 'hub-events.log');
+}
+
+/**
+ * Used by Orchestrator and tests to resolve the destination log for hub state events.
+ * Under test, the live log is never returned: without CLI_HUB_EVENTS_LOG (or with it set
+ * to the live log) events go to a per-process file in the temp directory, so a test's
+ * fixture events cannot wake the real hub.
+ */
 export function getHubEventsLogPath(): string {
-  return process.env.CLI_HUB_EVENTS_LOG || path.join(os.homedir(), '.cache', 'cli', 'hub-events.log');
+  const configured = process.env.CLI_HUB_EVENTS_LOG;
+  const live = getLiveHubEventsLogPath();
+  if (isTestEnvironment()) {
+    if (configured && path.resolve(configured) !== live) return configured;
+    return path.join(os.tmpdir(), `cli-test-hub-events-${process.pid}.log`);
+  }
+  return configured || live;
 }
 
 /** Sanitize a text field so the output is strictly a single line without tab separators. */
