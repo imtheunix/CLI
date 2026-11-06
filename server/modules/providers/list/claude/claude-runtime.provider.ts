@@ -20,7 +20,7 @@ import os from 'os';
 import path from 'path';
 
 import type { SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
-import type { AnyRecord, BackgroundTaskSummary } from '@/shared/types.js';
+import type { AnyRecord, BackgroundTaskSummary, NormalizedMessage } from '@/shared/types.js';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 
 import {
@@ -559,7 +559,7 @@ export function spawnDetachableClaudeProcess(spawnOptions, onStderr, turn) {
  * with a `result`.
  * @param {(message: Object, sessionId: string|null) => Array<Object>} normalizeMessage
  */
-export function createClaudeTurnLineParser(normalizeMessage) {
+export function createClaudeTurnLineParser(normalizeMessage: (raw: unknown, sessionId: string | null) => NormalizedMessage[]) {
   let capturedSessionId = null;
   let reportedContextWindow = null;
   let mainThreadModel = null;
