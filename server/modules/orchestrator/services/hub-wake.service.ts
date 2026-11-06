@@ -13,7 +13,13 @@ import { chatRunRegistry, runDetachedChatTurn } from '@/modules/websocket/index.
 import type { ProviderRuntimeGateway } from '@/modules/websocket/index.js';
 import { AppError } from '@/shared/index.js';
 
-import { appendHubEvent, getHubEventsLogPath, onHubEvent } from './hub-events.service.js';
+import {
+  appendHubEvent,
+  getHubEventsLogPath,
+  getLiveHubEventsLogPath,
+  isTestEnvironment,
+  onHubEvent,
+} from './hub-events.service.js';
 import type { HubEventState } from './hub-events.service.js';
 import { DEFAULT_WAKE_ABANDON_MS } from './orchestrator-config.service.js';
 import type { OrchestratorConfig } from './orchestrator-config.service.js';
@@ -147,10 +153,25 @@ export type HubWakeDependencies = {
   offsetPath?: string;
   stallsPath?: string;
   turnTimeoutMs?: number;
+  /** The test sink: under test, a wake is delivered only through an injected runTurn or an isolated DB and log. */
   runTurn?: typeof runDetachedChatTurn;
 };
 
-function resolveEventsLogPath(deps: HubWakeDependencies): string {
+/**
+ * Why a wake must not be delivered from this process, or null when it may. Under test
+ * (see isTestEnvironment) a wake reaches the chat path only through an injected runTurn,
+ * or when both the database (DATABASE_PATH) and the events log are the test's own
+ * temporary ones: the live database holds the real hub session.
+ */
+export function hubWakeTestGuard(deps: Pick<HubWakeDependencies, 'runTurn' | 'eventsLogPath'>): string | null {
+  if (!isTestEnvironment() || deps.runTurn) return null;
+  if (!process.env.DATABASE_PATH) return 'under test without an isolated DATABASE_PATH';
+  const logPath = path.resolve(resolveEventsLogPath(deps));
+  if (logPath === getLiveHubEventsLogPath()) return 'under test with the live hub events log';
+  return null;
+}
+
+function resolveEventsLogPath(deps: Pick<HubWakeDependencies, 'eventsLogPath'>): string {
   return deps.eventsLogPath ?? getHubEventsLogPath();
 }
 
@@ -586,6 +607,11 @@ export function createHubWakeService(deps: HubWakeDependencies) {
     message: string,
     commit: { offset: number; generation: number; eventCount: number } | null,
   ): Promise<DeliveryOutcome> {
+    const refusal = hubWakeTestGuard(deps);
+    if (refusal) {
+      console.error(`[HubWake] Refusing to wake hub session "${hubSessionId}" ${refusal}.`);
+      return 'refused';
+    }
     const session = sessionsDb.getSessionById(hubSessionId);
     if (!session) {
       console.warn(`[HubWake] Hub session "${hubSessionId}" not found in database.`);

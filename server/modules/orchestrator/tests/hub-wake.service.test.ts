@@ -17,8 +17,8 @@ import {
 } from '@/modules/database/index.js';
 import { chatRunRegistry } from '@/modules/websocket/index.js';
 
-import { appendHubEvent } from '../services/hub-events.service.js';
-import { createHubWakeService } from '../services/hub-wake.service.js';
+import { appendHubEvent, getLiveHubEventsLogPath } from '../services/hub-events.service.js';
+import { createHubWakeService, hubWakeTestGuard } from '../services/hub-wake.service.js';
 import type { LoggedHubEvent } from '../services/hub-wake.service.js';
 import { loadOrchestratorConfig } from '../services/orchestrator-config.service.js';
 import type { OrchestratorConfig } from '../services/orchestrator-config.service.js';
@@ -1200,5 +1200,44 @@ test('a wake undecided past wakeAbandonMs releases its events; the next wake del
     await waitForTimers();
     assert.equal(service.getStoredOffset(), readFileSync(eventsLogPath).length);
     service.stop();
+  });
+});
+
+test('under test, a wake never reaches the configured real hub: no live DB, no live events log', async () => {
+  // Regression (2026-11-06): a test run delivered fixture events to the live hub session.
+  const previousDatabasePath = process.env.DATABASE_PATH;
+  try {
+    delete process.env.DATABASE_PATH;
+    assert.match(String(hubWakeTestGuard({})), /DATABASE_PATH/);
+    process.env.DATABASE_PATH = path.join(tmpdir(), 'hub-wake-guard.db');
+    assert.match(String(hubWakeTestGuard({ eventsLogPath: getLiveHubEventsLogPath() })), /live hub events log/);
+    assert.equal(hubWakeTestGuard({ eventsLogPath: path.join(tmpdir(), 'x.log') }), null);
+    delete process.env.DATABASE_PATH;
+    assert.equal(hubWakeTestGuard({ runTurn: (() => {}) as never }), null, 'an injected runTurn is a test sink');
+  } finally {
+    if (previousDatabasePath === undefined) delete process.env.DATABASE_PATH;
+    else process.env.DATABASE_PATH = previousDatabasePath;
+  }
+
+  // End to end: a hub wake built with the default chat path and no isolated DATABASE_PATH
+  // (the live DB holds the real hub session) refuses delivery; nothing is dispatched.
+  await withTestContext(async ({ config, runtime, clock, eventsLogPath, offsetPath, stallsPath }) => {
+    const service = createHubWakeService({
+      config: () => config,
+      runtime: runtime.gateway,
+      now: () => clock.now,
+      eventsLogPath,
+      offsetPath,
+      stallsPath,
+    });
+    const isolatedDatabasePath = process.env.DATABASE_PATH;
+    delete process.env.DATABASE_PATH;
+    try {
+      const result = await service.triggerWake({ test: true });
+      assert.equal(result.success, false);
+      assert.equal(runtime.turns.length, 0);
+    } finally {
+      process.env.DATABASE_PATH = isolatedDatabasePath;
+    }
   });
 });

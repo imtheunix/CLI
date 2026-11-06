@@ -85,3 +85,5 @@ When a job changes state (`review`, `blocked`, `merge_failed`, `turn_ended`, `me
 
 A hub or watching process can follow this file with `tail -F ~/.cache/cli/hub-events.log` without polling the server or injecting messages into sessions.
 
+Under test (`node --test`/`tsx --test`, which set `NODE_TEST_CONTEXT`, or `NODE_ENV=test`) the live log is never used: without `CLI_HUB_EVENTS_LOG`, or with it pointing at the live log, events go to `$TMPDIR/cli-test-hub-events-<pid>.log`. The hub wake also refuses to deliver under test unless a `runTurn` sink is injected or both `DATABASE_PATH` and the events log are the test's own, so a test run (including the merge queue's `npm test`) can never wake the real hub.
+
