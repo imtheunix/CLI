@@ -8,7 +8,9 @@ import type { NormalizedMessage, ProviderRuntimeContext } from '@/shared/types.j
 
 import { ZcodeProvider } from '../list/zcode/zcode.provider.js';
 
-async function withCli(run: (root: string, provider: ZcodeProvider) => Promise<void>) {
+const PLAN_ENV = ['ZCODE_TEST_HONORED', 'ZCODE_TEST_EXHAUSTED', 'ZCODE_TEST_FORCE'];
+
+async function withCli(run: (root: string, provider: ZcodeProvider) => Promise<void>, env: Record<string, string> = {}) {
   const root = await mkdtemp(path.join(os.tmpdir(), 'zcode-provider-'));
   const previousPath = process.env.PATH;
   const previousHome = process.env.HOME;
@@ -23,7 +25,23 @@ else if (args[0] === 'version') {
   process.stdout.write('ZCode 0.17.1\\n');
 }
 else {
+// Like headless ZCode 0.17.1: an unentitled default silently becomes the Coding Plan's full GLM-5.3.
+const home = process.env.HOME;
+const selection = JSON.parse(fs.readFileSync(home + '/.zcode/v2/provider_config.json', 'utf8')).config.defaultModelSelection;
+fs.appendFileSync(home + '/runs.log', selection.providerId + '/' + selection.modelId + '\\n');
+const honored = (process.env.ZCODE_TEST_HONORED || 'account:zai-individual-coding-plan').split(',');
+let [providerId, modelId] = honored.includes(selection.providerId) && selection.options && selection.options.reasoningLevel
+  ? [selection.providerId, selection.modelId] : ['account:zai-individual-coding-plan', 'GLM-5.3'];
+if (process.env.ZCODE_TEST_FORCE) [providerId, modelId] = process.env.ZCODE_TEST_FORCE.split('|');
+const report = {type:'session.updated',sessionId:'sess_native_zcode',payload:{messageCount:1,providerId,modelId,iteration:0}};
+if ((process.env.ZCODE_TEST_EXHAUSTED || '').split(',').includes(providerId)) {
+  process.stdout.write(JSON.stringify(report) + '\\n');
+  process.stderr.write('ProviderBusinessError: Weekly/Monthly Limit Exhausted. Your limit will reset at 2026-11-07 12:28:03\\n');
+  process.stdout.write(JSON.stringify({type:'turn.failed',sessionId:'sess_native_zcode',payload:{error:{message:'Weekly/Monthly Limit Exhausted'}}}) + '\\n');
+  process.exit(1);
+}
 const events = [
+ report,
  {event:'init',conversation_id:'sess_native_zcode',init:{model:'GLM-5.3-Flash'}},
  {event:'step_update',step_update:{step_index:2,step_type:'tool',state:'ACTIVE',tool_name:'run_command',tool_info:{name:'run_command',parameters:{CommandLine:'pwd'}}}},
  {event:'step_update',step_update:{step_index:2,step_type:'tool',state:'DONE',tool_name:'run_command',tool_info:{name:'run_command',parameters:{CommandLine:'pwd'},output:'/tmp'}}},
@@ -39,13 +57,23 @@ setTimeout(() => process.stdout.write(text.slice(23)), 10);
   process.env.HOME = root;
   process.env.PATH = path.join(root, 'bin') + path.delimiter + previousPath;
   process.env.ZCODE_TEST_ARGS = path.join(root, 'args.json');
+  for (const key of PLAN_ENV) { if (env[key] === undefined) delete process.env[key]; else process.env[key] = env[key]; }
   try { await run(root, new ZcodeProvider()); }
   finally {
     if (previousPath === undefined) delete process.env.PATH; else process.env.PATH = previousPath;
     if (previousHome === undefined) delete process.env.HOME; else process.env.HOME = previousHome;
     if (argsFile === undefined) delete process.env.ZCODE_TEST_ARGS; else process.env.ZCODE_TEST_ARGS = argsFile;
+    for (const key of PLAN_ENV) delete process.env[key];
     await rm(root, { recursive: true, force: true });
   }
+}
+
+async function runs(root: string): Promise<string[]> {
+  return (await readFile(path.join(root, 'runs.log'), 'utf8')).split('\n').filter(Boolean);
+}
+
+async function planState(root: string) {
+  return JSON.parse(await readFile(path.join(root, '.cloudcli', 'zcode', 'provider-state.json'), 'utf8'));
 }
 
 function context(nativeId: string | null): ProviderRuntimeContext {
@@ -78,10 +106,18 @@ test('zcode launches, streams split NDJSON, configures GLM-5.3-Flash, persists h
     assert.deepEqual(args, ['-p', 'first\nprompt', '--output-format', 'stream-json', '--mode', 'yolo', '--cwd', root]);
     assert.ok(nativeIds.includes('sess_native_zcode'));
 
-    // Verify ~/.zcode/v2/provider_config.json was configured with GLM-5.3-Flash and reasoningLevel: high
+    // Weekend Build and Start Plan are not honored headless: each is stopped at its first report and recorded,
+    // then the Coding Plan runs GLM-5.3-Flash with the requested reasoning level.
+    assert.deepEqual(await runs(root), [
+      'account:zai-offpeak-idle-plan/GLM-5.3-Flash', 'account:zai-start-plan/GLM-5.3-Flash', 'account:zai-individual-coding-plan/GLM-5.3-Flash',
+    ]);
     const configRaw = JSON.parse(await readFile(path.join(root, '.zcode', 'v2', 'provider_config.json'), 'utf8'));
-    assert.equal(configRaw.config.defaultModelSelection.modelId, 'GLM-5.3-Flash');
-    assert.equal(configRaw.config.defaultModelSelection.options.reasoningLevel, 'high');
+    assert.deepEqual(configRaw.config.defaultModelSelection, { providerId: 'account:zai-individual-coding-plan', modelId: 'GLM-5.3-Flash', options: { reasoningLevel: 'high' } });
+    const state = await planState(root);
+    assert.match(state.plans['account:zai-start-plan'].reason, /reported account:zai-individual-coding-plan\/GLM-5\.3, not the requested account:zai-start-plan\/GLM-5\.3-Flash/);
+    assert.ok(state.plans['account:zai-offpeak-idle-plan']);
+    assert.equal(state.sessions['app-1'], 'account:zai-individual-coding-plan');
+    assert.equal(messages.filter((message) => message.kind === 'error').length, 0);
 
     assert.equal(messages.filter((message) => message.kind === 'stream_delta').map((message) => message.content).join(''), 'Hello from ZCode');
     assert.equal(messages.filter((message) => message.kind === 'complete').length, 1);
@@ -111,6 +147,8 @@ test('zcode launches, streams split NDJSON, configures GLM-5.3-Flash, persists h
 
     const configResume = JSON.parse(await readFile(path.join(root, '.zcode', 'v2', 'provider_config.json'), 'utf8'));
     assert.equal(configResume.config.defaultModelSelection.options.reasoningLevel, 'low');
+    // The resume asks for the plan its conversation runs on; the skipped plans stay in cooldown.
+    assert.equal((await runs(root)).length, 4);
 
     const page = await provider.sessions.fetchHistory('app-1', { limit: 1 });
     assert.equal(page.total, 6);
@@ -118,8 +156,36 @@ test('zcode launches, streams split NDJSON, configures GLM-5.3-Flash, persists h
     assert.equal(page.hasMore, true);
 
     const raw = await readFile(path.join(root, '.cloudcli', 'zcode', 'app-1.jsonl'), 'utf8');
-    assert.equal(raw.split('\n').filter(Boolean).length, 14);
+    assert.equal(raw.split('\n').filter(Boolean).length, 18);
   });
+});
+
+test('zcode moves past a quota-exhausted plan without surfacing its 1310', async () => {
+  await withCli(async (root, provider) => {
+    const messages: NormalizedMessage[] = [];
+    await provider.runtime.run('hi', { sessionId: 'app-quota', cwd: root }, { send: (message) => { messages.push(message as NormalizedMessage); } }, context(null));
+    assert.deepEqual(await runs(root), [
+      'account:zai-offpeak-idle-plan/GLM-5.3-Flash', 'account:zai-start-plan/GLM-5.3-Flash', 'account:zai-individual-coding-plan/GLM-5.3-Flash',
+    ]);
+    const state = await planState(root);
+    assert.equal(state.plans['account:zai-start-plan'].until, '2026-11-07T04:28:03.000Z');
+    assert.match(state.plans['account:zai-start-plan'].reason, /1310/);
+    assert.equal(messages.filter((message) => message.kind === 'error').length, 0);
+    assert.equal(messages.at(-1)?.exitCode, 0);
+    const raw = await readFile(path.join(root, '.cloudcli', 'zcode', 'app-quota.jsonl'), 'utf8');
+    assert.equal(raw.split('\n').filter((row) => row.includes('provider_fallback')).length, 2);
+  }, { ZCODE_TEST_HONORED: 'account:zai-start-plan,account:zai-individual-coding-plan', ZCODE_TEST_EXHAUSTED: 'account:zai-start-plan' });
+});
+
+test('zcode fails loudly instead of running full GLM-5.3 when Flash was requested', async () => {
+  await withCli(async (root, provider) => {
+    const messages: NormalizedMessage[] = [];
+    await provider.runtime.run('hi', { sessionId: 'app-full', cwd: root }, { send: (message) => { messages.push(message as NormalizedMessage); } }, context(null));
+    assert.equal(messages.at(-1)?.exitCode, 1);
+    assert.equal(messages.filter((message) => message.kind === 'stream_delta').length, 0);
+    const error = messages.find((message) => message.kind === 'error');
+    assert.match(String(error?.content), /reported account:zai-individual-coding-plan\/GLM-5\.3, not the requested account:zai-individual-coding-plan\/GLM-5\.3-Flash .*stopped/);
+  }, { ZCODE_TEST_FORCE: 'account:zai-individual-coding-plan|GLM-5.3' });
 });
 
 test('zcode reports a failed result even when the process exits zero', async () => {
