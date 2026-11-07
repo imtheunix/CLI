@@ -8,10 +8,14 @@ import { AppError, normalizeProjectPath } from '@/shared/utils.js';
  * Default `GitCommandRunner`: spawns `git <args>` in `cwd` and captures output.
  * Rejects with an `AppError` carrying git's stderr when the command fails, so
  * callers (and ultimately the API client) see the real git diagnostic.
+ *
+ * Also satisfies `GitEnvCommandRunner`: the checkpoint service passes `env`
+ * overrides (`GIT_INDEX_FILE`, commit identity) that merge over the inherited
+ * environment; without `env` the child inherits it untouched.
  */
-export function runGitCommand(args: string[], cwd: string): Promise<GitCommandResult> {
+export function runGitCommand(args: string[], cwd: string, env?: NodeJS.ProcessEnv): Promise<GitCommandResult> {
   return new Promise((resolve, reject) => {
-    const child = spawn('git', args, { cwd, shell: false });
+    const child = spawn('git', args, { cwd, shell: false, ...(env ? { env: { ...process.env, ...env } } : {}) });
 
     let stdout = '';
     let stderr = '';

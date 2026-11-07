@@ -1,7 +1,9 @@
 import type { RequestHandler } from 'express';
 
-import type { OrchestratorBackend } from '@/modules/database/index.js';
+import { orchestratorJobsDb } from '@/modules/database/index.js';
+import type { OrchestratorBackend, OrchestratorJobRow } from '@/modules/database/index.js';
 import { reattachActiveTurns } from '@/modules/detached-turns/index.js';
+import { rollbackJobCheckpoint, runGitCommand } from '@/modules/worktrees/index.js';
 import { chatRunRegistry } from '@/modules/websocket/index.js';
 import type { ProviderRuntimeGateway } from '@/modules/websocket/index.js';
 
@@ -54,6 +56,18 @@ export function createOrchestratorModule(input: { runtime: ProviderRuntimeGatewa
         const { backends } = config();
         return Object.fromEntries(Object.entries(backends).map(([name, backend]) => [name, backend.cap])) as Record<OrchestratorBackend, number>;
       },
+      // `tjob rollback <id> <turn>`: restore a job's worktree from a per-turn
+      // checkpoint; refuses while the job's session is doing anything.
+      rollbackJobCheckpoint: (jobId, turn) => rollbackJobCheckpoint(
+        { jobId, turn },
+        {
+          runGit: runGitCommand,
+          getJob: (id) => orchestratorJobsDb.get(id),
+          isJobRunning: (job: OrchestratorJobRow) =>
+            job.state === 'preparing' || job.in_turn === 1 ||
+            Boolean(job.session_id && (chatRunRegistry.isProcessing(job.session_id) || input.runtime.hasBackgroundWork(job.session_id))),
+        },
+      ),
     }),
 
     async start(): Promise<void> {

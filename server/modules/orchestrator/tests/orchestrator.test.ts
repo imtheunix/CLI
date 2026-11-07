@@ -122,6 +122,9 @@ async function withWorkspace(
   } finally {
     unsubscribe();
     chatRunRegistry.clearAll();
+    // The per-turn checkpoints run detached from the completion that started them;
+    // let them finish before the test's repositories are removed.
+    await jobs.afterCheckpoints().catch(() => {});
     closeConnection();
     if (previousDatabasePath === undefined) delete process.env.DATABASE_PATH;
     else process.env.DATABASE_PATH = previousDatabasePath;

@@ -1054,6 +1054,22 @@ export type GitCommandResult = {
 export type GitCommandRunner = (args: string[], cwd: string) => Promise<GitCommandResult>;
 
 /**
+ * Executes `git <args>` inside `cwd` with extra environment overrides and
+ * resolves with the captured output.
+ *
+ * The job checkpoint service (Worktrees module) needs `GIT_INDEX_FILE` so a
+ * snapshot is written through a temporary index file; the production runner is
+ * `runGitCommand` with an optional `env` parameter. Overrides merge over the
+ * parent environment, so `PATH` and git's usual lookup still work. The promise
+ * must reject on a non-zero exit code, like `GitCommandRunner`.
+ */
+export type GitEnvCommandRunner = (
+  args: string[],
+  cwd: string,
+  env?: NodeJS.ProcessEnv,
+) => Promise<GitCommandResult>;
+
+/**
  * Executes `command args...` inside `options.cwd` and resolves with the captured output.
  *
  * This is the `spawnAsync` shape the Git routes module injects into its typed
@@ -1247,6 +1263,85 @@ export type MergeWorktreeResult = {
   squash: boolean;
   removedWorktree: RemoveWorktreeResult | null;
   cleanupError: string | null;
+};
+
+/**
+ * Input accepted when snapshotting a job's worktree at the end of one turn.
+ *
+ * The snapshot records every tracked and non-ignored file as they are on disk
+ * (uncommitted changes included) into `refs/tribeira/checkpoints/<jobId>/<n>`,
+ * where `n` counts the job's completed turns. HEAD, the real index and the
+ * stash are never touched.
+ */
+export type JobCheckpointCaptureInput = {
+  jobId: string;
+  /** The job worktree to snapshot; null-equivalent (missing folder) skips the capture. */
+  worktreePath: string;
+};
+
+/**
+ * Result of a captured job checkpoint.
+ *
+ * `turn` is the 1-based checkpoint number (`refs/tribeira/checkpoints/<jobId>/<turn>`)
+ * and `commitSha` the checkpoint commit the ref points at; the commits are
+ * internal and never merged or pushed.
+ */
+export type JobCheckpointCaptureResult = {
+  jobId: string;
+  turn: number;
+  ref: string;
+  commitSha: string;
+};
+
+/**
+ * Input accepted when rolling a job's worktree back to one of its checkpoints.
+ *
+ * `turn` is a previously captured checkpoint number. Rollback refuses while the
+ * job is running or being prepared, and when the worktree is the repository's
+ * main checkout (shared with everything else). A worktree removed by cleanup is
+ * recreated from the job's branch first.
+ */
+export type JobCheckpointRollbackInput = {
+  jobId: string;
+  turn: number;
+};
+
+/**
+ * Result of a completed job rollback.
+ *
+ * Tracked files are restored to the checkpoint content, files that appeared in
+ * later turns are removed, and untracked files from the checkpoint come back as
+ * untracked. HEAD never moves, so commits made after the checkpoint remain and
+ * show up as (unstaged) differences.
+ */
+export type JobCheckpointRollbackResult = {
+  jobId: string;
+  turn: number;
+  ref: string;
+  commitSha: string;
+  /** True when the worktree had been removed (cleanup) and was recreated for the rollback. */
+  recreatedWorktree: boolean;
+};
+
+/**
+ * Input accepted when pruning a job's checkpoints.
+ *
+ * Runs when a job merges or is cleaned up: the snapshot commits are only
+ * reachable through `refs/tribeira/checkpoints/<jobId>/*`, so deleting the
+ * refs lets git garbage-collect them.
+ */
+export type JobCheckpointPruneInput = {
+  jobId: string;
+  /** Any path inside the job's repository; the refs live in the common git dir, so the main checkout works after worktree removal. */
+  repoPath: string;
+};
+
+/**
+ * Result of pruning a job's checkpoints: the refs that were deleted.
+ */
+export type JobCheckpointPruneResult = {
+  jobId: string;
+  prunedRefs: string[];
 };
 
 // ---------------------------

@@ -3,6 +3,8 @@ import os from 'node:os';
 import path from 'node:path';
 
 import type { OrchestratorJobRow } from '@/modules/database/index.js';
+import { pruneJobCheckpoints, runGitCommand } from '@/modules/worktrees/index.js';
+
 import type { OrchestratorConfig } from './orchestrator-config.service.js';
 import { runCommand } from './workspace.service.js';
 
@@ -29,5 +31,16 @@ export async function cleanupJob(job: OrchestratorJobRow, config: OrchestratorCo
     }
   }
   if (!dryRun && buildDir) await fs.rm(buildDir, { recursive: true, force: true });
+  if (!dryRun) {
+    // The worktree is gone and the job is finished: the per-turn checkpoint refs
+    // (and with them the snapshot commits) can go. Best effort — the job stays
+    // cleaned either way; a failed prune is retried by the next sweep.
+    try {
+      await pruneJobCheckpoints({ jobId: job.id, repoPath: job.repo_path }, { runGit: runGitCommand });
+    } catch (error) {
+      console.warn(`[Orchestrator] Checkpoint prune ${job.id} failed`, error);
+      return result('cleaned; checkpoint prune failed');
+    }
+  }
   return result(dryRun ? 'would clean' : 'cleaned');
 }

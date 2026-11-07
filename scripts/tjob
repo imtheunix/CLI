@@ -10,6 +10,7 @@
 #   tjob retry <id>         a blocked merge goes on from where it stopped
 #   tjob cancel <id>        the person does not want the job anymore: frees its slot, leaves the CI/CD queue
 #   tjob resume <id>        a cancelled or failed job takes a slot again
+#   tjob rollback <id> <turn>  reset the job's worktree files to how an earlier turn left them (per-turn checkpoint; refuses while the job runs)
 #   tjob cleanup [--dry-run]  sweep merged and cancelled jobs
 #   tjob hub-wake [--test]  wake the orchestrating session (the hub) on job events
 set -euo pipefail
@@ -103,6 +104,19 @@ case "$cmd" in
   ls) api GET "" | render ls ;;
   show) api GET "/${1:?id}" | render show ;;
   done|approve|retry|resume|cancel) api POST "/${1:?id}/$cmd" '{}' | render "$cmd" ;;
+  rollback)
+    id=${1:?usage: tjob rollback <id> <turn>}; shift
+    turn=${1:?usage: tjob rollback <id> <turn>}; shift
+    [ $# -eq 0 ] || { echo "usage: tjob rollback <id> <turn>" >&2; exit 2; }
+    api POST "/$id/rollback" "{\"turn\":$turn}" | python3 -c '
+import json, sys
+body = json.load(sys.stdin)
+if not body.get("success", False):
+    sys.exit("tjob: " + str((body.get("error") or {}).get("message") if isinstance(body.get("error"), dict) else body.get("error") or body))
+r = body["data"]["rollback"]
+where = "recreated worktree, " if r.get("recreatedWorktree") else ""
+print("rolled back %s to turn %s: %scommit %s" % (r["jobId"], r["turn"], where, r["commitSha"][:8]))
+' ;;
   cleanup)
     dry=false
     if [ "${1:-}" = "--dry-run" ]; then dry=true; shift; fi
@@ -123,5 +137,5 @@ if not body.get("success", False):
     sys.exit("tjob: " + str((body.get("error") or {}).get("message") if isinstance(body.get("error"), dict) else body.get("error") or body))
 print(body.get("data", {}).get("message", "wake sent"))
 ' ;;
-  *) sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+  *) sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac
