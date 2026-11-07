@@ -8,6 +8,10 @@ import type { NormalizedMessage, ProviderRuntimeContext } from '@/shared/types.j
 
 import { ZcodeProvider } from '../list/zcode/zcode.provider.js';
 
+// ZCode reports reset times in UTC+8; keep the fixture in the future on every run.
+const quotaReset = new Date(Math.floor((Date.now() + 7 * 86400_000) / 1000) * 1000);
+const quotaResetInChina = new Date(quotaReset.getTime() + 8 * 3600_000).toISOString().slice(0, 19).replace('T', ' ');
+
 const PLAN_ENV = ['ZCODE_TEST_HONORED', 'ZCODE_TEST_EXHAUSTED', 'ZCODE_TEST_FORCE'];
 
 async function withCli(run: (root: string, provider: ZcodeProvider) => Promise<void>, env: Record<string, string> = {}) {
@@ -36,7 +40,7 @@ if (process.env.ZCODE_TEST_FORCE) [providerId, modelId] = process.env.ZCODE_TEST
 const report = {type:'session.updated',sessionId:'sess_native_zcode',payload:{messageCount:1,providerId,modelId,iteration:0}};
 if ((process.env.ZCODE_TEST_EXHAUSTED || '').split(',').includes(providerId)) {
   process.stdout.write(JSON.stringify(report) + '\\n');
-  process.stderr.write('ProviderBusinessError: Weekly/Monthly Limit Exhausted. Your limit will reset at 2026-11-07 12:28:03\\n');
+  process.stderr.write('ProviderBusinessError: Weekly/Monthly Limit Exhausted. Your limit will reset at ${quotaResetInChina}\\n');
   process.stdout.write(JSON.stringify({type:'turn.failed',sessionId:'sess_native_zcode',payload:{error:{message:'Weekly/Monthly Limit Exhausted'}}}) + '\\n');
   process.exit(1);
 }
@@ -168,7 +172,7 @@ test('zcode moves past a quota-exhausted plan without surfacing its 1310', async
       'account:zai-offpeak-idle-plan/GLM-5.3-Flash', 'account:zai-start-plan/GLM-5.3-Flash', 'account:zai-individual-coding-plan/GLM-5.3-Flash',
     ]);
     const state = await planState(root);
-    assert.equal(state.plans['account:zai-start-plan'].until, '2026-11-07T04:28:03.000Z');
+    assert.equal(state.plans['account:zai-start-plan'].until, quotaReset.toISOString());
     assert.match(state.plans['account:zai-start-plan'].reason, /1310/);
     assert.equal(messages.filter((message) => message.kind === 'error').length, 0);
     assert.equal(messages.at(-1)?.exitCode, 0);
