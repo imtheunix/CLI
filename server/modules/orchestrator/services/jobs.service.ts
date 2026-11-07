@@ -4,13 +4,14 @@ import { existsSync } from 'node:fs';
 import path from 'node:path';
 
 import {
+  orchestratorEffectsDb,
   orchestratorJobsDb,
   projectsDb,
   readMergeStepHistory,
   sessionsDb,
   userDb,
 } from '@/modules/database/index.js';
-import type { OrchestratorBackend, OrchestratorJobRow, OrchestratorMergeStepEvent } from '@/modules/database/index.js';
+import type { OrchestratorBackend, OrchestratorEffectRow, OrchestratorJobRow, OrchestratorMergeStepEvent } from '@/modules/database/index.js';
 import { abortTurn } from '@/modules/detached-turns/index.js';
 import { providerAuthService, sessionsService } from '@/modules/providers/index.js';
 import { chatRunRegistry, runDetachedChatTurn } from '@/modules/websocket/index.js';
@@ -18,6 +19,8 @@ import type { ProviderRuntimeGateway } from '@/modules/websocket/index.js';
 import { AppError } from '@/shared/index.js';
 import type { LLMProvider } from '@/shared/types.js';
 
+import { getEffectOutbox, readEffectPayload } from './effect-outbox.service.js';
+import type { EffectOutbox, EffectReplayHandler } from './effect-outbox.service.js';
 import { detectGlmQuotaReset, getGlmQuotaReset, recordGlmQuotaReset } from './glm-quota.service.js';
 import { appendHubEvent } from './hub-events.service.js';
 import {
@@ -144,8 +147,13 @@ export function createJobsService(deps: {
   prepareProjectMap?: (worktreePath: string) => Promise<string>;
   /** The login check a job waiting with auth_required probes (at most every 10 min); tests stub it. */
   probeAuth?: (provider: LLMProvider) => Promise<boolean>;
+  /** The durable effect outbox; tests give each simulated server process its own. */
+  outbox?: EffectOutbox;
 }) {
   const now = deps.now ?? (() => new Date());
+  const outbox = deps.outbox ?? getEffectOutbox();
+  // start_turn rows whose turn promise this process holds; the others (re-attached after a restart) close on completion.
+  const liveTurnKeys = new Set<string>();
   const prepareProjectMap = deps.prepareProjectMap ?? prepareJobProjectMap;
   const probeAuth = deps.probeAuth ?? (async (provider: LLMProvider) => {
     try {
@@ -261,16 +269,70 @@ export function createJobsService(deps: {
         saveRecovery(job.id, nextAuthProbe(recovery, now()));
         if (!await probeAuth(deps.config().backends[job.backend].provider)) continue;
       }
-      // Persist delivery first: a restart or a second tick never sends the continue twice.
-      saveRecovery(job.id, { ...recovery, delivered: true });
-      await sendTurn(orchestratorJobsDb.get(job.id) as OrchestratorJobRow, LIMIT_CONTINUE_PROMPT);
+      // Recorded in the outbox before anything is sent: a restart replays it once, a second tick finds it done.
+      const key = `resume:limit:${job.id}:${recovery.key}:${recovery.attempt}:${recovery.dueAt}`;
+      const sent = await outbox.run(
+        { key, jobId: job.id, kind: 'recovery_resume', replay: 'safe', payload: { content: LIMIT_CONTINUE_PROMPT, limitRecovery: true } },
+        async () => {
+          saveRecovery(job.id, { ...recovery, delivered: true });
+          return sendTurn(orchestratorJobsDb.get(job.id) as OrchestratorJobRow, LIMIT_CONTINUE_PROMPT, key);
+        },
+      );
+      if (sent.status === 'skipped' && sent.reason === 'done') saveRecovery(job.id, { ...recovery, delivered: true });
     }
   }
 
+  const RESTART_PROMPT = 'The CLI server restarted while you were working. Check the state of the worktree (git status, git log) and continue where you left off.';
+
+  /** Replays a resume the old process recorded: sent once, unless its turn already started. */
+  const replayResume: EffectReplayHandler = async (row, payload) => {
+    if (!row.job_id) return;
+    if (orchestratorEffectsDb.listByJob(row.job_id, 'start_turn').some((turn) => readEffectPayload(turn).resumeKey === row.key)) return;
+    const job = orchestratorJobsDb.get(row.job_id);
+    if (!job || job.state !== 'active' || !job.session_id || chatRunRegistry.isProcessing(job.session_id)) return;
+    if (payload.limitRecovery) {
+      const recovery = readLimitRecovery(job.limit_recovery);
+      if (recovery) saveRecovery(job.id, { ...recovery, delivered: true });
+    }
+    if (!await sendTurn(job, String(payload.content ?? RESTART_PROMPT), row.key)) throw new Error('the resume turn did not start');
+  };
+
+  /** Stops a job's turn wherever it runs (this process, its detached unit, the provider). */
+  async function abortSession(sessionId: string, provider: LLMProvider | null): Promise<void> {
+    const run = chatRunRegistry.getRun(sessionId);
+    if (run?.status === 'running') {
+      run.abortController.abort();
+      chatRunRegistry.completeRunIfCurrent(run, { exitCode: 0, aborted: true });
+    }
+    abortTurn(sessionId);
+    if (provider) await deps.runtime.abort(provider, sessionId);
+  }
+
+  const replayAbort: EffectReplayHandler = async (_row, payload) => {
+    await abortSession(String(payload.sessionId), (payload.provider as LLMProvider | null) ?? null);
+  };
+
+  /** A cleanup the old process left half-done: done again, unless the job was resumed meanwhile. */
+  const replayCleanup: EffectReplayHandler = async (row) => {
+    const job = row.job_id ? orchestratorJobsDb.get(row.job_id) : null;
+    if (!job || (job.state !== 'cancelled' && job.merge_step !== 'merged')) return;
+    const outcome = await cleanupJob(job, deps.config(), false);
+    if (outcome.status.startsWith('worktree removal failed')) throw new Error(outcome.status);
+  };
+
   /** Starts a turn in the job's session. False when the session is busy or gone. */
-  async function sendTurn(job: OrchestratorJobRow, content: string): Promise<boolean> {
+  async function sendTurn(job: OrchestratorJobRow, content: string, resumeKey: string | null = null): Promise<boolean> {
     if (!job.session_id || !job.backend || orchestratorJobsDb.get(job.id)?.state === 'cancelled') return false;
     const backend = deps.config().backends[job.backend];
+    // Recorded before the turn starts; process-bound: a restart never starts it again (recover() decides).
+    const turnKey = `turn:${job.id}:${randomUUID()}`;
+    const begun = outbox.begin({ key: turnKey, jobId: job.id, kind: 'start_turn', replay: 'process_bound', payload: { sessionId: job.session_id, resumeKey } });
+    if (begun.status === 'skipped') {
+      // A failed abort or cleanup of this job: no new turn before the old work is undone.
+      orchestratorJobsDb.update(job.id, { last_error: `No new turn: ${begun.row.kind} ${begun.row.key} failed (${begun.row.last_error ?? 'unknown'}); it must be undone first` });
+      return false;
+    }
+    liveTurnKeys.add(turnKey);
     orchestratorJobsDb.update(job.id, { in_turn: 1 });
     const turn = runDetachedChatTurn({
       sessionId: job.session_id,
@@ -283,6 +345,10 @@ export function createJobsService(deps: {
         permissionMode: 'bypassPermissions',
       },
     }, { runtime: deps.runtime });
+    void turn.then(
+      (result) => outbox.finish(turnKey, result.started ? { ok: true } : { ok: false, error: 'the turn never started' }),
+      (error: unknown) => outbox.finish(turnKey, { ok: false, error: String(error) }),
+    ).finally(() => liveTurnKeys.delete(turnKey));
     // Settles when the turn ends; only a turn that never started is reported here.
     const started = await Promise.race([
       turn.then((result) => result.started),
@@ -290,6 +356,10 @@ export function createJobsService(deps: {
     ]);
     if (!started) orchestratorJobsDb.update(job.id, { in_turn: 0 });
     return started;
+  }
+
+  function effectHandlers(): Partial<Record<OrchestratorEffectRow['kind'], EffectReplayHandler>> {
+    return { recovery_resume: replayResume, abort_turn: replayAbort, cleanup: replayCleanup };
   }
 
   /** Gives a queued (or half-prepared) job its backend, worktree and session, then starts its first turn. */
@@ -531,14 +601,13 @@ export function createJobsService(deps: {
       }
       orchestratorJobsDb.update(id, { state: 'cancelled', merge_step: 'none', in_turn: 0 });
       if (job.session_id) {
-        const run = chatRunRegistry.getRun(job.session_id);
-        if (run?.status === 'running') {
-          run.abortController.abort();
-          chatRunRegistry.completeRunIfCurrent(run, { exitCode: 0, aborted: true });
-        }
-        abortTurn(job.session_id);
-        const session = sessionsDb.getSessionById(job.session_id);
-        if (session) await deps.runtime.abort(session.provider as LLMProvider, job.session_id);
+        const sessionId = job.session_id;
+        const provider = (sessionsDb.getSessionById(sessionId)?.provider as LLMProvider | undefined) ?? null;
+        // An undo: replayed after a restart, and while it is failed the job starts no new turn.
+        await outbox.run(
+          { key: `abort:${id}:${sessionId}:${now().toISOString()}`, jobId: id, kind: 'abort_turn', replay: 'safe', blocking: true, payload: { sessionId, provider } },
+          () => abortSession(sessionId, provider),
+        ).catch((error: unknown) => console.warn(`[Orchestrator] Abort of job ${id} failed; its new turns wait for it`, error));
       }
       await this.tick();
       return view(orchestratorJobsDb.get(id) as OrchestratorJobRow);
@@ -549,6 +618,11 @@ export function createJobsService(deps: {
       const job = orchestratorJobsDb.get(id);
       if (!job) throw new AppError(`Job ${id} was not found`, { code: 'JOB_NOT_FOUND', statusCode: 404 });
       if (cleaning.has(id)) throw new AppError(`Job ${id} is being cleaned`, { code: 'JOB_CLEANING', statusCode: 409 });
+      const blocker = outbox.blockingFailure(id);
+      if (blocker && !await outbox.retry(blocker, effectHandlers()[blocker.kind])) {
+        const failed = orchestratorEffectsDb.get(blocker.key);
+        throw new AppError(`Job ${id} cannot resume: its ${blocker.kind} failed (${failed?.last_error ?? 'unknown'}) and must be undone first`, { code: 'JOB_UNDO_FAILED', statusCode: 409 });
+      }
       cleanupAttempted.delete(id);
       if (job.state === 'cancelled' && !existsSync(job.worktree_path)) orchestratorJobsDb.update(id, { state: 'queued' });
       else if (job.state === 'cancelled') orchestratorJobsDb.update(id, { state: job.session_id ? 'active' : 'queued' });
@@ -571,7 +645,20 @@ export function createJobsService(deps: {
         try {
           const current = orchestratorJobsDb.get(job.id);
           if (!current || (current.state !== 'cancelled' && current.merge_step !== 'merged')) continue;
-          const outcome = await cleanupJob(current, deps.config(), dryRun);
+          if (dryRun) {
+            results.push(await cleanupJob(current, deps.config(), true));
+            continue;
+          }
+          // The automatic sweep's key is per finish (state and time), so a restart does not clean the same job twice.
+          const key = automatic
+            ? `cleanup:${current.id}:${current.state === 'cancelled' ? 'cancelled' : 'merged'}:${current.updated_at}`
+            : `cleanup:${current.id}:manual:${now().toISOString()}`;
+          const ran = await outbox.run({ key, jobId: current.id, kind: 'cleanup', replay: 'safe', blocking: true }, async () => {
+            const result = await cleanupJob(current, deps.config(), false);
+            if (result.status.startsWith('worktree removal failed')) throw new Error(result.status);
+            return result;
+          });
+          const outcome = ran.status === 'ran' ? ran.value : { id: current.id, status: ran.reason === 'done' ? 'cleaned before a restart' : 'cleanup in progress' };
           results.push(outcome);
           if (!dryRun) {
             cleanupAttempted.add(job.id);
@@ -609,6 +696,10 @@ export function createJobsService(deps: {
     handleRunCompleted(completion: { appSessionId: string; exitCode: number; aborted: boolean }): void {
       const job = orchestratorJobsDb.getBySessionId(completion.appSessionId);
       if (!job) return;
+      // A turn re-attached after a restart has no promise here: its start_turn row closes now.
+      for (const row of orchestratorEffectsDb.listByJob(job.id, 'start_turn')) {
+        if (row.state === 'running' && !liveTurnKeys.has(row.key)) outbox.finish(row.key, { ok: true, note: 'turn ended (re-attached)' });
+      }
       if ((job.backend === 'glm' || job.backend === 'zcode') && !completion.aborted && job.state === 'active') {
         const errors = chatRunRegistry.getRun(completion.appSessionId)?.events
           .filter((event) => event.kind === 'error').map((event) => String(event.content ?? '')).join('\n') ?? '';
@@ -682,8 +773,27 @@ export function createJobsService(deps: {
       }
       for (const job of orchestratorJobsDb.listByState(['active'])) {
         if (!job.in_turn || !job.session_id || chatRunRegistry.isProcessing(job.session_id)) continue;
-        await sendTurn(job, 'The CLI server restarted while you were working. Check the state of the worktree (git status, git log) and continue where you left off.');
+        // A resume replayed from the outbox already started a turn in this process.
+        if (outbox.runningHere(job.id, 'start_turn').some((row) => liveTurnKeys.has(row.key) && readEffectPayload(row).resumeKey)) continue;
+        // One continue per interrupted turn: keyed by the turn the restart cut, so a second restart, a second
+        // call or the usage-limit tick never sends it twice; the next cut turn gets its own.
+        const anchor = outbox.latest(job.id, 'start_turn')?.key ?? `in_turn@${job.updated_at}`;
+        const key = `resume:restart:${job.id}:${anchor}`;
+        await outbox.run(
+          { key, jobId: job.id, kind: 'recovery_resume', replay: 'safe', payload: { content: RESTART_PROMPT } },
+          () => sendTurn(job, RESTART_PROMPT, key),
+        );
       }
+    },
+
+    /** Startup: replay handlers for the safe effects this service records. */
+    effectHandlers,
+
+    /** Startup: a start_turn row whose turn re-attached (its session is processing again) is kept, not dropped. */
+    adoptEffect(row: OrchestratorEffectRow): boolean {
+      if (row.kind !== 'start_turn') return false;
+      const sessionId = readEffectPayload(row).sessionId;
+      return typeof sessionId === 'string' && chatRunRegistry.isProcessing(sessionId);
     },
   };
 }

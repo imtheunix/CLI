@@ -22,6 +22,8 @@ import {
   onHubEvent,
 } from './hub-events.service.js';
 import type { HubEventState } from './hub-events.service.js';
+import { getEffectOutbox } from './effect-outbox.service.js';
+import type { EffectOutbox } from './effect-outbox.service.js';
 import { DEFAULT_WAKE_ABANDON_MS } from './orchestrator-config.service.js';
 import type { OrchestratorConfig } from './orchestrator-config.service.js';
 
@@ -156,6 +158,8 @@ export type HubWakeDependencies = {
   turnTimeoutMs?: number;
   /** The test sink: under test, a wake is delivered only through an injected runTurn or an isolated DB and log. */
   runTurn?: typeof runDetachedChatTurn;
+  /** The durable effect outbox; defaults to this process's. */
+  outbox?: EffectOutbox;
 };
 
 /**
@@ -208,6 +212,7 @@ function firstUserId(): number | null {
  */
 export function createHubWakeService(deps: HubWakeDependencies) {
   const now = deps.now ?? (() => new Date());
+  const outbox = deps.outbox ?? getEffectOutbox();
   const lock = new AsyncLock();
   let unsubscribeEvents: (() => void) | null = null;
 
@@ -631,6 +636,18 @@ export function createHubWakeService(deps: HubWakeDependencies) {
       return 'refused';
     }
 
+    // Recorded before the turn (process-bound: a wake cut by a restart is dropped, its events were not
+    // committed and go out again). Done when reserved: the same events reach the hub at most once.
+    const effectKey = commit ? `hub-wake:${hubSessionId}:${commit.generation}:${commit.offset}` : null;
+    if (effectKey && commit) {
+      const begun = outbox.begin({ key: effectKey, jobId: null, kind: 'hub_wake', replay: 'process_bound', payload: { hubSessionId, eventCount: commit.eventCount } });
+      if (begun.status === 'skipped') {
+        if (begun.reason !== 'done') return 'refused';
+        commitDelivered(commit.offset, commit.generation);
+        return 'started';
+      }
+    }
+
     const options: Record<string, unknown> = {
       permissionMode: 'bypassPermissions',
     };
@@ -657,6 +674,7 @@ export function createHubWakeService(deps: HubWakeDependencies) {
       // drops pending events up to this wake's offset, which this turn delivered;
       // events a newer wake reserved were already committed past that offset.
       if (started && commit) commitDelivered(commit.offset, commit.generation);
+      if (effectKey) outbox.finish(effectKey, started ? { ok: true } : { ok: false, error: 'the wake turn was refused' });
       if (wakeInFlight === wakeId) wakeInFlight = null;
       if (timedOut) {
         console.warn(`[HubWake] Wake turn #${wakeId} ${started ? 'started' : 'was refused'} after the start timeout.`);
@@ -679,6 +697,7 @@ export function createHubWakeService(deps: HubWakeDependencies) {
       // Release the hub: the events were never committed, so the next tick
       // offers them again. A rare duplicate is cheaper than a silent hub.
       wakeInFlight = null;
+      if (effectKey) outbox.finish(effectKey, { ok: false, error: 'abandoned while undecided; events released' });
       console.warn(
         `[HubWake] Abandoned wake turn #${wakeId} (${commit?.eventCount ?? 0} events) still undecided after ${abandonMs} ms; its events are released for redelivery.`,
       );

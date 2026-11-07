@@ -4,6 +4,7 @@ import {
   APP_CONFIG_TABLE_SCHEMA_SQL,
   LAST_SCANNED_AT_SQL,
   NOTIFICATION_CHANNEL_ENDPOINTS_TABLE_SCHEMA_SQL,
+  ORCHESTRATOR_EFFECTS_TABLE_SCHEMA_SQL,
   ORCHESTRATOR_JOBS_TABLE_SCHEMA_SQL,
   PROJECTS_TABLE_SCHEMA_SQL,
   PROVIDER_MODELS_TABLE_SCHEMA_SQL,
@@ -625,6 +626,7 @@ export const runMigrations = (db: Database) => {
     addOrchestratorJobMergeStepHistoryColumn(db);
     addOrchestratorJobLimitRecoveryColumns(db);
     db.exec(RUNNING_TURNS_TABLE_SCHEMA_SQL);
+    db.exec(ORCHESTRATOR_EFFECTS_TABLE_SCHEMA_SQL);
     db.exec('CREATE INDEX IF NOT EXISTS idx_running_turns_status ON running_turns(status)');
     db.exec('CREATE INDEX IF NOT EXISTS idx_running_turns_session ON running_turns(session_id)');
 

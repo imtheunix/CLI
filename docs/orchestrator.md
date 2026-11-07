@@ -72,7 +72,30 @@ Optional local symbol/dependency maps for Claude, Codex, GLM and agy jobs are do
 3. **push** to `<base>`. It does not wait for another job's deploy (Forgejo's deploy jobs have their own concurrency groups); if `<base>` moved, or the push is rejected, the job goes back to rebase (5 times at most). After the push the queue fetches `<base>` again and records the push only if the pushed commit is on `origin/<base>`; otherwise the job is blocked.
 4. **deploy**: Forgejo's runs for the pushed commit. A run cancelled by a quicker next push (`cancel-in-progress`) follows the run of the newer commit on `<base>` that contains it: running waits, success merges, failure blocks. If its run failed, was cancelled, or is missing, the queue also checks for a successful deploy of a later commit. Git must confirm that the later commit contains the pushed commit and is on the fetched base branch; its observed workflows must all have succeeded or been skipped, with at least one success. That marks the job merged, recording the superseding commit and runs in the job's `last_error` field as a completion note. No run within 3 minutes means no CI: merged.
 
-A failing check, conflicts the resolver left, or a refused push go back to the agent as a message in its session; it fixes, commits and runs `tjob done` again. A failed deploy without a successful descendant **blocks** the job (`tjob retry <id>` after rerunning it in Forgejo). Every step is recorded before it runs, so a restart of the CLI server resumes each job at its step. When each step began is kept too (`merge_step_history`; `check:run` is when the check got its slot): `tjob show` and the API's `mergeSteps` give each step's duration. A job that was mid-turn when the server restarted is told to continue.
+A failing check, conflicts the resolver left, or a refused push go back to the agent as a message in its session; it fixes, commits and runs `tjob done` again. A failed deploy without a successful descendant **blocks** the job (`tjob retry <id>` after rerunning it in Forgejo). Every step is recorded before it runs, so a restart of the CLI server resumes each job at its step; the check and the push are also effect-outbox rows (below). When each step began is kept too (`merge_step_history`; `check:run` is when the check got its slot): `tjob show` and the API's `mergeSteps` give each step's duration. A job that was mid-turn when the server restarted is told to continue.
+
+## Restart-safe action record (effect outbox)
+
+Every side effect of the orchestrator is written to the `orchestrator_effects` table **before** it runs: one row per effect with an idempotency key, a replay flag, a state (`pending` → `running` → `done` / `failed`, or `dropped`), its attempt count and the boot id of the server process that ran it. The state machines (jobs, CI/CD queue, hub wake, usage recovery) are unchanged; the outbox wraps their effect calls. Why: on 2026-11-06/07 restarts ran a job twice (resume + re-attach), recorded a merge state whose push never reached main, and left cleanups half-done.
+
+| Effect | Key | Replay | After a restart |
+|---|---|---|---|
+| `start_turn` (every turn sent to a job) | `turn:<job>:<uuid>` | process-bound | kept (adopted) when its detached turn re-attached, else dropped; open until the turn ends |
+| `recovery_resume` (restart continue) | `resume:restart:<job>:<the cut turn's key>` | safe | sent once; not sent again if its turn had already started |
+| `recovery_resume` (usage-limit continue) | `resume:limit:<job>:<recovery key>:<attempt>:<due>` | safe | sent once, the recovery marked delivered |
+| `abort_turn` (`tjob cancel`) | `abort:<job>:<session>:<time>` | safe, undo | aborted again |
+| `merge_check` | `check:<job>:<HEAD>:<when the job entered check>` | process-bound | dropped; the queue runs the check again. A check that passed is not run again: the job goes to `push` |
+| `push` | `push:<job>:<HEAD>:<when the job entered push>` | safe | the push step runs again: it records a push already on origin, else pushes. A job past `push` whose `pushed_sha` is not on origin goes back to `push` |
+| `cleanup` (finished worktree) | `cleanup:<job>:<cancelled\|merged>:<updated_at>` (automatic sweep) | safe, undo | cleaned again; a later sweep finds it done |
+| `hub_wake` | `hub-wake:<hub session>:<generation>:<offset>` | process-bound | dropped: its events were not committed and go out again; a wake already done only commits its offset |
+
+On startup, after detached turns re-attach and before anything new runs, the outbox replays the safe rows the old process left `pending` or `running` (undos first), adopts or drops the process-bound ones with the reason in `last_error`, and retries failed undos (5 attempts in all). Then the jobs' own recovery sends at most one continue per cut turn. Asking again for an effect whose key is `done` (a second restart, the hub, the next tick) does nothing.
+
+**A failing undo blocks its job.** While an `abort_turn` or `cleanup` of a job is `failed`, that job's new turns, resumes, checks and pushes are refused (`last_error` says why; the queue blocks the job). `tjob resume` retries the undo first and answers 409 while it still fails. Other jobs are not affected.
+
+**Usage recovery:** armed recoveries stay on the job (`limit_recovery`); only their delivery is an outbox row, so a restart between arming and sending delivers it once, and the restart continue is not sent on top of it.
+
+Done and dropped rows are pruned 14 days after their last write. Reimplemented after T3 Code's EffectOutbox and ProviderRuntimeRecoveryService (MIT).
 
 ## From a session: wait, or send to the load balancer
 

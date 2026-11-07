@@ -1,9 +1,11 @@
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 
-import { orchestratorJobsDb } from '@/modules/database/index.js';
+import { orchestratorJobsDb, readMergeStepHistory } from '@/modules/database/index.js';
 import type { OrchestratorJobRow, OrchestratorMergeStep } from '@/modules/database/index.js';
 
+import { getEffectOutbox } from './effect-outbox.service.js';
+import type { EffectOutbox, EffectReplayHandler } from './effect-outbox.service.js';
 import { appendHubEvent } from './hub-events.service.js';
 import type { JobsService } from './jobs.service.js';
 import type { OrchestratorConfig } from './orchestrator-config.service.js';
@@ -57,7 +59,10 @@ export function createMergeQueueService(deps: {
   run?: typeof runCommand;
   fetchJson?: (url: string, token: string) => Promise<unknown>;
   now?: () => number;
+  /** The durable effect outbox; tests give each simulated server process its own. */
+  outbox?: EffectOutbox;
 }) {
+  const outbox = deps.outbox ?? getEffectOutbox();
   const run = deps.run ?? runCommand;
   const now = deps.now ?? Date.now;
   const git: GitRunner = (cwd, ...args) => run('git', args, { cwd });
@@ -176,11 +181,27 @@ export function createMergeQueueService(deps: {
     setStep(job, 'check');
   }
 
+  /** When the job last entered `step`: with HEAD, the idempotency key of that step's effect. */
+  function enteredAt(job: OrchestratorJobRow, step: OrchestratorMergeStep): string {
+    return readMergeStepHistory(job).filter((event) => event.step === step).at(-1)?.at ?? job.updated_at;
+  }
+
   async function stepCheck(job: OrchestratorJobRow): Promise<void> {
     // Taken before the first await: the steps of one tick start side by side. No free slot: wait in `check`.
     if (runningChecks.size >= Math.max(1, deps.config().maxConcurrentChecks)) return;
     runningChecks.add(job.id);
+    let key: string | null = null;
     try {
+      // Process-bound: a check cut by a restart is dropped and run again; one that passed is not.
+      const head = await revParse(job.worktree_path, 'HEAD');
+      const checkKey = `check:${job.id}:${head ?? 'unknown'}:${enteredAt(job, 'check')}`;
+      const begun = outbox.begin({ key: checkKey, jobId: job.id, kind: 'merge_check', replay: 'process_bound' });
+      if (begun.status === 'skipped') {
+        if (begun.reason === 'done') setStep(job, 'push');
+        else if (begun.reason === 'blocked') await block(job, `Its ${begun.row.kind} failed (${begun.row.last_error ?? 'unknown'}) and must be undone first.`, false);
+        return;
+      }
+      key = checkKey;
       orchestratorJobsDb.recordMergeStep(job.id, 'check:run');
       const command = await resolveCheckCommand(job.repo_path, job.worktree_path, deps.config().checks);
       if (command) {
@@ -199,11 +220,18 @@ export function createMergeQueueService(deps: {
           const failing = output.split('\n').filter((line) => /^\s*not ok\b/.test(line)).slice(0, 30);
           const failingList = failing.length > 0 ? `Failing:\n\n\`\`\`\n${failing.join('\n')}\n\`\`\`\n\n` : '';
           const details = `Exit code: ${result.signal ? 'none (terminated by signal)' : result.code}; duration: ${result.durationMs ?? Math.max(0, now() - started)} ms; timeout: ${result.timedOut ? `yes (CHECK_TIMEOUT_MS=${CHECK_TIMEOUT_MS})` : 'no'}; signal: ${result.signal ?? 'none'}.`;
+          outbox.finish(key, { ok: false, error: `${command} failed` });
+          key = null;
           await backToAgent(job, `after rebasing onto origin/${job.base_branch}, \`${command}\` failed:\n\n${failingList}\`\`\`\n${tail(output)}\n\`\`\`\n\n${details}\nFull check log: ${logPath}`);
           return;
         }
       }
+      outbox.finish(key, { ok: true });
+      key = null;
       setStep(job, 'push');
+    } catch (error) {
+      if (key) outbox.finish(key, { ok: false, error: error instanceof Error ? error.message : String(error) });
+      throw error;
     } finally {
       runningChecks.delete(job.id);
     }
@@ -251,10 +279,43 @@ export function createMergeQueueService(deps: {
     return false;
   }
 
+  /** Recorded in the outbox (safe to replay): a restart cut anywhere in it pushes or records the push once. */
   async function stepPush(job: OrchestratorJobRow): Promise<void> {
-    const cwd = job.worktree_path;
-    const head = await revParse(cwd, 'HEAD');
+    const head = await revParse(job.worktree_path, 'HEAD');
     if (!head) throw new Error('Cannot resolve HEAD before pushing');
+    const key = `push:${job.id}:${head}:${enteredAt(job, 'push')}`;
+    const ran = await outbox.run({ key, jobId: job.id, kind: 'push', replay: 'safe', payload: { head } }, () => pushHead(job, head));
+    if (ran.status === 'skipped' && ran.reason === 'blocked') {
+      await block(job, `Its ${ran.row.kind} failed (${ran.row.last_error ?? 'unknown'}) and must be undone first.`, false);
+    } else if (ran.status === 'skipped' && ran.reason === 'done') {
+      await pushHead(job, head); // idempotent: records a push already on origin
+    }
+  }
+
+  /**
+   * Startup: a push the old process left running. At `push`, the step runs again (it records a push already on
+   * origin, else pushes). Past it with a pushed commit origin does not have, the job goes back to `push`.
+   */
+  const replayPush: EffectReplayHandler = async (row) => {
+    const job = row.job_id ? orchestratorJobsDb.get(row.job_id) : null;
+    if (!job) return;
+    if ((job.merge_step === 'deploy' || job.merge_step === 'merged') && job.pushed_sha) {
+      const fetched = await git(job.worktree_path, 'fetch', '--quiet', 'origin', job.base_branch);
+      if (fetched.code !== 0) throw new Error(`git fetch failed: ${tail(fetched.stderr, 10)}`);
+      if ((await git(job.worktree_path, 'merge-base', '--is-ancestor', job.pushed_sha, `origin/${job.base_branch}`)).code === 0) return;
+      const reverted = setStep(job, 'push', { pushed_sha: null, last_error: `the recorded push of ${job.pushed_sha.slice(0, 8)} is not on origin/${job.base_branch} after a restart; pushing again` });
+      const head = await revParse(reverted.worktree_path, 'HEAD');
+      if (head) await pushHead(reverted, head);
+      return;
+    }
+    if (job.merge_step !== 'push') return;
+    const head = await revParse(job.worktree_path, 'HEAD');
+    if (!head) throw new Error('Cannot resolve HEAD before pushing');
+    await pushHead(job, head);
+  };
+
+  async function pushHead(job: OrchestratorJobRow, head: string): Promise<void> {
+    const cwd = job.worktree_path;
     const fetch = await git(cwd, 'fetch', '--quiet', 'origin', job.base_branch);
     if (fetch.code !== 0) throw new Error(`git fetch failed: ${tail(fetch.stderr, 10)}`);
     // Pushed already (a restart came between the push and recording it).
@@ -410,6 +471,11 @@ export function createMergeQueueService(deps: {
       }
       // Resolves when this pass's steps are over; the loop does not wait for it.
       return Promise.all(advancing).then(() => undefined);
+    },
+
+    /** Startup: replay handlers for the safe effects the queue records. */
+    effectHandlers(): { push: EffectReplayHandler } {
+      return { push: replayPush };
     },
 
     /** `tjob retry`: a blocked job goes on from where it was: watching its deploy if it was pushed, else from the rebase. */

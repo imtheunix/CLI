@@ -34,6 +34,14 @@ export type {
   OrchestratorMergeStep,
   OrchestratorMergeStepEvent,
 } from './repositories/orchestrator-jobs.db.js';
+// orchestratorEffectsDb: the orchestrator's durable effect outbox (restart-safe action record).
+export { orchestratorEffectsDb } from './repositories/orchestrator-effects.db.js';
+export type {
+  OrchestratorEffectKind,
+  OrchestratorEffectReplay,
+  OrchestratorEffectRow,
+  OrchestratorEffectState,
+} from './repositories/orchestrator-effects.db.js';
 // runningTurnsDb: used by the detached-turns module to persist in-flight turns across server restarts.
 export { runningTurnsDb } from './repositories/running-turns.db.js';
 export type { RunningTurnRow } from './repositories/running-turns.db.js';

@@ -6,6 +6,7 @@ import { chatRunRegistry } from '@/modules/websocket/index.js';
 import type { ProviderRuntimeGateway } from '@/modules/websocket/index.js';
 
 import { createOrchestratorRouter } from './orchestrator.routes.js';
+import { getEffectOutbox } from './services/effect-outbox.service.js';
 import { createJobsService } from './services/jobs.service.js';
 import { createMergeQueueService } from './services/merge-queue.service.js';
 import { createHubWakeService } from './services/hub-wake.service.js';
@@ -67,6 +68,15 @@ export function createOrchestratorModule(input: { runtime: ProviderRuntimeGatewa
           }
         },
       }).catch((error) => console.error('[DetachedTurns] Reattach failed', error));
+      // The outbox before anything new runs: safe effects the old process left are replayed once, process-bound
+      // ones dropped (a re-attached turn is kept), failed undos retried.
+      await getEffectOutbox().recover({ ...jobs.effectHandlers(), ...mergeQueue.effectHandlers() }, (row) => jobs.adoptEffect(row))
+        .then((report) => {
+          if (report.replayed.length + report.dropped.length + report.failed.length + report.adopted.length > 0) {
+            console.log(`[Orchestrator] Effect outbox after restart: ${report.replayed.length} replayed, ${report.adopted.length} adopted, ${report.dropped.length} dropped, ${report.failed.length} failed`);
+          }
+        })
+        .catch((error) => console.error('[Orchestrator] Effect outbox recovery failed', error));
       await jobs.recover().catch((error) => console.error('[Orchestrator] Recovery failed', error));
       timer = setInterval(() => void tick(), TICK_INTERVAL_MS);
       timer.unref?.();

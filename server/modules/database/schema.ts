@@ -323,6 +323,25 @@ CREATE TABLE IF NOT EXISTS running_turns (
 );
 `;
 
+export const ORCHESTRATOR_EFFECTS_TABLE_SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS orchestrator_effects (
+    key TEXT PRIMARY KEY,
+    job_id TEXT,
+    kind TEXT NOT NULL,
+    replay TEXT NOT NULL,
+    state TEXT NOT NULL DEFAULT 'pending',
+    blocking INTEGER NOT NULL DEFAULT 0,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    payload TEXT,
+    boot_id TEXT,
+    last_error TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_orchestrator_effects_state ON orchestrator_effects(state);
+CREATE INDEX IF NOT EXISTS idx_orchestrator_effects_job ON orchestrator_effects(job_id, kind);
+`;
+
 export const INIT_SCHEMA_SQL = `
 -- Initialize authentication database
 PRAGMA foreign_keys = ON;
@@ -388,4 +407,5 @@ ${SUPERSEDED_PROVIDER_SESSIONS_TABLE_SCHEMA_SQL}
 ${RUNNING_TURNS_TABLE_SCHEMA_SQL}
 CREATE INDEX IF NOT EXISTS idx_running_turns_status ON running_turns(status);
 CREATE INDEX IF NOT EXISTS idx_running_turns_session ON running_turns(session_id);
+${ORCHESTRATOR_EFFECTS_TABLE_SCHEMA_SQL}
 `;
