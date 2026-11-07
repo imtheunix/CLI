@@ -80,6 +80,7 @@ async function withWorkspace(
     config: OrchestratorConfig;
     runtime: ReturnType<typeof createRuntime>;
     jobs: ReturnType<typeof createJobsService>;
+    createJobs: (overrides?: Partial<Parameters<typeof createJobsService>[0]>) => ReturnType<typeof createJobsService>;
     job: (id: string) => OrchestratorJobRow;
   }) => Promise<void>,
   tune: (config: OrchestratorConfig) => void = () => undefined,
@@ -116,10 +117,19 @@ async function withWorkspace(
   tune(config);
 
   const runtime = createRuntime();
-  const jobs = createJobsService({ runtime: runtime.gateway, config: () => config, probeZcode: async () => ({ ok: true }), ...extraDeps });
+  const createJobs = (overrides: Partial<Parameters<typeof createJobsService>[0]> = {}) => {
+    return createJobsService({
+      runtime: runtime.gateway,
+      config: () => config,
+      probeZcode: async () => ({ ok: true }),
+      ...extraDeps,
+      ...overrides,
+    });
+  };
+  const jobs = createJobs();
   const unsubscribe = chatRunRegistry.onRunCompleted((completion) => jobs.handleRunCompleted(completion));
   try {
-    await runTest({ root, repo, upstream, config, runtime, jobs, job: (id) => orchestratorJobsDb.get(id) as OrchestratorJobRow });
+    await runTest({ root, repo, upstream, config, runtime, jobs, createJobs, job: (id) => orchestratorJobsDb.get(id) as OrchestratorJobRow });
   } finally {
     unsubscribe();
     chatRunRegistry.clearAll();
@@ -922,12 +932,10 @@ test('a job whose repository is unusable is refused with a reason, not recorded 
 });
 
 test('map preparation stays in preparing and gives the same optional query guidance to all backends', async () => {
-  await withWorkspace(async ({ repo, config, runtime }) => {
+  await withWorkspace(async ({ repo, config, runtime, createJobs }) => {
     const releases: Array<(guidance: string) => void> = [];
     let preparingPath = '';
-    const jobs = createJobsService({
-      runtime: runtime.gateway,
-      config: () => config,
+    const jobs = createJobs({
       prepareProjectMap: (worktreePath) => {
         preparingPath = worktreePath;
         return new Promise<string>((resolve) => { releases.push(resolve); });
@@ -1088,7 +1096,7 @@ test('disabling deploy waiting releases an already pushed job without watching C
 });
 
 test('quota-stopped GLM work continues in a new agy session on the same dirty branch', async () => {
-  await withWorkspace(async ({ repo, jobs, runtime, job, config }) => {
+  await withWorkspace(async ({ repo, jobs, runtime, job, config, createJobs }) => {
     const created = await jobs.create({ title: 'quota', prompt: 'Implement the original task', repoPath: repo, backend: 'glm', baseBranch: null });
     await eventually(() => runtime.turns.length === 1, 'GLM turn');
     const before = job(created.id);
@@ -1099,7 +1107,7 @@ test('quota-stopped GLM work continues in a new agy session on the same dirty br
     assert.equal(job(created.id).state, 'queued');
     assert.ok(jobs.backendStatus().glm);
     // A service recreation sees the persisted cooldown, too.
-    const recovered = createJobsService({ runtime: runtime.gateway, config: () => config });
+    const recovered = createJobs();
     assert.equal(recovered.backendStatus().glm, jobs.backendStatus().glm);
     config.backends.agy.cap = 0;
     await recovered.tick();
@@ -1128,7 +1136,7 @@ test('quota-stopped GLM work continues in a new agy session on the same dirty br
 });
 
 test('wait mode keeps quota-stopped jobs queued until reset and ignores aborted errors', async () => {
-  await withWorkspace(async ({ repo, jobs, runtime, job, config }) => {
+  await withWorkspace(async ({ repo, jobs, runtime, job, config, createJobs }) => {
     config.glmQuotaFallback = 'wait';
     const created = await jobs.create({ title: 'wait', prompt: 'task', repoPath: repo, backend: 'glm', baseBranch: null });
     await eventually(() => runtime.turns.length === 1, 'GLM turn');
@@ -1141,7 +1149,7 @@ test('wait mode keeps quota-stopped jobs queued until reset and ignores aborted 
     await jobs.tick();
     assert.equal(job(created.id).state, 'queued');
     assert.equal(runtime.turns.length, 1);
-    const afterReset = createJobsService({ runtime: runtime.gateway, config: () => config, now: () => new Date(Date.now() + 3_700_000) });
+    const afterReset = createJobs({ now: () => new Date(Date.now() + 3_700_000) });
     assert.equal(afterReset.backendStatus().glm, null);
     await afterReset.tick();
     await eventually(() => runtime.turns.length === 2, 'GLM after reset');
@@ -1151,7 +1159,7 @@ test('wait mode keeps quota-stopped jobs queued until reset and ignores aborted 
 });
 
 test('a usage-limited claude job resumes its own session at the stated reset, once, even across a restart', async () => {
-  await withWorkspace(async ({ repo, jobs, runtime, job, config }) => {
+  await withWorkspace(async ({ repo, jobs, runtime, job, config, createJobs }) => {
     const created = await jobs.create({ title: 'limited', prompt: 'task', repoPath: repo, backend: 'claude', baseBranch: null });
     await eventually(() => runtime.turns.length === 1, 'claude turn');
     const sessionId = job(created.id).session_id!;
@@ -1172,7 +1180,7 @@ test('a usage-limited claude job resumes its own session at the stated reset, on
 
     // A restarted server (new service) reads the persisted recovery and resumes after the reset.
     const resumeAt = Date.parse(limited.resume_at!);
-    const restarted = createJobsService({ runtime: runtime.gateway, config: () => config, now: () => new Date(resumeAt + 1_000) });
+    const restarted = createJobs({ now: () => new Date(resumeAt + 1_000) });
     await restarted.tick();
     await eventually(() => runtime.turns.length === 2, 'continue turn');
     assert.equal(runtime.turns[1].sessionId, sessionId);
@@ -1201,12 +1209,12 @@ test('limit text in assistant prose or a failing test does not arm a recovery', 
 });
 
 test('a job needing a login waits, wakes the hub once, and resumes when the login probe passes', async () => {
-  await withWorkspace(async ({ repo, runtime, job, config }) => {
+  await withWorkspace(async ({ repo, runtime, job, config, createJobs }) => {
     const events: string[] = [];
     const stopListening = onHubEvent((event) => events.push(`${event.state}:${event.reason}`));
     let loggedIn = false;
     let clock = Date.now();
-    const jobs = createJobsService({ runtime: runtime.gateway, config: () => config, now: () => new Date(clock), probeAuth: async () => loggedIn });
+    const jobs = createJobs({ now: () => new Date(clock), probeAuth: async () => loggedIn });
     const unsubscribe = chatRunRegistry.onRunCompleted((completion) => jobs.handleRunCompleted(completion));
     try {
       const created = await jobs.create({ title: 'login', prompt: 'task', repoPath: repo, backend: 'claude', baseBranch: null });
@@ -1417,5 +1425,17 @@ test('jobs with backend: zcode launch with GLM-5.3-Flash and participate in quot
     await eventually(() => runtime.turns.length === 2, 'agy continuation from zcode');
     const after = job(created.id);
     assert.equal(after.backend, 'agy');
+  });
+});
+
+test('orchestrator test harness injects a healthy probeZcode stub by default across service recreations', async () => {
+  await withWorkspace(async ({ createJobs, repo, runtime, job }) => {
+    // A service recreation without explicit probeZcode inherits the healthy test stub
+    const service = createJobs();
+    const created = await service.create({ title: 'harness-probe-stub', prompt: 'test', repoPath: repo, backend: 'glm', baseBranch: null });
+    await eventually(() => runtime.turns.length === 1, 'turn dispatch with default harness probe');
+    assert.equal(job(created.id).state, 'active');
+    assert.equal(job(created.id).backend, 'glm');
+    assert.equal(job(created.id).failure_class, null);
   });
 });

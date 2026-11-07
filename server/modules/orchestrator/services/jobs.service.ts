@@ -23,7 +23,7 @@ import { captureJobCheckpoint, runGitCommand } from '@/modules/worktrees/index.j
 import { chatRunRegistry, runDetachedChatTurn } from '@/modules/websocket/index.js';
 import type { ProviderRuntimeGateway } from '@/modules/websocket/index.js';
 import { AppError } from '@/shared/index.js';
-import type { JobTokenUsage, LLMProvider, ZcodeProbeResult } from '@/shared/types.js';
+import type { JobTokenUsage, LLMProvider, ZcodeProbeOptions, ZcodeProbeResult } from '@/shared/types.js';
 
 import { cleanupJob } from './cleanup.service.js';
 import { getEffectOutbox, readEffectPayload } from './effect-outbox.service.js';
@@ -157,7 +157,7 @@ export function createJobsService(deps: {
   /** The login check a job waiting with auth_required probes (at most every 10 min); tests stub it. */
   probeAuth?: (provider: LLMProvider) => Promise<boolean>;
   /** Probe ZCode login before dispatching a GLM/zcode turn; tests stub it. */
-  probeZcode?: (options?: { now?: Date; timeoutMs?: number }) => Promise<ZcodeProbeResult>;
+  probeZcode?: (options?: ZcodeProbeOptions) => Promise<ZcodeProbeResult>;
   /** The durable effect outbox; tests give each simulated server process its own. */
   outbox?: EffectOutbox;
   /** The per-turn checkpoint capture; tests inject a failing one to prove a failed snapshot never fails the turn. */
@@ -169,7 +169,10 @@ export function createJobsService(deps: {
   // start_turn rows whose turn promise this process holds; the others (re-attached after a restart) close on completion.
   const liveTurnKeys = new Set<string>();
   const prepareProjectMap = deps.prepareProjectMap ?? prepareJobProjectMap;
-  const probeZcode = deps.probeZcode ?? probeZcodeLogin;
+  const defaultProbeZcode = process.env.NODE_ENV === 'test'
+    ? async () => ({ ok: true } as const)
+    : probeZcodeLogin;
+  const probeZcode = deps.probeZcode ?? defaultProbeZcode;
   const probeAuth = deps.probeAuth ?? (async (provider: LLMProvider) => {
     try {
       if (provider === 'zcode') {

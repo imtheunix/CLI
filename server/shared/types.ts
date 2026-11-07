@@ -950,6 +950,21 @@ export type ProviderAuthStatus = {
 };
 
 /**
+ * Options for probing the ZCode CLI authentication.
+ *
+ * Used by probeZcodeLogin in the providers module and probeZcode dependencies
+ * in orchestrator jobs service and tests.
+ */
+export type ZcodeProbeOptions = {
+  timeoutMs?: number;
+  now?: Date;
+  /**
+   * Explicit test opt-in: probe CLI will not be spawned under NODE_ENV=test unless true.
+   */
+  explicit?: boolean;
+};
+
+/**
  * Outcome of a cheap ZCode login probe.
  *
  * Used by the providers module and orchestrator dispatch path to verify that

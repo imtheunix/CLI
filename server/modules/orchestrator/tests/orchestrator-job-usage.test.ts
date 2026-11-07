@@ -65,6 +65,7 @@ test('orchestrator job view attaches usage from transcript with notional USD', a
     orchestratorJobsDb.update(job.id, { session_id: sessionId });
 
     const jobs = createJobsService({
+      probeZcode: async () => ({ ok: true }),
       runtime: {
         hasRuntime: () => true,
         run: async () => {},

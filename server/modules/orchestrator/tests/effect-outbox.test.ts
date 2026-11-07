@@ -114,7 +114,7 @@ async function withWorkspace(runTest: (ctx: Ctx) => Promise<void>): Promise<void
   const boot: Ctx['boot'] = (boundary, run) => {
     unsubscribe?.();
     const outbox = createEffectOutbox({ boundary });
-    const jobs = createJobsService({ runtime: runtime.gateway, config: () => config, outbox });
+    const jobs = createJobsService({ runtime: runtime.gateway, config: () => config, outbox, probeZcode: async () => ({ ok: true }) });
     const queue = createMergeQueueService({ jobs, config: () => config, outbox, ...(run ? { run } : {}) });
     unsubscribe = chatRunRegistry.onRunCompleted((completion) => jobs.handleRunCompleted(completion));
     return { outbox, jobs, queue };

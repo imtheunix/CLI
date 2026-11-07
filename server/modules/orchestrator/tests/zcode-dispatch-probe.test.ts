@@ -150,7 +150,7 @@ if (mode === 'timeout') {
     runtime: runtime.gateway,
     config: () => config,
     now: clock.now,
-    probeZcode: (opts) => probeZcodeLogin({ timeoutMs: probeTimeoutMs, now: clock.now(), ...opts }),
+    probeZcode: (opts) => probeZcodeLogin({ timeoutMs: probeTimeoutMs, now: clock.now(), explicit: true, ...opts }),
   });
   const unsubscribe = chatRunRegistry.onRunCompleted((completion) => jobs.handleRunCompleted(completion));
 
@@ -306,7 +306,7 @@ test('fake zcode probe: timeout mode does not hang, does not hold in auth_requir
   // Use a 150 ms timeout for the probe so test runs swiftly
   await withFakeZcode(async ({ repo, jobs, runtime, job, clock }) => {
     // Direct probe check verifies timeout error
-    const directProbe = await probeZcodeLogin({ timeoutMs: 100, now: clock.now() });
+    const directProbe = await probeZcodeLogin({ timeoutMs: 100, now: clock.now(), explicit: true });
     assert.equal(directProbe.ok, false);
     if (!directProbe.ok) {
       assert.equal(directProbe.error, 'timeout');

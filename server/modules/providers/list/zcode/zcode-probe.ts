@@ -3,7 +3,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
-import type { ZcodeProbeResult } from '@/shared/types.js';
+import type { ZcodeProbeOptions, ZcodeProbeResult } from '@/shared/types.js';
 
 const PROBE_TTL_MS = 10 * 60_000;
 let lastHealthyProbeAt = 0;
@@ -41,16 +41,19 @@ export function resetZcodeProbeCache(): void {
  * Runs `zcode -p "ok" --output-format stream-json --mode plan` with a 20 s timeout.
  * Returns { ok: true } on success, or { ok: false, error: 'login_failed', message } when
  * project_token_login_failed is encountered.
+ * Under NODE_ENV=test, never runs the real binary unless options.explicit is true.
  *
  * Never reads or prints ~/.zcode/v2/credentials.json.
  * Used by Orchestrator jobs service to verify login before dispatching GLM/zcode turns.
  */
-export async function probeZcodeLogin(options: {
-  timeoutMs?: number;
-  now?: Date;
-} = {}): Promise<ZcodeProbeResult> {
+export async function probeZcodeLogin(options: ZcodeProbeOptions = {}): Promise<ZcodeProbeResult> {
   const now = options.now ?? new Date();
   if (isZcodeProbeHealthy(now)) {
+    return { ok: true };
+  }
+
+  // Under test environment (NODE_ENV=test), never spawn the real zcode binary unless explicitly opted in.
+  if (process.env.NODE_ENV === 'test' && !options.explicit) {
     return { ok: true };
   }
 

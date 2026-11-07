@@ -322,14 +322,14 @@ test('zcode probe returns ok when healthy and caches for 10 minutes', async () =
     const t0 = new Date('2026-11-07T10:00:00.000Z');
     assert.equal(isZcodeProbeHealthy(t0), false);
 
-    const result = await probeZcodeLogin({ now: t0 });
+    const result = await probeZcodeLogin({ now: t0, explicit: true });
     assert.equal(result.ok, true);
     assert.equal(isZcodeProbeHealthy(t0), true);
 
     // 5 minutes later: still healthy via cache
     const t5 = new Date('2026-11-07T10:05:00.000Z');
     assert.equal(isZcodeProbeHealthy(t5), true);
-    const cached = await probeZcodeLogin({ now: t5 });
+    const cached = await probeZcodeLogin({ now: t5, explicit: true });
     assert.equal(cached.ok, true);
 
     // 11 minutes later: cache expired
@@ -354,7 +354,7 @@ test('zcode probe detects project_token_login_failed and clears cache', async ()
 
     // When probe encounters project_token_login_failed
     resetZcodeProbeCache();
-    const result = await probeZcodeLogin({ now: t0 });
+    const result = await probeZcodeLogin({ now: t0, explicit: true });
     assert.equal(result.ok, false);
     if (!result.ok) {
       assert.equal(result.error, 'login_failed');
@@ -369,7 +369,7 @@ test('zcode probe handles timeout and reports error without caching', async () =
   resetZcodeProbeCache();
   await withCli(async () => {
     const t0 = new Date('2026-11-07T10:00:00.000Z');
-    const result = await probeZcodeLogin({ timeoutMs: 100, now: t0 });
+    const result = await probeZcodeLogin({ timeoutMs: 100, now: t0, explicit: true });
     assert.equal(result.ok, false);
     if (!result.ok) {
       assert.equal(result.error, 'timeout');
@@ -378,4 +378,30 @@ test('zcode probe handles timeout and reports error without caching', async () =
     assert.equal(isZcodeProbeHealthy(t0), false);
   }, { ZCODE_TEST_PROBE_HANG: '1' });
   resetZcodeProbeCache();
+});
+
+test('zcode probe does not run when NODE_ENV=test unless explicit: true is passed', async () => {
+  resetZcodeProbeCache();
+  const previousEnv = process.env.NODE_ENV;
+  process.env.NODE_ENV = 'test';
+  try {
+    const t0 = new Date('2026-11-07T10:00:00.000Z');
+    // Without explicit opt-in: probe CLI is never spawned; returns healthy immediately
+    const stubResult = await probeZcodeLogin({ now: t0 });
+    assert.deepEqual(stubResult, { ok: true });
+
+    // With explicit opt-in: probe CLI executes against mock CLI and detects failure
+    await withCli(async () => {
+      resetZcodeProbeCache();
+      const failResult = await probeZcodeLogin({ now: t0, explicit: true });
+      assert.equal(failResult.ok, false);
+      if (!failResult.ok) {
+        assert.equal(failResult.error, 'login_failed');
+      }
+    }, { ZCODE_TEST_LOGIN_FAILED: '1' });
+  } finally {
+    if (previousEnv === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = previousEnv;
+    resetZcodeProbeCache();
+  }
 });
