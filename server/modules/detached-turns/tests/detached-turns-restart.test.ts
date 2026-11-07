@@ -124,6 +124,24 @@ setTimeout(() => {
   });
 });
 
+test('restart stops a cancelled job instead of reattaching its live turn', async () => {
+  await withScratchEnvironment(async ({ root, createFakeAgent }) => {
+    const agent = createFakeAgent('#!/usr/bin/env node\nsetInterval(() => {}, 1000);\n');
+    const sessionId = 'cancelled-session';
+    sessionsDb.createSession(sessionId, 'agy', root, 'Cancelled');
+    orchestratorJobsDb.create({ id: 'cancelled-job', title: 'Cancelled', prompt: 'work', repoPath: root,
+      worktreePath: root, baseBranch: 'main', branch: 'feature/cancelled', requestedBackend: 'agy', model: null });
+    orchestratorJobsDb.update('cancelled-job', { session_id: sessionId, state: 'cancelled' });
+    const execution = spawnDetachedTurn({ command: agent, args: [], cwd: root, sessionId, backend: 'agy', jobId: 'cancelled-job' });
+    await eventually(() => isTurnAlive(execution.unitName), 'agent alive');
+    await reattachActiveTurns();
+    await execution.promise;
+    assert.equal(orchestratorJobsDb.get('cancelled-job')?.state, 'cancelled');
+    assert.equal(chatRunRegistry.isProcessing(sessionId), false);
+    assert.equal(isTurnAlive(execution.unitName), false);
+  });
+});
+
 test('reattach on startup resumes streaming and delivers output to subscriber', async () => {
   await withScratchEnvironment(async ({ root, createFakeAgent }) => {
     const agentScript = createFakeAgent(`#!/usr/bin/env node
