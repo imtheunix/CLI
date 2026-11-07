@@ -485,6 +485,14 @@ const addOrchestratorJobMergeStepHistoryColumn = (db: Database): void => {
   addColumnToTableIfNotExists(db, 'orchestrator_jobs', columnNames, 'merge_step_history', 'TEXT');
 };
 
+/** Jobs from before usage-limit recovery have no failure class or armed recovery; NULL says so. */
+const addOrchestratorJobLimitRecoveryColumns = (db: Database): void => {
+  const columnNames = getTableInfo(db, 'orchestrator_jobs').map((column) => column.name);
+  addColumnToTableIfNotExists(db, 'orchestrator_jobs', columnNames, 'failure_class', 'TEXT');
+  addColumnToTableIfNotExists(db, 'orchestrator_jobs', columnNames, 'resume_at', 'TEXT');
+  addColumnToTableIfNotExists(db, 'orchestrator_jobs', columnNames, 'limit_recovery', 'TEXT');
+};
+
 /**
  * Adds the reasoning-effort metadata columns to the custom-model library.
  *
@@ -615,6 +623,7 @@ export const runMigrations = (db: Database) => {
     db.exec(ORCHESTRATOR_JOBS_TABLE_SCHEMA_SQL);
     addOrchestratorJobModelColumn(db);
     addOrchestratorJobMergeStepHistoryColumn(db);
+    addOrchestratorJobLimitRecoveryColumns(db);
     db.exec(RUNNING_TURNS_TABLE_SCHEMA_SQL);
     db.exec('CREATE INDEX IF NOT EXISTS idx_running_turns_status ON running_turns(status)');
     db.exec('CREATE INDEX IF NOT EXISTS idx_running_turns_session ON running_turns(session_id)');

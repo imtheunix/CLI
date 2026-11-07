@@ -41,8 +41,8 @@ function createRuntime() {
     turns,
     /** Each turn's run writer, for tests that speak for the provider. */
     writers,
-    finish(sessionId: string, options: { aborted?: boolean } = {}) {
-      chatRunRegistry.completeRun(sessionId, { exitCode: 0, aborted: options.aborted });
+    finish(sessionId: string, options: { aborted?: boolean; exitCode?: number } = {}) {
+      chatRunRegistry.completeRun(sessionId, { exitCode: options.exitCode ?? 0, aborted: options.aborted });
       open.get(sessionId)?.();
     },
     gateway: {
@@ -1115,6 +1115,76 @@ test('wait mode keeps quota-stopped jobs queued until reset and ignores aborted 
     await eventually(() => runtime.turns.length === 2, 'GLM after reset');
     assert.equal(job(created.id).backend, 'glm');
     assert.equal(job(created.id).session_id, sessionId);
+  });
+});
+
+test('a usage-limited claude job resumes its own session at the stated reset, once, even across a restart', async () => {
+  await withWorkspace(async ({ repo, jobs, runtime, job, config }) => {
+    const created = await jobs.create({ title: 'limited', prompt: 'task', repoPath: repo, backend: 'claude', baseBranch: null });
+    await eventually(() => runtime.turns.length === 1, 'claude turn');
+    const sessionId = job(created.id).session_id!;
+    // Claude reports its limit as the turn's assistant text (recorded 2026-11-03).
+    chatRunRegistry.getRun(sessionId)!.writer.send({ kind: 'text', provider: 'claude', content: "You've hit your session limit · resets 3am (America/Sao_Paulo)" });
+    runtime.finish(sessionId, { exitCode: 1 });
+    const limited = job(created.id);
+    assert.equal(limited.state, 'active');
+    assert.equal(limited.failure_class, 'usage_limit');
+    assert.ok(limited.resume_at && Date.parse(limited.resume_at) > Date.now());
+    const armed = limited.limit_recovery;
+    assert.deepEqual(jobs.get(created.id)?.limitWait, { failureClass: 'usage_limit', resumesAt: limited.resume_at, waitsForHub: false });
+    // The same failed turn reported twice arms nothing new.
+    jobs.handleRunCompleted({ appSessionId: sessionId, exitCode: 1, aborted: false });
+    assert.equal(job(created.id).limit_recovery, armed);
+    await jobs.tick();
+    assert.equal(runtime.turns.length, 1);
+
+    // A restarted server (new service) reads the persisted recovery and resumes after the reset.
+    const resumeAt = Date.parse(limited.resume_at!);
+    const restarted = createJobsService({ runtime: runtime.gateway, config: () => config, now: () => new Date(resumeAt + 1_000) });
+    await restarted.tick();
+    await eventually(() => runtime.turns.length === 2, 'continue turn');
+    assert.equal(runtime.turns[1].sessionId, sessionId);
+    assert.equal(runtime.turns[1].command, 'Continue where you left off.');
+    await restarted.tick();
+    assert.equal(runtime.turns.length, 2);
+    runtime.finish(sessionId);
+    assert.equal(job(created.id).failure_class, null);
+    assert.equal(job(created.id).limit_recovery, null);
+  });
+});
+
+test('a job needing a login waits, wakes the hub once, and resumes when the login probe passes', async () => {
+  await withWorkspace(async ({ repo, runtime, job, config }) => {
+    const events: string[] = [];
+    const stopListening = onHubEvent((event) => events.push(`${event.state}:${event.reason}`));
+    let loggedIn = false;
+    let clock = Date.now();
+    const jobs = createJobsService({ runtime: runtime.gateway, config: () => config, now: () => new Date(clock), probeAuth: async () => loggedIn });
+    const unsubscribe = chatRunRegistry.onRunCompleted((completion) => jobs.handleRunCompleted(completion));
+    try {
+      const created = await jobs.create({ title: 'login', prompt: 'task', repoPath: repo, backend: 'claude', baseBranch: null });
+      await eventually(() => runtime.turns.length === 1, 'claude turn');
+      const sessionId = job(created.id).session_id!;
+      chatRunRegistry.getRun(sessionId)!.writer.send({ kind: 'error', provider: 'claude', content: 'Login expired · Please run /login' });
+      runtime.finish(sessionId, { exitCode: 1 });
+      assert.equal(job(created.id).failure_class, 'auth_required');
+      assert.deepEqual(jobs.get(created.id)?.limitWait, { failureClass: 'auth_required', resumesAt: null, waitsForHub: false });
+      assert.equal(events.filter((event) => event.startsWith('waiting:login needed')).length, 1);
+      clock += 10 * 60_000;
+      await jobs.tick();   // probe fails: no turn, next probe in 10 min
+      assert.equal(runtime.turns.length, 1);
+      loggedIn = true;
+      await jobs.tick();   // not yet due again
+      assert.equal(runtime.turns.length, 1);
+      clock += 10 * 60_000;
+      await jobs.tick();
+      await eventually(() => runtime.turns.length === 2, 'continue after login');
+      assert.equal(runtime.turns[1].command, 'Continue where you left off.');
+      assert.equal(events.length, 1);
+    } finally {
+      unsubscribe();
+      stopListening();
+    }
   });
 });
 

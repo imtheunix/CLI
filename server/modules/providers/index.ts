@@ -10,5 +10,8 @@ export { providerModelsService } from './services/provider-models.service.js';
 // edited message's resume point, which only the providers module can read.
 export { sessionsService } from './services/sessions.service.js';
 
+// providerAuthService: used by the Orchestrator to probe a backend's login before resuming a job that waited on it.
+export { providerAuthService } from './services/provider-auth.service.js';
+
 export { initializeSessionsWatcher } from './services/sessions-watcher.service.js';
 export { closeSessionsWatcher } from './services/sessions-watcher.service.js';

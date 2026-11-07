@@ -40,6 +40,17 @@ def line(j):
     merge = "" if j["merge_step"] == "none" else "  ci:" + j["merge_step"]
     err = ("  ! " + j["last_error"].splitlines()[0][:100]) if j.get("last_error") else ""
     fallback = "  (glm quota fallback)" if j.get("quotaFallback") else ""
+    wait = j.get("limitWait")
+    if wait:
+        what = "usage limit" if wait["failureClass"] == "usage_limit" else "login needed"
+        if wait.get("resumesAt"):
+            import datetime
+            at = datetime.datetime.fromisoformat(wait["resumesAt"].replace("Z", "+00:00")).astimezone()
+            same_day = at.date() == datetime.datetime.now().astimezone().date()
+            what += ", resumes " + at.strftime("%H:%M" if same_day else "%b %d %H:%M")
+        elif wait.get("waitsForHub"):
+            what += ", waiting for the hub"
+        err = "  ! " + what
     model = (j.get("model") or "").split("/")[-1]
     return "%s  %-6s %-14s %-11s%-13s %s%s" % (j["id"], j.get("backend") or "-", model or "-", doing, merge, j["title"][:60], err + fallback)
 if mode == "ls":

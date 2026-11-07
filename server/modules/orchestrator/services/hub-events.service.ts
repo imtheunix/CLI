@@ -2,7 +2,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-export type HubEventState = 'review' | 'blocked' | 'merge_failed' | 'turn_ended' | 'merged' | 'stalled';
+// waiting: a job stopped on its provider's usage limit or login and needs the hub (or says when it resumes).
+export type HubEventState = 'review' | 'blocked' | 'merge_failed' | 'turn_ended' | 'merged' | 'stalled' | 'waiting';
 
 export type HubEventInput = {
   jobId: string;

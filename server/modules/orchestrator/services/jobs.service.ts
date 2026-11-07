@@ -12,7 +12,7 @@ import {
 } from '@/modules/database/index.js';
 import type { OrchestratorBackend, OrchestratorJobRow, OrchestratorMergeStepEvent } from '@/modules/database/index.js';
 import { abortTurn } from '@/modules/detached-turns/index.js';
-import { sessionsService } from '@/modules/providers/index.js';
+import { providerAuthService, sessionsService } from '@/modules/providers/index.js';
 import { chatRunRegistry, runDetachedChatTurn } from '@/modules/websocket/index.js';
 import type { ProviderRuntimeGateway } from '@/modules/websocket/index.js';
 import { AppError } from '@/shared/index.js';
@@ -20,6 +20,15 @@ import type { LLMProvider } from '@/shared/types.js';
 
 import { detectGlmQuotaReset, getGlmQuotaReset, recordGlmQuotaReset } from './glm-quota.service.js';
 import { appendHubEvent } from './hub-events.service.js';
+import {
+  armLimitRecovery,
+  classifyTurnFailure,
+  dueLimitAction,
+  LIMIT_CONTINUE_PROMPT,
+  nextAuthProbe,
+  readLimitRecovery,
+} from './usage-recovery.service.js';
+import type { LimitRecovery } from './usage-recovery.service.js';
 import { isInGlmPeakHours, pickBackend } from './balancer.service.js';
 import { modelLabel, resolveRequestedModel } from './orchestrator-config.service.js';
 import type { OrchestratorConfig } from './orchestrator-config.service.js';
@@ -54,6 +63,8 @@ export type OrchestratorJobView = OrchestratorJobRow & {
   mergeSteps: OrchestratorMergeStepTiming[];
   /** `tjob show`: full output of the latest merge check, retained outside the worktree. */
   checkLogPath: string | null;
+  /** `tjob ls`: the job waits on its provider (usage limit or login); resumesAt is null when only the hub can resume it. */
+  limitWait: { failureClass: 'usage_limit' | 'auth_required'; resumesAt: string | null; waitsForHub: boolean } | null;
 };
 
 export type OrchestratorMergeStepTiming = OrchestratorMergeStepEvent & { durationMs: number | null };
@@ -131,9 +142,18 @@ export function createJobsService(deps: {
   now?: () => Date;
   /** Optional preparation is injectable so lifecycle tests can hold it before a job becomes active. */
   prepareProjectMap?: (worktreePath: string) => Promise<string>;
+  /** The login check a job waiting with auth_required probes (at most every 10 min); tests stub it. */
+  probeAuth?: (provider: LLMProvider) => Promise<boolean>;
 }) {
   const now = deps.now ?? (() => new Date());
   const prepareProjectMap = deps.prepareProjectMap ?? prepareJobProjectMap;
+  const probeAuth = deps.probeAuth ?? (async (provider: LLMProvider) => {
+    try {
+      return (await providerAuthService.getProviderAuthStatus(provider)).authenticated;
+    } catch {
+      return false;
+    }
+  });
   // A job is set up once at a time; a tick that finds it mid-preparation leaves it.
   const preparing = new Set<string>();
   const cleaning = new Set<string>();
@@ -161,7 +181,90 @@ export function createJobsService(deps: {
       mergeSteps: mergeStepTimings(readMergeStepHistory(job), now().getTime()),
       checkLogPath: existsSync(getCheckLogPath(job.worktree_path)) ? getCheckLogPath(job.worktree_path) : null,
       model: job.model ?? (session as { model?: string | null } | null)?.model ?? null,
+      limitWait: limitWait(job),
     };
+  }
+
+  function limitWait(job: OrchestratorJobRow): OrchestratorJobView['limitWait'] {
+    const recovery = readLimitRecovery(job.limit_recovery);
+    if (!job.failure_class || !recovery || recovery.delivered) return null;
+    return {
+      failureClass: job.failure_class,
+      resumesAt: recovery.gaveUp || recovery.kind === 'auth_required' ? null : recovery.dueAt,
+      waitsForHub: recovery.gaveUp,
+    };
+  }
+
+  function saveRecovery(jobId: string, recovery: LimitRecovery): void {
+    orchestratorJobsDb.update(jobId, {
+      failure_class: recovery.kind,
+      resume_at: recovery.gaveUp || recovery.kind === 'auth_required' ? null : recovery.dueAt,
+      limit_recovery: JSON.stringify(recovery),
+    });
+  }
+
+  /**
+   * A failed turn hit its provider's usage limit or needs a login: arm a recovery on the same
+   * session instead of failing. True when the failure was handled that way.
+   */
+  function handleLimitFailure(job: OrchestratorJobRow, appSessionId: string, exitCode: number): boolean {
+    const run = chatRunRegistry.getRun(appSessionId);
+    const events = run?.events ?? [];
+    // Claude reports its limits as an assistant message, the others as error events.
+    const text = [
+      ...events.filter((event) => event.kind === 'error'),
+      ...events.filter((event) => event.kind === 'text').slice(-3),
+    ].map((event) => String(event.content ?? '')).join('\n');
+    if (!job.backend || !text) return false;
+    const failure = classifyTurnFailure(job.backend, text, now());
+    if (failure.failureClass === 'other') return false;
+    const previous = readLimitRecovery(job.limit_recovery);
+    const result = armLimitRecovery({
+      jobId: job.id,
+      turnId: String(run?.startedAt ?? now().getTime()),
+      failure: { ...failure, failureClass: failure.failureClass },
+      previous,
+      now: now(),
+    });
+    orchestratorJobsDb.update(job.id, { in_turn: 0, last_error: `${failure.failureClass}: ${failure.reason || `exit code ${exitCode}`}` });
+    if (result.status === 'unchanged') return true;
+    saveRecovery(job.id, result.recovery);
+    const login = failure.failureClass === 'auth_required';
+    // One hub wake per login wait, and when recovery is refused or exhausted; an armed usage-limit resume is silent.
+    if (result.status !== 'armed' || (login && previous?.kind !== 'auth_required')) {
+      appendHubEvent({
+        jobId: job.id,
+        state: 'waiting',
+        title: job.title,
+        reason: result.status === 'armed'
+          ? `login needed for ${job.backend}; resumes when its login check passes (${failure.reason})`
+          : `${login ? 'login needed' : 'usage limit'}, ${result.status === 'refused' ? 'stated reset already past' : 'recovery exhausted'}; waiting for the hub (${failure.reason})`,
+      });
+    }
+    return true;
+  }
+
+  /** Tick: delivers due recoveries (continue turn) and probes logins, at most once per due time. */
+  async function sweepLimitRecoveries(): Promise<void> {
+    for (const job of orchestratorJobsDb.listByState(['active'])) {
+      const recovery = readLimitRecovery(job.limit_recovery);
+      const action = dueLimitAction(recovery, now());
+      if (!recovery || action === 'none' || !job.session_id || !job.backend) continue;
+      if (chatRunRegistry.isProcessing(job.session_id)) continue;
+      if (action === 'expire') {
+        saveRecovery(job.id, { ...recovery, gaveUp: true });
+        appendHubEvent({ jobId: job.id, state: 'waiting', title: job.title, reason: 'usage-limit recovery more than 24 h overdue; waiting for the hub' });
+        continue;
+      }
+      if (action === 'probe') {
+        // Re-arm before the probe so a slow check is not run twice by overlapping ticks.
+        saveRecovery(job.id, nextAuthProbe(recovery, now()));
+        if (!await probeAuth(deps.config().backends[job.backend].provider)) continue;
+      }
+      // Persist delivery first: a restart or a second tick never sends the continue twice.
+      saveRecovery(job.id, { ...recovery, delivered: true });
+      await sendTurn(orchestratorJobsDb.get(job.id) as OrchestratorJobRow, LIMIT_CONTINUE_PROMPT);
+    }
   }
 
   /** Starts a turn in the job's session. False when the session is busy or gone. */
@@ -518,8 +621,11 @@ export function createJobsService(deps: {
           return;
         }
       }
+      if (completion.exitCode !== 0 && !completion.aborted && job.state === 'active' && handleLimitFailure(job, completion.appSessionId, completion.exitCode)) return;
       orchestratorJobsDb.update(job.id, {
         in_turn: 0,
+        // A turn that did not stop on a limit or login ends the streak.
+        ...(job.limit_recovery && !completion.aborted ? { failure_class: null, resume_at: null, limit_recovery: null } : {}),
         ...(completion.exitCode !== 0 && !completion.aborted ? { last_error: `The last turn ended with exit code ${completion.exitCode}` } : {}),
       });
       if (job.state === 'active') {
@@ -548,6 +654,8 @@ export function createJobsService(deps: {
           orchestratorJobsDb.update(job.id, { state: 'active', merge_step: 'none', in_turn: 1 });
         } else if (job.state === 'active' && !job.in_turn) orchestratorJobsDb.update(job.id, { in_turn: 1 });
       }
+
+      await sweepLimitRecoveries();
 
       const config = deps.config();
       const peak = config.glmPeakHours.avoid && isInGlmPeakHours(config.glmPeakHours, now());

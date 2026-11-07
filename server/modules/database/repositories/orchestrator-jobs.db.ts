@@ -33,17 +33,25 @@ export type OrchestratorJobRow = {
   /** JSON array of OrchestratorMergeStepEvent; read it with `readMergeStepHistory`. */
   merge_step_history: string | null;
   last_error: string | null;
+  /** usage_limit | auth_required while the job waits on its provider; NULL otherwise. */
+  failure_class: 'usage_limit' | 'auth_required' | null;
+  /** When an armed usage-limit recovery resumes the job (ISO 8601). */
+  resume_at: string | null;
+  /** JSON of the orchestrator's armed LimitRecovery; persisted so it survives a restart. */
+  limit_recovery: string | null;
   created_at: string;
   updated_at: string;
 };
 
 type JobPatch = Partial<Pick<OrchestratorJobRow,
   'backend' | 'model' | 'session_id' | 'state' | 'in_turn' | 'merge_step' | 'merge_attempts'
-  | 'pushed_sha' | 'deploy_waiting_since' | 'last_error' | 'base_branch'>>;
+  | 'pushed_sha' | 'deploy_waiting_since' | 'last_error' | 'base_branch'
+  | 'failure_class' | 'resume_at' | 'limit_recovery'>>;
 
 const PATCHABLE_COLUMNS: Array<keyof JobPatch> = [
   'backend', 'model', 'session_id', 'state', 'in_turn', 'merge_step', 'merge_attempts',
   'pushed_sha', 'deploy_waiting_since', 'last_error', 'base_branch',
+  'failure_class', 'resume_at', 'limit_recovery',
 ];
 
 /** Used by the Orchestrator's views: a job's CI/CD queue history, oldest first. */

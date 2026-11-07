@@ -156,6 +156,12 @@ CREATE TABLE IF NOT EXISTS orchestrator_jobs (
     -- JSON [{step, at}]: when each CI/CD queue step began ("check:run" when a check slot was free).
     merge_step_history TEXT,
     last_error TEXT,
+    -- usage_limit | auth_required (NULL: the last turn did not fail on the provider's limit or login).
+    failure_class TEXT,
+    -- When the job resumes by itself (a usage-limit recovery's due time), ISO 8601.
+    resume_at TEXT,
+    -- JSON LimitRecovery: the armed recovery (key, due time, attempts), so it survives a restart.
+    limit_recovery TEXT,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );

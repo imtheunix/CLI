@@ -38,6 +38,16 @@ Set `"glmQuotaFallback": "wait"` to queue GLM/ZCode work until reset instead. Th
 
 *Finding, 2026-11-06 (ZCode 0.17.1):* headless `zcode -p` cannot use the Start Plan or the Weekend Build. Standalone ZCode (no desktop host) treats only `individual-coding-plan` providers as entitled, and its token refresh rejects other modes. Start Plan requests also need the desktop host's captcha headers (provider code 3007 otherwise). An unentitled default, or one without a supported `reasoningLevel`, is silently replaced by the first visible model: Coding Plan full GLM-5.3. The chain above detects this and moves on, so either plan will be used automatically if ZCode starts honoring it. To switch models interactively, use `/model` in the desktop app; the `zcode` TUI needs `@zcode/tui`, which ships only in ZCode's single-file build (it is not on npm).
 
+### Usage limits and logins (every backend)
+
+A failed turn is classified per backend from its error text (Claude's assistant text included): `usage_limit` (with the reset the provider states: Claude `resets 7:30pm (America/Sao_Paulo)`, Codex `try again at 10:47 AM` / `Nov 4th, 2026 8:22 AM` in local time, Z.ai's UTC+8 reset), `auth_required` (Claude `Please run /login`, Zcode `project_token_login_failed`, agy `not logged into Antigravity`, Codex logged out) or other. The class, resume time and armed recovery are stored on the job (`failure_class`, `resume_at`, `limit_recovery`), so a restart keeps them; `tjob ls` shows `! usage limit, resumes 14:05` or `! login needed`. GLM/ZCode quota keeps its fallback above.
+
+- **usage_limit with a reset:** one recovery per (job, turn, resetAt); at the reset plus up to 90 s of jitter the same session gets `Continue where you left off.` A reset already past is refused, a resume more than 24 h after the first failure (or a recovery more than 24 h overdue) is given up; both wake the hub (`waiting`).
+- **usage_limit without a reset:** back off 15, 30, 60 min, then wait for the hub.
+- **auth_required:** the job waits and wakes the hub once; every 10 min the backend's login check runs and the job resumes when it passes, at most three times in a row.
+
+A turn that ends without a limit or login failure clears the job's recovery. Reimplemented after T3 Code's UsageLimitRecoveryWorker (MIT).
+
 ### Configuration
 
 Caps, models and the rest can be overridden in `~/.config/cli/orchestrator.json` (see `orchestrator-config.service.ts`), with no rebuild. For example, switching GLM jobs to ZCode, and setting GLM even in its peak hours:
