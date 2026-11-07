@@ -1,0 +1,140 @@
+// Based on LiteLLM model_prices subset for orchestrator backend models.
+
+/**
+ * Version identifier for the bundled model price table.
+ * Used by provider pricing service and scan cache to invalidate stale priced results.
+ */
+export const PRICE_TABLE_VERSION = '2026-11-07';
+
+/**
+ * Default price rates map imported as a TypeScript module so it compiles into server builds.
+ * Used by provider pricing service to construct the default rate table.
+ */
+export const MODEL_PRICES_DATA = {
+  'claude-opus-5-5': {
+    input_cost_per_token: 0.000015,
+    output_cost_per_token: 0.000075,
+    cache_read_input_token_cost: 0.0000015,
+    cache_creation_input_token_cost: 0.00001875,
+  },
+  'claude-opus-2': {
+    input_cost_per_token: 0.000015,
+    output_cost_per_token: 0.000075,
+    cache_read_input_token_cost: 0.0000015,
+    cache_creation_input_token_cost: 0.00001875,
+  },
+  'claude-3-7-sonnet-20250219': {
+    input_cost_per_token: 0.000003,
+    output_cost_per_token: 0.000015,
+    cache_read_input_token_cost: 0.0000003,
+    cache_creation_input_token_cost: 0.00000375,
+  },
+  'claude-3-5-sonnet-20241022': {
+    input_cost_per_token: 0.000003,
+    output_cost_per_token: 0.000015,
+    cache_read_input_token_cost: 0.0000003,
+    cache_creation_input_token_cost: 0.00000375,
+  },
+  'claude-sonnet-4-6': {
+    input_cost_per_token: 0.000003,
+    output_cost_per_token: 0.000015,
+    cache_read_input_token_cost: 0.0000003,
+    cache_creation_input_token_cost: 0.00000375,
+  },
+  'gpt-6.1-terra': {
+    input_cost_per_token: 0.0000025,
+    output_cost_per_token: 0.00001,
+    cache_read_input_token_cost: 0.00000125,
+    cache_creation_input_token_cost: 0.0000025,
+  },
+  'gpt-6.1-sol': {
+    input_cost_per_token: 0.0000025,
+    output_cost_per_token: 0.00001,
+    cache_read_input_token_cost: 0.00000125,
+    cache_creation_input_token_cost: 0.0000025,
+  },
+  'gpt-5.6-terra': {
+    input_cost_per_token: 0.0000025,
+    output_cost_per_token: 0.00001,
+    cache_read_input_token_cost: 0.00000125,
+    cache_creation_input_token_cost: 0.0000025,
+  },
+  'gpt-5.6-sol': {
+    input_cost_per_token: 0.0000025,
+    output_cost_per_token: 0.00001,
+    cache_read_input_token_cost: 0.00000125,
+    cache_creation_input_token_cost: 0.0000025,
+  },
+  'gpt-5.5': {
+    input_cost_per_token: 0.0000025,
+    output_cost_per_token: 0.00001,
+    cache_read_input_token_cost: 0.00000125,
+    cache_creation_input_token_cost: 0.0000025,
+  },
+  'gpt-6-astra': {
+    input_cost_per_token: 0.000005,
+    output_cost_per_token: 0.00002,
+    cache_read_input_token_cost: 0.0000025,
+    cache_creation_input_token_cost: 0.000005,
+  },
+  'gpt-6-sol': {
+    input_cost_per_token: 0.0000025,
+    output_cost_per_token: 0.00001,
+    cache_read_input_token_cost: 0.00000125,
+    cache_creation_input_token_cost: 0.0000025,
+  },
+  'gpt-6-luna': {
+    input_cost_per_token: 0.000001,
+    output_cost_per_token: 0.000004,
+    cache_read_input_token_cost: 0.0000005,
+    cache_creation_input_token_cost: 0.000001,
+  },
+  'gemini-3.8-flash-medium': {
+    input_cost_per_token: 0.00000015,
+    output_cost_per_token: 0.0000006,
+    cache_read_input_token_cost: 0.0000000375,
+    cache_creation_input_token_cost: 0.00000015,
+  },
+  'gemini-3.8-flash': {
+    input_cost_per_token: 0.00000015,
+    output_cost_per_token: 0.0000006,
+    cache_read_input_token_cost: 0.0000000375,
+    cache_creation_input_token_cost: 0.00000015,
+  },
+  'gemini-2.5-flash': {
+    input_cost_per_token: 0.00000015,
+    output_cost_per_token: 0.0000006,
+    cache_read_input_token_cost: 0.0000000375,
+    cache_creation_input_token_cost: 0.00000015,
+  },
+  'gemini-2.5-pro': {
+    input_cost_per_token: 0.00000125,
+    output_cost_per_token: 0.000005,
+    cache_read_input_token_cost: 0.0000003125,
+    cache_creation_input_token_cost: 0.00000125,
+  },
+  'glm-5.3-flash': {
+    input_cost_per_token: 0.0000001,
+    output_cost_per_token: 0.0000001,
+    cache_read_input_token_cost: 0.00000005,
+    cache_creation_input_token_cost: 0.0000001,
+  },
+  'glm-5.3': {
+    input_cost_per_token: 0.000001,
+    output_cost_per_token: 0.000002,
+    cache_read_input_token_cost: 0.0000005,
+    cache_creation_input_token_cost: 0.000001,
+  },
+  'zai-coding-plan/glm-5.3-flash': {
+    input_cost_per_token: 0.0000001,
+    output_cost_per_token: 0.0000001,
+    cache_read_input_token_cost: 0.00000005,
+    cache_creation_input_token_cost: 0.0000001,
+  },
+  'zai-coding-plan/glm-5.3': {
+    input_cost_per_token: 0.000001,
+    output_cost_per_token: 0.000002,
+    cache_read_input_token_cost: 0.0000005,
+    cache_creation_input_token_cost: 0.000001,
+  },
+} as const;

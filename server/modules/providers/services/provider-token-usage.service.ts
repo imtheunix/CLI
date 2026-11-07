@@ -13,9 +13,14 @@ import { AppError, getOpenCodeDatabasePath } from '@/shared/utils.js';
 import {
   calculateNotionalCost,
   loadDefaultRateTable,
+  PRICE_TABLE_VERSION,
   type RateTable,
 } from './provider-pricing.service.js';
-import { getCachedScan, setCachedScan } from './usage-scan-cache.service.js';
+import {
+  buildScanCacheKey,
+  getCachedScan,
+  setCachedScan,
+} from './usage-scan-cache.service.js';
 
 type SessionRow = NonNullable<ReturnType<typeof sessionsDb.getSessionById>>;
 
@@ -39,6 +44,7 @@ type ProviderTokenUsageServiceDependencies = {
   getReportedClaudeContextWindow: (providerSessionId: string) => number | undefined;
   isProviderSessionSuperseded: (providerSessionId: string, provider: string) => boolean;
   rateTable?: RateTable;
+  priceTableVersion?: string;
 };
 
 type TokenUsageResult = {
@@ -113,6 +119,7 @@ const defaultDependencies: ProviderTokenUsageServiceDependencies = {
   isProviderSessionSuperseded: (providerSessionId, provider) =>
     sessionsDb.isProviderSessionSuperseded(providerSessionId, provider),
   rateTable: loadDefaultRateTable(),
+  priceTableVersion: PRICE_TABLE_VERSION,
 };
 
 /**
@@ -567,7 +574,9 @@ export function parseCodexTranscriptTokens(fileContent: string): ParsedTranscrip
 
 /**
  * Parses a ZCode JSONL transcript for token totals and model.
- * Inspects `turn.completed`, `session.updated`, `init`, and usage events.
+ * Inspects `turn.completed` for token usage totals (ignoring interim `session.updated` events
+ * which share turn IDs and report per-request tokens rather than turn totals).
+ * Zcode input tokens already include cached tokens, so uncached input is input - cacheRead.
  */
 export function parseZcodeTranscriptTokens(fileContent: string): ParsedTranscriptData {
   let detectedModel: string | null = null;
@@ -588,34 +597,47 @@ export function parseZcodeTranscriptTokens(fileContent: string): ParsedTranscrip
       if (event?.event === 'init' && event.init?.model) {
         detectedModel = String(event.init.model);
       }
+      if (payload?.model) {
+        detectedModel = String(payload.model);
+      }
 
-      const usage = payload?.usage ?? event?.usage ?? event?.result?.usage ?? event?.step_update?.usage;
-      const turnId = event?.turnId ?? event?.id ?? payload?.turnId;
-
-      if (usage && typeof usage === 'object') {
+      // Usage is extracted exclusively from turn.completed events.
+      // Interim session.updated events share the turn ID and report per-LLM-request fragments.
+      if (event?.type === 'turn.completed') {
+        const turnId = event?.turnId ?? payload?.turnId ?? event?.id;
         if (turnId && seenTurnIds.has(String(turnId))) continue;
         if (turnId) seenTurnIds.add(String(turnId));
 
-        const directInput = readUsageNumber(usage.input_tokens ?? usage.prompt_tokens ?? usage.inputTokens);
-        const cacheRead = readUsageNumber(usage.cache_read_input_tokens ?? usage.cached_tokens ?? usage.cacheReadTokens);
-        const cacheWrite = readUsageNumber(usage.cache_creation_input_tokens ?? usage.cacheWriteTokens);
-        const output = readUsageNumber(usage.output_tokens ?? usage.completion_tokens ?? usage.outputTokens);
+        const usage = (payload?.usage && typeof payload.usage === 'object')
+          ? payload.usage
+          : (event?.usage && typeof event.usage === 'object')
+            ? event.usage
+            : (payload && typeof payload === 'object')
+              ? payload
+              : null;
 
-        uncachedInputTokens += directInput;
-        cachedInputTokens += cacheRead;
-        cacheCreationTokens += cacheWrite;
-        outputTokens += output;
-      }
+        if (usage) {
+          const rawInput = readUsageNumber(
+            usage.input_tokens ?? usage.prompt_tokens ?? usage.inputTokens,
+          );
+          const cacheRead = readUsageNumber(
+            usage.cache_read_input_tokens ?? usage.cached_tokens ?? usage.cacheReadTokens,
+          );
+          const cacheWrite = readUsageNumber(
+            usage.cache_creation_input_tokens ?? usage.cacheWriteTokens,
+          );
+          const output = readUsageNumber(
+            usage.output_tokens ?? usage.completion_tokens ?? usage.outputTokens,
+          );
 
-      if (event?.type === 'event_msg' && payload?.type === 'token_count' && payload.info?.total_token_usage) {
-        const u = payload.info.total_token_usage as AnyRecord;
-        const totalIn = readUsageNumber(u.input_tokens);
-        const cRead = readUsageNumber(u.cached_input_tokens ?? u.cached_tokens);
-        const cWrite = readUsageNumber(u.cache_write_input_tokens ?? u.cache_creation_input_tokens);
-        uncachedInputTokens = Math.max(0, totalIn - cRead);
-        cachedInputTokens = cRead;
-        cacheCreationTokens = cWrite;
-        outputTokens = readUsageNumber(u.output_tokens);
+          // Zcode input already includes cached tokens; uncached is rawInput - cacheRead.
+          const uncached = Math.max(0, rawInput - cacheRead);
+
+          uncachedInputTokens += uncached;
+          cachedInputTokens += cacheRead;
+          cacheCreationTokens += cacheWrite;
+          outputTokens += output;
+        }
       }
     } catch {}
   }
@@ -739,7 +761,7 @@ export function createProviderTokenUsageService(
   return {
     /**
      * Scans a transcript file for token usage and notional cost, using the scan cache
-     * keyed by transcript path + size + mtime.
+     * keyed by transcript path, price table version, fallback model, custom rates, size, and mtime.
      */
     getTranscriptJobUsage(
       filePath: string,
@@ -758,7 +780,9 @@ export function createProviderTokenUsageService(
         return null;
       }
 
-      const cached = getCachedScan(filePath, stat.size, stat.mtimeMs);
+      const priceTableVersion = dependencies.priceTableVersion ?? PRICE_TABLE_VERSION;
+      const cacheKey = buildScanCacheKey(filePath, priceTableVersion, fallbackModel, customRates);
+      const cached = getCachedScan(cacheKey, stat.size, stat.mtimeMs);
       if (cached) {
         return cached;
       }
@@ -772,7 +796,7 @@ export function createProviderTokenUsageService(
 
       const parsed = parseTranscriptData(content, provider);
       const result = buildJobTokenUsage(parsed, fallbackModel, customRates);
-      setCachedScan(filePath, stat.size, stat.mtimeMs, result);
+      setCachedScan(cacheKey, stat.size, stat.mtimeMs, result);
       return result;
     },
 
@@ -800,7 +824,9 @@ export function createProviderTokenUsageService(
           return null;
         }
 
-        const cacheKey = `${databasePath}#${providerSessionId}`;
+        const target = `${databasePath}#${providerSessionId}`;
+        const priceTableVersion = dependencies.priceTableVersion ?? PRICE_TABLE_VERSION;
+        const cacheKey = buildScanCacheKey(target, priceTableVersion, fallbackModel, customRates);
         const cached = getCachedScan(cacheKey, stat.size, stat.mtimeMs);
         if (cached) return cached;
 

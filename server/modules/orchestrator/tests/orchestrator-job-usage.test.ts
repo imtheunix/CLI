@@ -104,7 +104,8 @@ test('orchestrator job view attaches usage from transcript with notional USD', a
     const jobView = jobs.get('job-usage-test');
     assert.ok(jobView);
     assert.ok(jobView.usage);
-    assert.equal(jobView.usage.inputTokens, 1300);
+    // Zcode input_tokens already includes cached tokens, never add cacheRead on top
+    assert.equal(jobView.usage.inputTokens, 1000);
     assert.equal(jobView.usage.outputTokens, 200);
     assert.equal(jobView.usage.cacheReadTokens, 300);
     assert.equal(jobView.usage.cacheTokens, 300);

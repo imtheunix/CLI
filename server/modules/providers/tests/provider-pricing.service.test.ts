@@ -9,6 +9,7 @@ import {
   loadDefaultRateTable,
   lookupModelRate,
   parsePriceTable,
+  PRICE_TABLE_VERSION,
 } from '../services/provider-pricing.service.js';
 import {
   createProviderTokenUsageService,
@@ -16,7 +17,31 @@ import {
   parseCodexTranscriptTokens,
   parseZcodeTranscriptTokens,
 } from '../services/provider-token-usage.service.js';
-import { clearScanCache } from '../services/usage-scan-cache.service.js';
+import { buildScanCacheKey, clearScanCache } from '../services/usage-scan-cache.service.js';
+
+test('provider pricing: price table is bundled as a TS module and never empty', async () => {
+  // Assert the module import path exists and exports rate data
+  const { MODEL_PRICES_DATA, PRICE_TABLE_VERSION: importedVersion } = await import(
+    '../services/model-prices.data.js'
+  );
+  assert.ok(MODEL_PRICES_DATA, 'MODEL_PRICES_DATA must be exported');
+  assert.equal(typeof MODEL_PRICES_DATA, 'object');
+  assert.ok(Object.keys(MODEL_PRICES_DATA).length >= 20, 'price table must contain at least 20 models');
+  assert.equal(importedVersion, '2026-11-07');
+  assert.equal(PRICE_TABLE_VERSION, '2026-11-07');
+
+  const table = loadDefaultRateTable();
+  assert.ok(table.size >= 20);
+  assert.ok(table.has('gpt-6.1-sol'), 'bundled table must contain gpt-6.1-sol');
+  assert.ok(table.has('gpt-6.1-terra'), 'bundled table must contain gpt-6.1-terra');
+  assert.ok(table.has('glm-5.3'), 'bundled table must contain glm-5.3');
+  assert.ok(table.has('claude-opus-5-5'), 'bundled table must contain claude-opus-5-5');
+
+  // Assert empty or invalid tables throw explicit errors rather than returning a silent 0-rate map
+  assert.throws(() => parsePriceTable({}), /missing or empty/i);
+  assert.throws(() => parsePriceTable({ invalid: {} }), /contains no valid rate entries/i);
+  assert.throws(() => lookupModelRate('gpt-6.1-sol', new Map()), /rate table is empty/i);
+});
 
 test('provider pricing: rate table lookup and aliases', () => {
   const table = loadDefaultRateTable();
@@ -282,12 +307,15 @@ test('provider token usage: Zcode format transcript fixture', async () => {
     const result = service.getTranscriptJobUsage(filePath, 'zcode');
 
     assert.ok(result);
-    // Uncached: 1000 + 2000 = 3000
+    // In Zcode, input_tokens already includes cache_read_input_tokens:
+    // Turn 1: 1000 total input (400 cached, 600 uncached)
+    // Turn 2: 2000 total input (1400 cached, 600 uncached)
+    // Total input: 1000 + 2000 = 3000 (never 4800)
     // Cached: 400 + 1400 = 1800
-    // Total input: 4800
+    // Uncached: 600 + 600 = 1200
     // Cache write: 100 + 50 = 150
     // Output: 300 + 400 = 700
-    assert.equal(result.inputTokens, 4800);
+    assert.equal(result.inputTokens, 3000);
     assert.equal(result.cacheReadTokens, 1800);
     assert.equal(result.cacheCreationTokens, 150);
     assert.equal(result.cacheTokens, 1950);
@@ -298,13 +326,108 @@ test('provider token usage: Zcode format transcript fixture', async () => {
 
     // GLM-5.3-Flash rates:
     // input 0.0000001, cacheRead 0.00000005, cacheWrite 0.0000001, output 0.0000001
-    // 3000 * 0.0000001 = 0.0003
-    // 1800 * 0.00000005 = 0.00009
-    // 150 * 0.0000001 = 0.000015
-    // 700 * 0.0000001 = 0.00007
-    // Total = 0.000475
+    // Uncached: 1200 * 0.0000001 = 0.00012
+    // Cached read: 1800 * 0.00000005 = 0.00009
+    // Cache write: 150 * 0.0000001 = 0.000015
+    // Output: 700 * 0.0000001 = 0.00007
+    // Total = 0.000295
     assert.ok(typeof result.notionalCostUsd === 'number');
-    assert.ok(Math.abs(result.notionalCostUsd - 0.000475) < 1e-6);
+    assert.ok(Math.abs(result.notionalCostUsd - 0.000295) < 1e-6);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('provider token usage: Zcode synthetic reproducer covering both shared id and input includes cache', async () => {
+  clearScanCache();
+  const tempDir = await mkdtemp(path.join(tmpdir(), 'fixture-zcode-reproducer-'));
+  const filePath = path.join(tempDir, 'session.jsonl');
+
+  try {
+    // Reproduces the exact structure of real transcript 404889af-f4d9-45d9-b645-950a09e2cc27.jsonl:
+    // Multiple session.updated rows share turnId 'turn-repro-1' with interim request usage.
+    // Followed by turn.completed with the same turnId reporting cumulative turn totals.
+    const sharedTurnId = 'bb53318b-612e-463c-8aa6-cb2f92464400';
+    const lines = [
+      JSON.stringify({
+        type: 'session.updated',
+        turnId: sharedTurnId,
+        id: 'msg-part-1',
+        payload: {
+          modelId: 'GLM-5.3',
+          usage: {
+            inputTokens: 234250,
+            outputTokens: 71,
+            totalTokens: 234321,
+            cacheReadTokens: 234176,
+            cacheWriteTokens: 0,
+          },
+        },
+      }),
+      JSON.stringify({
+        type: 'session.updated',
+        turnId: sharedTurnId,
+        id: 'msg-part-2',
+        payload: {
+          usage: {
+            inputTokens: 234714,
+            outputTokens: 1699,
+            totalTokens: 236413,
+            cacheReadTokens: 234240,
+            cacheWriteTokens: 0,
+          },
+        },
+      }),
+      JSON.stringify({
+        type: 'turn.completed',
+        turnId: sharedTurnId,
+        id: 'turn-end-1',
+        payload: {
+          source: 'provider',
+          modelRequestCount: 7,
+          inputTokens: 1657050,
+          outputTokens: 3454,
+          totalTokens: 1660504,
+          cacheReadTokens: 1652736,
+          cacheWriteTokens: 0,
+        },
+      }),
+    ];
+    await writeFile(filePath, lines.join('\n'));
+
+    const service = createProviderTokenUsageService();
+    const result = service.getTranscriptJobUsage(filePath, 'zcode');
+
+    assert.ok(result);
+    // Defect 1: session.updated interim events must not be used or lock out turn.completed
+    assert.notEqual(result.outputTokens, 71, 'must not return interim session.updated outputTokens');
+    assert.equal(result.outputTokens, 3454, 'must use turn.completed outputTokens');
+
+    // Defect 2: input already includes cached tokens, so never add cacheRead on top
+    assert.notEqual(
+      result.inputTokens,
+      1657050 + 1652736,
+      'must not add cacheReadTokens on top of inputTokens',
+    );
+    assert.notEqual(
+      result.inputTokens,
+      468426,
+      'must not return erroneous double-counted interim inputTokens',
+    );
+    assert.equal(result.inputTokens, 1657050);
+    assert.equal(result.cacheReadTokens, 1652736);
+    assert.equal(result.cacheCreationTokens, 0);
+    assert.equal(result.model, 'GLM-5.3');
+
+    // Pricing calculation check:
+    // GLM-5.3 rates: input 0.000001, cacheRead 0.0000005, output 0.000002
+    // Uncached input: 1,657,050 - 1,652,736 = 4,314 tokens
+    // 4,314 * 0.000001 = 0.004314
+    // 1,652,736 * 0.0000005 = 0.826368
+    // 3,454 * 0.000002 = 0.006908
+    // Expected total = 0.837590
+    assert.ok(typeof result.notionalCostUsd === 'number');
+    assert.ok(Math.abs(result.notionalCostUsd - 0.83759) < 1e-5);
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
@@ -381,6 +504,85 @@ test('provider token usage: unknown model produces unpriced, never 0', async () 
     assert.equal(result.notionalCostUsd, null);
     assert.notEqual(result.notionalCostUsd, 0, 'cost must never be 0 for unpriced model');
     assert.equal(result.isNotional, true);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('provider token usage: scan cache key includes price table version, rate inputs, and fallback model', async () => {
+  clearScanCache();
+
+  // Test buildScanCacheKey directly
+  const baseKey1 = buildScanCacheKey('/test/path.jsonl', '2026-11-07');
+  const baseKey2 = buildScanCacheKey('/test/path.jsonl', '2026-11-07');
+  assert.equal(baseKey1, baseKey2);
+
+  // Different table versions must produce different cache keys
+  const v2Key = buildScanCacheKey('/test/path.jsonl', '2026-12-01');
+  assert.notEqual(baseKey1, v2Key);
+
+  // Different fallback models must produce different cache keys
+  const modelAKey = buildScanCacheKey('/test/path.jsonl', '2026-11-07', 'gpt-6.1-terra');
+  const modelBKey = buildScanCacheKey('/test/path.jsonl', '2026-11-07', 'gpt-6.1-sol');
+  assert.notEqual(modelAKey, modelBKey);
+  assert.notEqual(baseKey1, modelAKey);
+
+  // Custom rates must produce different cache keys
+  const customTable = new Map([
+    ['gpt-6.1-terra', { inputCostPerToken: 0.0001, outputCostPerToken: 0.0002, cacheReadCostPerToken: 0.00005, cacheCreationCostPerToken: 0.0001 }],
+  ]);
+  const customKey = buildScanCacheKey('/test/path.jsonl', '2026-11-07', undefined, customTable);
+  assert.notEqual(baseKey1, customKey);
+
+  // End-to-end service cache invalidation on changed inputs
+  const tempDir = await mkdtemp(path.join(tmpdir(), 'cache-key-invalidation-'));
+  const filePath = path.join(tempDir, 'transcript.jsonl');
+
+  try {
+    const transcriptContent = JSON.stringify({
+      type: 'assistant',
+      message: {
+        // Omitting model so fallbackModel is used
+        usage: { input_tokens: 1000, output_tokens: 500 },
+      },
+    }) + '\n';
+    await writeFile(filePath, transcriptContent);
+
+    let readCallCount = 0;
+    const service = createProviderTokenUsageService({
+      readFileSync: () => {
+        readCallCount += 1;
+        return transcriptContent;
+      },
+    });
+
+    // 1. First scan with fallback model 'claude-opus-5-5' -> miss, readCallCount = 1
+    const run1 = service.getTranscriptJobUsage(filePath, 'claude', 'claude-opus-5-5');
+    assert.ok(run1);
+    assert.equal(run1.model, 'claude-opus-5-5');
+    assert.equal(readCallCount, 1);
+
+    // 2. Second scan with identical parameters -> CACHE HIT, readCallCount remains 1
+    const run2 = service.getTranscriptJobUsage(filePath, 'claude', 'claude-opus-5-5');
+    assert.ok(run2);
+    assert.equal(readCallCount, 1, 'must hit cache when fallbackModel and rates match');
+    assert.deepEqual(run2, run1);
+
+    // 3. Third scan with DIFFERENT fallback model 'gpt-6.1-terra' -> CACHE MISS, readCallCount = 2
+    const run3 = service.getTranscriptJobUsage(filePath, 'claude', 'gpt-6.1-terra');
+    assert.ok(run3);
+    assert.equal(run3.model, 'gpt-6.1-terra');
+    assert.equal(readCallCount, 2, 'must not return stale result when fallbackModel changes');
+    assert.notEqual(run3.notionalCostUsd, run1.notionalCostUsd);
+
+    // 4. Fourth scan with CUSTOM rates -> CACHE MISS, readCallCount = 3
+    const customServiceTable = new Map([
+      ['gpt-6.1-terra', { inputCostPerToken: 0.01, outputCostPerToken: 0.05, cacheReadCostPerToken: 0.005, cacheCreationCostPerToken: 0.01 }],
+    ]);
+    const run4 = service.getTranscriptJobUsage(filePath, 'claude', 'gpt-6.1-terra', customServiceTable);
+    assert.ok(run4);
+    assert.equal(readCallCount, 3, 'must not return stale result when customRates change');
+    assert.notEqual(run4.notionalCostUsd, run3.notionalCostUsd);
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }

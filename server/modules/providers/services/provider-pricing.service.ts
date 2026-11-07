@@ -1,12 +1,13 @@
 // Based on T3 Code (MIT): apps/server/src/usage/usagePricing.ts
-import fsSync from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-
 import type { ModelTokenRates } from '@/shared/types.js';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const PRICING_TABLE_PATH = path.join(__dirname, 'model-prices.2026-11-07.json');
+import { MODEL_PRICES_DATA, PRICE_TABLE_VERSION } from './model-prices.data.js';
+
+/**
+ * Re-export the bundled price table version for cache key construction and external inspection.
+ * Used by provider token usage service and scan cache to invalidate stale priced results.
+ */
+export { PRICE_TABLE_VERSION };
 
 type LiteLlmPriceEntry = {
   input_cost_per_token?: number;
@@ -15,6 +16,9 @@ type LiteLlmPriceEntry = {
   cache_creation_input_token_cost?: number;
 };
 
+/**
+ * Used by provider token usage service and tests to represent mapped model rates.
+ */
 export type RateTable = Map<string, ModelTokenRates>;
 
 /** Unpriceable models that must never return zero cost. */
@@ -40,7 +44,14 @@ function bareModelName(key: string): string {
   return slash === -1 ? key : key.slice(slash + 1);
 }
 
+/**
+ * Used by loadDefaultRateTable and tests to parse raw price data into RateTable.
+ * Throws an explicit error if the raw table is empty or missing, never returning a silent 0-rate map.
+ */
 export function parsePriceTable(rawJson: Record<string, unknown>): RateTable {
+  if (!rawJson || typeof rawJson !== 'object' || Object.keys(rawJson).length === 0) {
+    throw new Error('Pricing table is missing or empty');
+  }
   const table: RateTable = new Map();
   for (const [key, val] of Object.entries(rawJson)) {
     if (!val || typeof val !== 'object') continue;
@@ -68,19 +79,24 @@ export function parsePriceTable(rawJson: Record<string, unknown>): RateTable {
       cacheCreationCostPerToken: cacheCreation,
     });
   }
+  if (table.size === 0) {
+    throw new Error('Pricing table contains no valid rate entries');
+  }
   return table;
 }
 
 let defaultRateTable: RateTable | null = null;
 
+/**
+ * Used by provider token usage service to obtain the default rate table.
+ * Throws an explicit error if the table cannot be parsed or is empty.
+ */
 export function loadDefaultRateTable(): RateTable {
   if (!defaultRateTable) {
-    try {
-      const content = fsSync.readFileSync(PRICING_TABLE_PATH, 'utf8');
-      defaultRateTable = parsePriceTable(JSON.parse(content));
-    } catch {
-      defaultRateTable = new Map();
-    }
+    defaultRateTable = parsePriceTable(MODEL_PRICES_DATA as Record<string, unknown>);
+  }
+  if (defaultRateTable.size === 0) {
+    throw new Error('Default rate table is empty');
   }
   return defaultRateTable;
 }
@@ -91,6 +107,9 @@ export function loadDefaultRateTable(): RateTable {
 export function lookupModelRate(model: string | null | undefined, customTable?: RateTable): ModelTokenRates | null {
   if (!model) return null;
   const table = customTable ?? loadDefaultRateTable();
+  if (table.size === 0) {
+    throw new Error('Rate table is empty');
+  }
   const normalized = stripVariantSuffix(normalizeRateKey(model));
   if (UNPRICEABLE_MODELS.has(normalized)) return null;
 
