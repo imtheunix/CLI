@@ -150,6 +150,7 @@ if (mode === 'timeout') {
     runtime: runtime.gateway,
     config: () => config,
     now: clock.now,
+    captureCheckpoint: async () => ({}),
     probeZcode: (opts) => probeZcodeLogin({ timeoutMs: probeTimeoutMs, now: clock.now(), explicit: true, ...opts }),
   });
   const unsubscribe = chatRunRegistry.onRunCompleted((completion) => jobs.handleRunCompleted(completion));
@@ -180,18 +181,16 @@ if (mode === 'timeout') {
       timeoutMs: probeTimeoutMs,
     });
   } finally {
-    for (const turn of runtime.turns) {
-      runtime.finish(turn.sessionId, { exitCode: 0 });
-    }
     unsubscribe();
     chatRunRegistry.clearAll();
+    await jobs.afterCheckpoints().catch(() => {});
     closeConnection();
     resetZcodeProbeCache();
     if (previousDatabasePath === undefined) delete process.env.DATABASE_PATH;
     else process.env.DATABASE_PATH = previousDatabasePath;
     if (previousPath === undefined) delete process.env.PATH;
     else process.env.PATH = previousPath;
-    await rm(root, { recursive: true, force: true });
+    await rm(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 }).catch(() => {});
   }
 }
 
