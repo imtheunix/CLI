@@ -1,3 +1,4 @@
+// Based on T3 Code (MIT): apps/server/src/usage/{usagePricing.ts, usageScanCache.ts, usageTranscriptReader.ts}
 import fsSync, { type Dirent } from 'node:fs';
 import fsp from 'node:fs/promises';
 import os from 'node:os';
@@ -6,8 +7,15 @@ import path from 'node:path';
 import Database from 'better-sqlite3';
 
 import { sessionsDb } from '@/modules/database/index.js';
-import type { AnyRecord } from '@/shared/types.js';
+import type { AnyRecord, JobTokenUsage } from '@/shared/types.js';
 import { AppError, getOpenCodeDatabasePath } from '@/shared/utils.js';
+
+import {
+  calculateNotionalCost,
+  loadDefaultRateTable,
+  type RateTable,
+} from './provider-pricing.service.js';
+import { getCachedScan, setCachedScan } from './usage-scan-cache.service.js';
 
 type SessionRow = NonNullable<ReturnType<typeof sessionsDb.getSessionById>>;
 
@@ -22,12 +30,15 @@ type ProviderTokenUsageServiceDependencies = {
   getHomeDirectory: () => string;
   getOpenCodeDatabasePath: () => string;
   fileExists: (filePath: string) => boolean;
+  statSync: (filePath: string) => { size: number; mtimeMs: number };
+  readFileSync: (filePath: string) => string;
   readDirectory: (directoryPath: string) => Promise<Dirent[]>;
   readTextFile: (filePath: string) => Promise<string>;
   readTextFileTail: (filePath: string, maxBytes: number) => Promise<FileTail>;
   getClaudeContextWindow: () => string | undefined;
   getReportedClaudeContextWindow: (providerSessionId: string) => number | undefined;
   isProviderSessionSuperseded: (providerSessionId: string, provider: string) => boolean;
+  rateTable?: RateTable;
 };
 
 type TokenUsageResult = {
@@ -67,6 +78,11 @@ const defaultDependencies: ProviderTokenUsageServiceDependencies = {
   getHomeDirectory: () => os.homedir(),
   getOpenCodeDatabasePath,
   fileExists: (filePath) => fsSync.existsSync(filePath),
+  statSync: (filePath) => {
+    const stats = fsSync.statSync(filePath);
+    return { size: stats.size, mtimeMs: stats.mtimeMs };
+  },
+  readFileSync: (filePath) => fsSync.readFileSync(filePath, 'utf8'),
   readDirectory: (directoryPath) => fsp.readdir(directoryPath, { withFileTypes: true }),
   readTextFile: (filePath) => fsp.readFile(filePath, 'utf8'),
   readTextFileTail: async (filePath, maxBytes) => {
@@ -96,6 +112,7 @@ const defaultDependencies: ProviderTokenUsageServiceDependencies = {
   getReportedClaudeContextWindow: (providerSessionId) => getReportedClaudeContextWindow(providerSessionId),
   isProviderSessionSuperseded: (providerSessionId, provider) =>
     sessionsDb.isProviderSessionSuperseded(providerSessionId, provider),
+  rateTable: loadDefaultRateTable(),
 };
 
 /**
@@ -167,6 +184,35 @@ async function findCodexSessionFile(
     const entryPath = path.join(directoryPath, entry.name);
     if (entry.isDirectory()) {
       const nestedMatch = await findCodexSessionFile(entryPath, providerSessionId, dependencies);
+      if (nestedMatch) {
+        return nestedMatch;
+      }
+      continue;
+    }
+
+    if (entry.name.includes(providerSessionId) && entry.name.endsWith('.jsonl')) {
+      return entryPath;
+    }
+  }
+
+  return null;
+}
+
+function findCodexSessionFileSync(
+  directoryPath: string,
+  providerSessionId: string,
+): string | null {
+  let entries: Dirent[];
+  try {
+    entries = fsSync.readdirSync(directoryPath, { withFileTypes: true });
+  } catch {
+    return null;
+  }
+
+  for (const entry of entries) {
+    const entryPath = path.join(directoryPath, entry.name);
+    if (entry.isDirectory()) {
+      const nestedMatch = findCodexSessionFileSync(entryPath, providerSessionId);
       if (nestedMatch) {
         return nestedMatch;
       }
@@ -392,6 +438,259 @@ function readOpenCodeTokenUsage(databasePath: string, providerSessionId: string)
   }
 }
 
+//----------------- TRANSCRIPT PARSERS FOR JOB TOKEN USAGE ------------
+
+type ParsedTranscriptData = {
+  uncachedInputTokens: number;
+  cachedInputTokens: number;
+  cacheCreationTokens: number;
+  outputTokens: number;
+  model: string | null;
+};
+
+/**
+ * Parses a Claude JSONL transcript for cumulative token totals and active model.
+ * Deduplicates multiple content chunks for the same message ID.
+ */
+export function parseClaudeTranscriptTokens(fileContent: string): ParsedTranscriptData {
+  let uncachedInputTokens = 0;
+  let cachedInputTokens = 0;
+  let cacheCreationTokens = 0;
+  let outputTokens = 0;
+  let detectedModel: string | null = null;
+  const seenIds = new Set<string>();
+
+  for (const line of fileContent.trim().split('\n')) {
+    if (!line.trim()) continue;
+    try {
+      const entry = JSON.parse(line) as AnyRecord;
+      if (entry?.isSidechain === true) continue;
+      const usage = entry?.type === 'assistant' ? entry.message?.usage : (entry?.usage ?? null);
+      if (!usage) continue;
+
+      const model = entry.message?.model ?? entry?.model;
+      if (typeof model === 'string' && model && model !== '<synthetic>') {
+        detectedModel = model;
+      }
+      if (model === '<synthetic>') continue;
+
+      const messageId = entry.message?.id ?? entry.requestId;
+      if (typeof messageId === 'string' && messageId) {
+        if (seenIds.has(messageId)) continue;
+        seenIds.add(messageId);
+      }
+
+      const input = readUsageNumber(usage.input_tokens ?? usage.inputTokens);
+      const cacheRead = readUsageNumber(
+        usage.cache_read_input_tokens ?? usage.cacheReadInputTokens ?? usage.cacheReadTokens,
+      );
+      const cacheCreation = readUsageNumber(
+        usage.cache_creation_input_tokens ?? usage.cacheCreationInputTokens ?? usage.cacheCreationTokens,
+      );
+      const output = readUsageNumber(usage.output_tokens ?? usage.outputTokens);
+
+      if (input === 0 && output === 0 && cacheRead === 0 && cacheCreation === 0) continue;
+
+      uncachedInputTokens += input;
+      cachedInputTokens += cacheRead;
+      cacheCreationTokens += cacheCreation;
+      outputTokens += output;
+    } catch {}
+  }
+
+  return {
+    uncachedInputTokens,
+    cachedInputTokens,
+    cacheCreationTokens,
+    outputTokens,
+    model: detectedModel,
+  };
+}
+
+/**
+ * Parses a Codex rollout transcript for token totals and active model.
+ * Codex records cumulative `token_count` event_msg snapshots.
+ */
+export function parseCodexTranscriptTokens(fileContent: string): ParsedTranscriptData {
+  const lines = fileContent.trim().split('\n');
+  let detectedModel: string | null = null;
+  let latestUsage: {
+    input_tokens: number;
+    cached_input_tokens: number;
+    cache_write_input_tokens: number;
+    output_tokens: number;
+  } | null = null;
+
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    try {
+      const entry = JSON.parse(line) as AnyRecord;
+      if (entry?.type === 'turn_context' && entry?.payload?.model) {
+        detectedModel = String(entry.payload.model);
+      }
+      if (entry?.type === 'session_meta' && entry?.payload?.model) {
+        detectedModel = String(entry.payload.model);
+      }
+      if (entry?.type === 'event_msg' && entry.payload?.type === 'token_count' && entry.payload.info?.total_token_usage) {
+        const u = entry.payload.info.total_token_usage as AnyRecord;
+        latestUsage = {
+          input_tokens: readUsageNumber(u.input_tokens),
+          cached_input_tokens: readUsageNumber(u.cached_input_tokens ?? u.cached_tokens),
+          cache_write_input_tokens: readUsageNumber(u.cache_write_input_tokens ?? u.cache_creation_input_tokens),
+          output_tokens: readUsageNumber(u.output_tokens),
+        };
+      }
+    } catch {}
+  }
+
+  if (latestUsage) {
+    const cachedInputTokens = latestUsage.cached_input_tokens;
+    const cacheCreationTokens = latestUsage.cache_write_input_tokens;
+    const uncachedInputTokens = Math.max(0, latestUsage.input_tokens - cachedInputTokens);
+    return {
+      uncachedInputTokens,
+      cachedInputTokens,
+      cacheCreationTokens,
+      outputTokens: latestUsage.output_tokens,
+      model: detectedModel,
+    };
+  }
+
+  return {
+    uncachedInputTokens: 0,
+    cachedInputTokens: 0,
+    cacheCreationTokens: 0,
+    outputTokens: 0,
+    model: detectedModel,
+  };
+}
+
+/**
+ * Parses a ZCode JSONL transcript for token totals and model.
+ * Inspects `turn.completed`, `session.updated`, `init`, and usage events.
+ */
+export function parseZcodeTranscriptTokens(fileContent: string): ParsedTranscriptData {
+  let detectedModel: string | null = null;
+  let uncachedInputTokens = 0;
+  let cachedInputTokens = 0;
+  let cacheCreationTokens = 0;
+  let outputTokens = 0;
+  const seenTurnIds = new Set<string>();
+
+  for (const line of fileContent.trim().split('\n')) {
+    if (!line.trim()) continue;
+    try {
+      const event = JSON.parse(line) as AnyRecord;
+      const payload = event?.payload;
+      if (event?.type === 'session.updated' && payload?.modelId) {
+        detectedModel = String(payload.modelId);
+      }
+      if (event?.event === 'init' && event.init?.model) {
+        detectedModel = String(event.init.model);
+      }
+
+      const usage = payload?.usage ?? event?.usage ?? event?.result?.usage ?? event?.step_update?.usage;
+      const turnId = event?.turnId ?? event?.id ?? payload?.turnId;
+
+      if (usage && typeof usage === 'object') {
+        if (turnId && seenTurnIds.has(String(turnId))) continue;
+        if (turnId) seenTurnIds.add(String(turnId));
+
+        const directInput = readUsageNumber(usage.input_tokens ?? usage.prompt_tokens ?? usage.inputTokens);
+        const cacheRead = readUsageNumber(usage.cache_read_input_tokens ?? usage.cached_tokens ?? usage.cacheReadTokens);
+        const cacheWrite = readUsageNumber(usage.cache_creation_input_tokens ?? usage.cacheWriteTokens);
+        const output = readUsageNumber(usage.output_tokens ?? usage.completion_tokens ?? usage.outputTokens);
+
+        uncachedInputTokens += directInput;
+        cachedInputTokens += cacheRead;
+        cacheCreationTokens += cacheWrite;
+        outputTokens += output;
+      }
+
+      if (event?.type === 'event_msg' && payload?.type === 'token_count' && payload.info?.total_token_usage) {
+        const u = payload.info.total_token_usage as AnyRecord;
+        const totalIn = readUsageNumber(u.input_tokens);
+        const cRead = readUsageNumber(u.cached_input_tokens ?? u.cached_tokens);
+        const cWrite = readUsageNumber(u.cache_write_input_tokens ?? u.cache_creation_input_tokens);
+        uncachedInputTokens = Math.max(0, totalIn - cRead);
+        cachedInputTokens = cRead;
+        cacheCreationTokens = cWrite;
+        outputTokens = readUsageNumber(u.output_tokens);
+      }
+    } catch {}
+  }
+
+  return {
+    uncachedInputTokens,
+    cachedInputTokens,
+    cacheCreationTokens,
+    outputTokens,
+    model: detectedModel,
+  };
+}
+
+/**
+ * Parses an agy transcript for token totals and model.
+ */
+export function parseAgyTranscriptTokens(fileContent: string): ParsedTranscriptData {
+  let uncachedInputTokens = 0;
+  let cachedInputTokens = 0;
+  let cacheCreationTokens = 0;
+  let outputTokens = 0;
+  let detectedModel: string | null = 'gemini-3.8-flash-medium';
+
+  for (const line of fileContent.trim().split('\n')) {
+    if (!line.trim()) continue;
+    try {
+      const step = JSON.parse(line) as AnyRecord;
+      if (step.type === 'PLANNER_RESPONSE') {
+        if (typeof step.model === 'string' && step.model) {
+          detectedModel = step.model;
+        }
+        uncachedInputTokens += readUsageNumber(step.input_tokens ?? step.inputTokens);
+        cachedInputTokens += readUsageNumber(step.cache_read_tokens ?? step.cached_tokens ?? step.cachedInputTokens);
+        cacheCreationTokens += readUsageNumber(step.cache_creation_tokens ?? step.cacheCreationTokens);
+        outputTokens += readUsageNumber(step.output_tokens ?? step.outputTokens);
+      }
+    } catch {}
+  }
+
+  return {
+    uncachedInputTokens,
+    cachedInputTokens,
+    cacheCreationTokens,
+    outputTokens,
+    model: detectedModel,
+  };
+}
+
+function parseTranscriptData(content: string, provider?: string): ParsedTranscriptData {
+  if (provider === 'codex') {
+    return parseCodexTranscriptTokens(content);
+  }
+  if (provider === 'zcode') {
+    return parseZcodeTranscriptTokens(content);
+  }
+  if (provider === 'agy') {
+    return parseAgyTranscriptTokens(content);
+  }
+  if (provider === 'claude') {
+    return parseClaudeTranscriptTokens(content);
+  }
+
+  // Auto-detection based on content signatures
+  if (content.includes('"token_count"') || content.includes('"turn_context"')) {
+    return parseCodexTranscriptTokens(content);
+  }
+  if (content.includes('"PLANNER_RESPONSE"')) {
+    return parseAgyTranscriptTokens(content);
+  }
+  if (content.includes('"session.updated"') || content.includes('sess_native_zcode')) {
+    return parseZcodeTranscriptTokens(content);
+  }
+  return parseClaudeTranscriptTokens(content);
+}
+
 /**
  * Creates the provider token-usage service used by the provider routes. The
  * provider test suite supplies isolated filesystem and session dependencies so
@@ -402,7 +701,197 @@ export function createProviderTokenUsageService(
 ) {
   const dependencies = { ...defaultDependencies, ...dependencyOverrides };
 
+  function buildJobTokenUsage(
+    parsed: ParsedTranscriptData,
+    fallbackModel?: string | null,
+    customRates?: RateTable,
+  ): JobTokenUsage {
+    const model = parsed.model ?? fallbackModel ?? null;
+    const inputTokens = parsed.uncachedInputTokens + parsed.cachedInputTokens;
+    const cacheTokens = parsed.cachedInputTokens + parsed.cacheCreationTokens;
+    const totalTokens = inputTokens + parsed.outputTokens + parsed.cacheCreationTokens;
+
+    const costResult = calculateNotionalCost(
+      {
+        uncachedInputTokens: parsed.uncachedInputTokens,
+        cachedInputTokens: parsed.cachedInputTokens,
+        cacheCreationTokens: parsed.cacheCreationTokens,
+        outputTokens: parsed.outputTokens,
+      },
+      model,
+      customRates ?? dependencies.rateTable,
+    );
+
+    return {
+      inputTokens,
+      outputTokens: parsed.outputTokens,
+      cacheTokens,
+      cacheReadTokens: parsed.cachedInputTokens,
+      cacheCreationTokens: parsed.cacheCreationTokens,
+      totalTokens,
+      model,
+      notionalCostUsd: costResult.notionalCostUsd,
+      costSource: costResult.costSource,
+      isNotional: true,
+    };
+  }
+
   return {
+    /**
+     * Scans a transcript file for token usage and notional cost, using the scan cache
+     * keyed by transcript path + size + mtime.
+     */
+    getTranscriptJobUsage(
+      filePath: string,
+      provider?: string,
+      fallbackModel?: string | null,
+      customRates?: RateTable,
+    ): JobTokenUsage | null {
+      if (!dependencies.fileExists(filePath)) {
+        return null;
+      }
+
+      let stat: { size: number; mtimeMs: number };
+      try {
+        stat = dependencies.statSync(filePath);
+      } catch {
+        return null;
+      }
+
+      const cached = getCachedScan(filePath, stat.size, stat.mtimeMs);
+      if (cached) {
+        return cached;
+      }
+
+      let content: string;
+      try {
+        content = dependencies.readFileSync(filePath);
+      } catch {
+        return null;
+      }
+
+      const parsed = parseTranscriptData(content, provider);
+      const result = buildJobTokenUsage(parsed, fallbackModel, customRates);
+      setCachedScan(filePath, stat.size, stat.mtimeMs, result);
+      return result;
+    },
+
+    /**
+     * Resolves the session transcript and returns the token usage and notional equivalent API cost.
+     */
+    getJobTokenUsage(
+      sessionId: string,
+      fallbackModel?: string | null,
+      customRates?: RateTable,
+    ): JobTokenUsage | null {
+      const session = dependencies.getSessionById(sessionId);
+      if (!session) return null;
+
+      const provider = session.provider;
+      const providerSessionId = session.provider_session_id || sessionId;
+
+      if (provider === 'opencode') {
+        const databasePath = dependencies.getOpenCodeDatabasePath();
+        if (!dependencies.fileExists(databasePath)) return null;
+        let stat: { size: number; mtimeMs: number };
+        try {
+          stat = dependencies.statSync(databasePath);
+        } catch {
+          return null;
+        }
+
+        const cacheKey = `${databasePath}#${providerSessionId}`;
+        const cached = getCachedScan(cacheKey, stat.size, stat.mtimeMs);
+        if (cached) return cached;
+
+        try {
+          const usage = readOpenCodeTokenUsage(databasePath, providerSessionId);
+          const model = fallbackModel ?? session.model ?? 'zai-coding-plan/glm-5.3-flash';
+          const costResult = calculateNotionalCost(
+            {
+              uncachedInputTokens: usage.inputTokens,
+              cachedInputTokens: usage.cacheReadTokens ?? 0,
+              cacheCreationTokens: usage.cacheCreationTokens ?? 0,
+              outputTokens: usage.outputTokens,
+            },
+            model,
+            customRates ?? dependencies.rateTable,
+          );
+
+          const result: JobTokenUsage = {
+            inputTokens: usage.inputTokens,
+            outputTokens: usage.outputTokens,
+            cacheTokens: (usage.cacheReadTokens ?? 0) + (usage.cacheCreationTokens ?? 0),
+            cacheReadTokens: usage.cacheReadTokens ?? 0,
+            cacheCreationTokens: usage.cacheCreationTokens ?? 0,
+            totalTokens: usage.used,
+            model,
+            notionalCostUsd: costResult.notionalCostUsd,
+            costSource: costResult.costSource,
+            isNotional: true,
+          };
+          setCachedScan(cacheKey, stat.size, stat.mtimeMs, result);
+          return result;
+        } catch {
+          return null;
+        }
+      }
+
+      let sessionFilePath: string | null = session.jsonl_path && dependencies.fileExists(session.jsonl_path)
+        ? session.jsonl_path
+        : null;
+
+      if (!sessionFilePath) {
+        if (provider === 'codex') {
+          const codexDir = path.join(dependencies.getHomeDirectory(), '.codex', 'sessions');
+          sessionFilePath = findCodexSessionFileSync(codexDir, providerSessionId);
+        } else if (provider === 'zcode') {
+          const zcodePath = path.join(dependencies.getHomeDirectory(), '.cloudcli', 'zcode', `${encodeURIComponent(sessionId)}.jsonl`);
+          const providerZcodePath = path.join(dependencies.getHomeDirectory(), '.cloudcli', 'zcode', `${encodeURIComponent(providerSessionId)}.jsonl`);
+          if (dependencies.fileExists(zcodePath)) {
+            sessionFilePath = zcodePath;
+          } else if (dependencies.fileExists(providerZcodePath)) {
+            sessionFilePath = providerZcodePath;
+          }
+        } else if (provider === 'agy') {
+          const agyPath = path.join(dependencies.getHomeDirectory(), '.cloudcli', 'agy', `${encodeURIComponent(sessionId)}.jsonl`);
+          const nativeAgyPath = path.join(
+            dependencies.getHomeDirectory(),
+            '.gemini',
+            'antigravity-cli',
+            'brain',
+            encodeURIComponent(providerSessionId),
+            '.system_generated',
+            'logs',
+            'transcript_full.jsonl',
+          );
+          if (dependencies.fileExists(agyPath)) {
+            sessionFilePath = agyPath;
+          } else if (dependencies.fileExists(nativeAgyPath)) {
+            sessionFilePath = nativeAgyPath;
+          }
+        } else if (provider === 'claude') {
+          if (session.project_path) {
+            const encodedProjectPath = session.project_path.replace(/[^a-zA-Z0-9-]/g, '-');
+            const candidate = path.join(
+              dependencies.getHomeDirectory(),
+              '.claude',
+              'projects',
+              encodedProjectPath,
+              `${providerSessionId}.jsonl`,
+            );
+            if (dependencies.fileExists(candidate)) sessionFilePath = candidate;
+          }
+        }
+      }
+
+      if (!sessionFilePath || !dependencies.fileExists(sessionFilePath)) {
+        return null;
+      }
+
+      return this.getTranscriptJobUsage(sessionFilePath, provider, fallbackModel ?? session.model, customRates);
+    },
+
     /**
      * Resolves all provider-specific storage details from one app-facing
      * session id, then returns the latest usage snapshot for that provider.
@@ -538,6 +1027,6 @@ export function createProviderTokenUsageService(
 }
 
 /**
- * Used by the provider routes to serve token usage from only an app session id.
+ * Used by the provider routes and orchestrator jobs service to serve token usage and pricing from an app session id.
  */
 export const providerTokenUsageService = createProviderTokenUsageService();

@@ -10,5 +10,9 @@ export { providerModelsService } from './services/provider-models.service.js';
 // edited message's resume point, which only the providers module can read.
 export { sessionsService } from './services/sessions.service.js';
 
+// providerTokenUsageService: used by orchestrator jobs service and routes to compute token usage and notional cost.
+export { providerTokenUsageService } from './services/provider-token-usage.service.js';
+export { clearScanCache } from './services/usage-scan-cache.service.js';
+
 export { initializeSessionsWatcher } from './services/sessions-watcher.service.js';
 export { closeSessionsWatcher } from './services/sessions-watcher.service.js';

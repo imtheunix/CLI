@@ -54,6 +54,16 @@ else:
     if mode == "show":
         for k in ("repo_path", "base_branch", "branch", "worktree_path", "session_id", "model", "pushed_sha", "checkLogPath", "last_error"):
             if j.get(k): print("  %s: %s" % (k, j[k]))
+        u = j.get("usage")
+        if u:
+            cost = u.get("notionalCostUsd")
+            cost_str = ("$%0.4f notional USD" % cost) if (cost is not None and u.get("costSource") != "unpriced") else "unpriced"
+            print("  tokens: %s in, %s out, %s cache (notional: %s)" % (
+                u.get("inputTokens", 0),
+                u.get("outputTokens", 0),
+                u.get("cacheTokens", 0),
+                cost_str
+            ))
         def took(ms):
             if ms is None: return ""
             m, sec = divmod(int(ms) // 1000, 60)
