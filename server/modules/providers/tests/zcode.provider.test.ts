@@ -38,6 +38,19 @@ let [providerId, modelId] = honored.includes(selection.providerId) && selection.
   ? [selection.providerId, selection.modelId] : ['account:zai-individual-coding-plan', 'GLM-5.3'];
 if (process.env.ZCODE_TEST_FORCE) [providerId, modelId] = process.env.ZCODE_TEST_FORCE.split('|');
 const report = {type:'session.updated',sessionId:'sess_native_zcode',payload:{messageCount:1,providerId,modelId,iteration:0}};
+if (args[1] === 'live') {
+  const send = event => process.stdout.write(JSON.stringify(event) + '\\n');
+  send(report);
+  send({type:'turn.started',sessionId:'sess_native_zcode',payload:{input:'live'}});
+  send({type:'model.streaming',sessionId:'sess_native_zcode',payload:{kind:'text_delta',delta:'Working'}});
+  send({type:'tool.updated',sessionId:'sess_native_zcode',payload:{kind:'scheduled',toolCallId:'call-1',toolName:'bash',input:{command:'pwd'}}});
+  setTimeout(() => {
+    send({type:'tool.updated',sessionId:'sess_native_zcode',payload:{kind:'progress',toolCallId:'call-1',elapsedMs:100}});
+    send({type:'tool.updated',sessionId:'sess_native_zcode',payload:{kind:'result',toolCallId:'call-1',result:{output:'/tmp'},duration:100}});
+    send({type:'model.streaming',sessionId:'sess_native_zcode',payload:{kind:'text_delta',delta:'Done'}});
+    send({type:'turn.completed',sessionId:'sess_native_zcode',payload:{resultType:'success',response:'Done'}});
+  }, 500);
+} else {
 if ((process.env.ZCODE_TEST_EXHAUSTED || '').split(',').includes(providerId)) {
   process.stdout.write(JSON.stringify(report) + '\\n');
   process.stderr.write('ProviderBusinessError: Weekly/Monthly Limit Exhausted. Your limit will reset at ${quotaResetInChina}\\n');
@@ -56,6 +69,7 @@ const events = [
 const text = events.map(e => JSON.stringify(e)).join('\\n');
 process.stdout.write(text.slice(0, 23));
 setTimeout(() => process.stdout.write(text.slice(23)), 10);
+}
 }
 `, { mode: 0o700 });
   process.env.HOME = root;
@@ -162,6 +176,35 @@ test('zcode launches, streams split NDJSON, configures GLM-5.3-Flash, persists h
     const raw = await readFile(path.join(root, '.cloudcli', 'zcode', 'app-1.jsonl'), 'utf8');
     assert.equal(raw.split('\n').filter(Boolean).length, 18);
   });
+});
+
+test('zcode streams native multi-step events before the process exits and restores history', async () => {
+  await withCli(async (root, provider) => {
+    const messages: NormalizedMessage[] = [];
+    let finished = false;
+    const running = provider.runtime.run('live', { sessionId: 'app-live', cwd: root }, {
+      send: (message) => { messages.push(message as NormalizedMessage); },
+    }, context(null)).then(() => { finished = true; });
+    try {
+      for (let i = 0; i < 100 && !messages.some((message) => message.kind === 'tool_use'); i++) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      assert.equal(finished, false);
+      assert.equal(messages.find((message) => message.kind === 'stream_delta')?.content, 'Working');
+      assert.equal(messages.find((message) => message.kind === 'tool_use')?.toolName, 'bash');
+      const before = await readFile(path.join(root, '.cloudcli', 'zcode', 'app-live.jsonl'), 'utf8');
+      assert.match(before, /model\.streaming/);
+      await running;
+      assert.equal(messages.find((message) => message.kind === 'tool_result')?.content, '/tmp');
+      assert.equal(messages.at(-1)?.exitCode, 0);
+      const history = await provider.sessions.fetchHistory('app-live');
+      assert.deepEqual(history.messages.filter((message) => message.kind === 'text').map((message) => message.content), ['live', 'Working', 'Done']);
+      assert.equal(history.messages.find((message) => message.kind === 'tool_use')?.toolResult?.content, '/tmp');
+      const transcript = await readFile(path.join(root, '.cloudcli', 'zcode', 'app-live.jsonl'), 'utf8');
+      assert.match(transcript, /"kind":"progress"/);
+      assert.match(transcript, /turn\.completed/);
+    } finally { await running; }
+  }, { ZCODE_TEST_HONORED: 'account:zai-offpeak-idle-plan,account:zai-start-plan,account:zai-individual-coding-plan' });
 });
 
 test('zcode moves past a quota-exhausted plan without surfacing its 1310', async () => {

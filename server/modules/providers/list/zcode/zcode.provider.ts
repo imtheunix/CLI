@@ -122,10 +122,20 @@ function normalize(raw: unknown, sessionId: string | null): NormalizedMessage[] 
     return [createNormalizedMessage({ ...base, kind: 'stream_delta', content: String(event.content ?? '') })];
   }
 
-  if (event.type === 'turn.started') {
-    const payload = readObjectRecord(event.payload);
-    if (typeof payload?.input === 'string' && payload.input.trim()) {
-      return [createNormalizedMessage({ ...base, kind: 'text', role: 'user', content: payload.input })];
+  const payload = readObjectRecord(event.payload);
+  if (event.type === 'model.streaming' && payload?.kind === 'text_delta' && typeof payload.delta === 'string') {
+    return [createNormalizedMessage({ ...base, kind: 'stream_delta', content: payload.delta })];
+  }
+  if (event.type === 'tool.updated' && typeof payload?.toolCallId === 'string') {
+    const toolId = payload.toolCallId;
+    if (payload.kind === 'scheduled') {
+      return [createNormalizedMessage({ ...base, kind: 'tool_use', toolId, toolName: String(payload.toolName ?? 'Tool'), toolInput: readObjectRecord(payload.input) ?? {} })];
+    }
+    if (payload.kind === 'result' || payload.kind === 'error') {
+      const result = readObjectRecord(payload.result);
+      const error = readObjectRecord(payload.error);
+      const value = payload.kind === 'error' ? (error?.message ?? payload.error) : (result?.output ?? result?.content ?? payload.result);
+      return [createNormalizedMessage({ ...base, kind: 'tool_result', toolId, content: typeof value === 'string' ? value : JSON.stringify(value ?? ''), isError: payload.kind === 'error' || Boolean(result?.isError) })];
     }
   }
 
@@ -220,7 +230,8 @@ export class ZcodeProvider extends AbstractProvider {
               } else {
                 textMessage = null;
                 const toolMessage = message.toolId ? toolMessages.get(message.toolId) : null;
-                if (toolMessage) Object.assign(toolMessage, message);
+                if (toolMessage && message.kind === 'tool_result') toolMessage.toolResult = { content: String(message.content ?? ''), isError: Boolean(message.isError) };
+                else if (toolMessage) Object.assign(toolMessage, message);
                 else {
                   messages.push(message);
                   if (message.toolId) toolMessages.set(message.toolId, message);
@@ -438,6 +449,11 @@ export class ZcodeProvider extends AbstractProvider {
           if (report.providerId !== plan.providerId || report.modelId !== model) {
             stop(`Headless ZCode reported ${report.providerId}/${report.modelId}, not the requested ${plan.providerId}/${model} (${plan.label})`);
           }
+        }
+
+        if (event.type === 'turn.completed' && typeof payload?.resultType === 'string' && payload.resultType !== 'success') {
+          failed = true;
+          emit({ event: 'error', content: `ZCode turn ended: ${payload.resultType}` });
         }
 
         if (event.event === 'error' || event.type === 'turn.failed') {
