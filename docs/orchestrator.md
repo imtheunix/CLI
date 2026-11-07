@@ -106,11 +106,16 @@ While a session is busy, a message can still wait for it (the queue), or go to t
 ```
 tjob new "<title>" [--repo PATH] [--backend auto|claude|codex|glm|agy|zcode] [--model ID] [--base BRANCH] [--prompt TEXT]   # else the prompt from stdin
 tjob ls | show <id> | done <id> | cancel <id> | retry <id> | resume <id>
+tjob rollback <id> <turn>
 ```
 
 `--model` takes a model the backend offers, as its full id or the part after the `/` (`--model glm-5.3` for the full GLM). Any other is refused, naming the ones offered. With `--backend auto`, the model picks the backend. `tjob ls` shows each job's model.
 
 It talks to the local server with the token in `~/.cloudcli/orchestrator.token` (0600), sent on curl's stdin.
+
+### Per-turn checkpoints and rollback
+
+When a job's turn ends, the orchestrator snapshots its whole worktree (committed or not, untracked files included; ignored files excluded) onto `refs/tribeira/checkpoints/<job>/<turn>`, one checkpoint per ended turn. The snapshot is a `git write-tree` through a temporary index, so HEAD, the real index and the stash are never touched (the approach follows T3 Code's CheckpointStore, MIT). `tjob rollback <id> <turn>` restores the worktree files to how that turn left them: tracked files come back at their checkpoint content, files created after the checkpoint are removed, checkpoint-untracked files come back untracked, ignored files stay put, and HEAD never moves — commits made after the checkpoint survive and show up as unstaged differences. Rollback refuses while the job is running or being prepared, and it refuses the repository main checkout (shared with every other session); a worktree removed by cleanup is recreated from the job's branch first. When a job merges or is cleaned up, its checkpoint refs are pruned so git can garbage-collect the snapshots.
 
 ## Hub events log
 

@@ -2,6 +2,7 @@ import express from 'express';
 import type { NextFunction, Request, RequestHandler, Response } from 'express';
 
 import type { OrchestratorBackend } from '@/modules/database/index.js';
+import type { JobCheckpointRollbackResult } from '@/shared/types.js';
 import { AppError, asyncHandler, createApiSuccessResponse } from '@/shared/utils.js';
 
 import { JOB_KINDS, type JobsService, type OrchestratorJobKind } from './services/jobs.service.js';
@@ -38,6 +39,17 @@ function readBackend(value: unknown): OrchestratorBackend | null {
   return backend as OrchestratorBackend;
 }
 
+function readCheckpointTurn(value: unknown): number {
+  const turn = typeof value === 'number' ? value : Number(typeof value === 'string' ? value.trim() : NaN);
+  if (!Number.isInteger(turn) || turn < 1) {
+    throw new AppError('turn must be a checkpoint number (a positive integer)', {
+      code: 'INVALID_CHECKPOINT_TURN',
+      statusCode: 400,
+    });
+  }
+  return turn;
+}
+
 /**
  * Builds the Orchestrator router. Local tools present the orchestrator token
  * (`Authorization: Bearer <token>`); the web app its usual login.
@@ -48,6 +60,8 @@ export function createOrchestratorRouter(services: {
   hubWake: HubWakeService;
   caps: () => Record<OrchestratorBackend, number>;
   authenticate: RequestHandler;
+  /** `tjob rollback`: restore a job's worktree from a per-turn checkpoint (Worktrees module). */
+  rollbackJobCheckpoint: (jobId: string, turn: number) => Promise<JobCheckpointRollbackResult>;
 }): express.Router {
   const router = express.Router();
 
@@ -139,6 +153,13 @@ export function createOrchestratorRouter(services: {
 
   router.post('/:id/resume', asyncHandler(async (req, res) => {
     res.json(createApiSuccessResponse({ job: await services.jobs.resume(String(req.params.id)) }));
+  }));
+
+  router.post('/:id/rollback', asyncHandler(async (req, res) => {
+    const body = (req.body && typeof req.body === 'object' ? req.body : {}) as Record<string, unknown>;
+    const jobId = String(req.params.id);
+    const rollback = await services.rollbackJobCheckpoint(jobId, readCheckpointTurn(body.turn));
+    res.json(createApiSuccessResponse({ rollback, job: services.jobs.get(jobId) }));
   }));
 
   router.post('/:id/retry', asyncHandler(async (req, res) => {

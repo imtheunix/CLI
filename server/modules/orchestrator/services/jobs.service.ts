@@ -13,6 +13,7 @@ import {
 import type { OrchestratorBackend, OrchestratorEffectRow, OrchestratorJobRow, OrchestratorMergeStepEvent } from '@/modules/database/index.js';
 import { abortTurn } from '@/modules/detached-turns/index.js';
 import { providerAuthService, providerTokenUsageService, sessionsService } from '@/modules/providers/index.js';
+import { captureJobCheckpoint, runGitCommand } from '@/modules/worktrees/index.js';
 import { chatRunRegistry, runDetachedChatTurn } from '@/modules/websocket/index.js';
 import type { ProviderRuntimeGateway } from '@/modules/websocket/index.js';
 import { AppError } from '@/shared/index.js';
@@ -168,6 +169,9 @@ export function createJobsService(deps: {
   const preparing = new Set<string>();
   const cleaning = new Set<string>();
   const cleanupAttempted = new Set<string>();
+  // In-flight per-turn checkpoints; `afterCheckpoints` lets lifecycle tests wait
+  // until the worktrees they remove are no longer being snapshotted.
+  const pendingCheckpoints = new Set<Promise<unknown>>();
 
   function loads(): Record<OrchestratorBackend, number> {
     const counts: Record<OrchestratorBackend, number> = { claude: 0, codex: 0, glm: 0, agy: 0, zcode: 0 };
@@ -692,6 +696,11 @@ export function createJobsService(deps: {
       return Boolean(job.session_id && (chatRunRegistry.isProcessing(job.session_id) || deps.runtime.hasBackgroundWork(job.session_id)));
     },
 
+    /** Lifecycle tests await this so they remove job worktrees only after in-flight checkpoints finished. */
+    async afterCheckpoints(): Promise<void> {
+      await Promise.allSettled([...pendingCheckpoints]);
+    },
+
     /**
      * A turn ended, finished or stopped: either way the job keeps its slot. A
      * stop is a change of direction or more context coming, not the end of
@@ -704,6 +713,14 @@ export function createJobsService(deps: {
       for (const row of orchestratorEffectsDb.listByJob(job.id, 'start_turn')) {
         if (row.state === 'running' && !liveTurnKeys.has(row.key)) outbox.finish(row.key, { ok: true, note: 'turn ended (re-attached)' });
       }
+      // One checkpoint per ended turn (T3 Code-style): snapshot the worktree as the
+      // agent left it, so `tjob rollback` can restore any earlier turn. Best effort
+      // and fire-and-forget: a failed snapshot never blocks the job's state handling.
+      const capture = captureJobCheckpoint({ jobId: job.id, worktreePath: job.worktree_path }, { runGit: runGitCommand });
+      pendingCheckpoints.add(capture);
+      void capture
+        .finally(() => pendingCheckpoints.delete(capture))
+        .catch((error) => console.warn(`[Orchestrator] Checkpoint ${job.id} failed`, error));
       if ((job.backend === 'glm' || job.backend === 'zcode') && !completion.aborted && job.state === 'active') {
         const errors = chatRunRegistry.getRun(completion.appSessionId)?.events
           .filter((event) => event.kind === 'error').map((event) => String(event.content ?? '')).join('\n') ?? '';
