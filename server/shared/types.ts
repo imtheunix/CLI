@@ -1681,3 +1681,40 @@ export type ProviderRuntimeGateway = {
 };
 
 // ---------------------------
+//----------------- JOB TOKEN USAGE AND PRICING ------------
+/**
+ * Token rates per token for notional equivalent API cost calculations.
+ *
+ * Modeled after LiteLLM's model_prices format subset. All values are in USD per token.
+ * Cache read rates apply to cached prompt tokens, cache creation rates to newly written cache.
+ */
+export type ModelTokenRates = {
+  inputCostPerToken: number;
+  outputCostPerToken: number;
+  cacheReadCostPerToken: number;
+  cacheCreationCostPerToken: number;
+};
+
+/**
+ * Token totals and notional equivalent API cost for a job's session.
+ *
+ * For plan-billed backends (Claude subscription, Codex plan, Zcode/GLM plan, agy),
+ * costs are not actual spend; they represent an equivalent API cost clearly labelled
+ * as notional, never as spend. Unknown models report costSource 'unpriced' and
+ * notionalCostUsd null (never 0).
+ */
+export type JobTokenUsage = {
+  inputTokens: number;
+  outputTokens: number;
+  cacheTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
+  totalTokens: number;
+  model: string | null;
+  notionalCostUsd: number | null;
+  costSource: 'notional' | 'unpriced';
+  isNotional: true;
+};
+
+// ---------------------------
+

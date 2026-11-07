@@ -13,5 +13,9 @@ export { sessionsService } from './services/sessions.service.js';
 // providerAuthService: used by the Orchestrator to probe a backend's login before resuming a job that waited on it.
 export { providerAuthService } from './services/provider-auth.service.js';
 
+// providerTokenUsageService: used by orchestrator jobs service and routes to compute token usage and notional cost.
+export { providerTokenUsageService } from './services/provider-token-usage.service.js';
+export { clearScanCache } from './services/usage-scan-cache.service.js';
+
 export { initializeSessionsWatcher } from './services/sessions-watcher.service.js';
 export { closeSessionsWatcher } from './services/sessions-watcher.service.js';

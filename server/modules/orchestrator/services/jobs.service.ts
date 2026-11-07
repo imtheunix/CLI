@@ -1,4 +1,3 @@
-import { cleanupJob } from './cleanup.service.js';
 import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
@@ -13,12 +12,13 @@ import {
 } from '@/modules/database/index.js';
 import type { OrchestratorBackend, OrchestratorEffectRow, OrchestratorJobRow, OrchestratorMergeStepEvent } from '@/modules/database/index.js';
 import { abortTurn } from '@/modules/detached-turns/index.js';
-import { providerAuthService, sessionsService } from '@/modules/providers/index.js';
+import { providerAuthService, providerTokenUsageService, sessionsService } from '@/modules/providers/index.js';
 import { chatRunRegistry, runDetachedChatTurn } from '@/modules/websocket/index.js';
 import type { ProviderRuntimeGateway } from '@/modules/websocket/index.js';
 import { AppError } from '@/shared/index.js';
-import type { LLMProvider } from '@/shared/types.js';
+import type { JobTokenUsage, LLMProvider } from '@/shared/types.js';
 
+import { cleanupJob } from './cleanup.service.js';
 import { getEffectOutbox, readEffectPayload } from './effect-outbox.service.js';
 import type { EffectOutbox, EffectReplayHandler } from './effect-outbox.service.js';
 import { detectGlmQuotaReset, getGlmQuotaReset, recordGlmQuotaReset } from './glm-quota.service.js';
@@ -68,6 +68,8 @@ export type OrchestratorJobView = OrchestratorJobRow & {
   checkLogPath: string | null;
   /** `tjob ls`: the job waits on its provider (usage limit or login); resumesAt is null when only the hub can resume it. */
   limitWait: { failureClass: 'usage_limit' | 'auth_required'; resumesAt: string | null; waitsForHub: boolean } | null;
+  /** Token usage and notional API cost calculated from session transcript. */
+  usage: JobTokenUsage | null;
 };
 
 export type OrchestratorMergeStepTiming = OrchestratorMergeStepEvent & { durationMs: number | null };
@@ -182,14 +184,16 @@ export function createJobsService(deps: {
   function view(job: OrchestratorJobRow): OrchestratorJobView {
     const processing = job.session_id ? chatRunRegistry.isProcessing(job.session_id) : false;
     const session = job.session_id ? sessionsDb.getSessionById(job.session_id) : null;
+    const model = job.model ?? (session as { model?: string | null } | null)?.model ?? null;
     return {
       ...job,
       quotaFallback: job.backend === 'agy' && Boolean(job.last_error?.startsWith('GLM quota-exhausted')),
       activity: job.state === 'active' ? (processing ? 'working' : 'waiting') : null,
       mergeSteps: mergeStepTimings(readMergeStepHistory(job), now().getTime()),
       checkLogPath: existsSync(getCheckLogPath(job.worktree_path)) ? getCheckLogPath(job.worktree_path) : null,
-      model: job.model ?? (session as { model?: string | null } | null)?.model ?? null,
+      model,
       limitWait: limitWait(job),
+      usage: job.session_id ? providerTokenUsageService.getJobTokenUsage(job.session_id, model) : null,
     };
   }
 
