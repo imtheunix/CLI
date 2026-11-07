@@ -283,8 +283,8 @@ export class ZcodeProvider extends AbstractProvider {
       const model = rawModel && rawModel.toLowerCase().includes('glm-5.3') && !rawModel.toLowerCase().includes('flash')
         ? 'GLM-5.3'
         : MODEL;
-      const effort = typeof options.effort === 'string' ? options.effort : 'medium';
-      if (!EFFORTS.includes(effort)) throw new AppError(`Unsupported zcode effort: ${effort}`, { statusCode: 400 });
+      // ZCode only accepts these three levels; an invalid level silently selects full GLM.
+      const effort = options.effort === 'low' || options.effort === 'max' ? options.effort : 'high';
 
       const args = ['-p', command, '--output-format', 'stream-json'];
       if (conversation) args.push('--resume', conversation);

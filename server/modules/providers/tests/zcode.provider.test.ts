@@ -32,6 +32,7 @@ else {
 // Like headless ZCode 0.17.1: an unentitled default silently becomes the Coding Plan's full GLM-5.3.
 const home = process.env.HOME;
 const selection = JSON.parse(fs.readFileSync(home + '/.zcode/v2/provider_config.json', 'utf8')).config.defaultModelSelection;
+if (!['low', 'high', 'max'].includes(selection.options?.reasoningLevel)) throw new Error('Invalid ZCode reasoning level');
 fs.appendFileSync(home + '/runs.log', selection.providerId + '/' + selection.modelId + '\\n');
 const honored = (process.env.ZCODE_TEST_HONORED || 'account:zai-individual-coding-plan').split(',');
 let [providerId, modelId] = honored.includes(selection.providerId) && selection.options && selection.options.reasoningLevel
@@ -176,6 +177,16 @@ test('zcode launches, streams split NDJSON, configures GLM-5.3-Flash, persists h
     const raw = await readFile(path.join(root, '.cloudcli', 'zcode', 'app-1.jsonl'), 'utf8');
     assert.equal(raw.split('\n').filter(Boolean).length, 18);
   });
+});
+
+test('zcode maps every effort to a supported reasoning level', async () => {
+  await withCli(async (root, provider) => {
+    for (const [effort, expected] of [[undefined, 'high'], ['low', 'low'], ['medium', 'high'], ['high', 'high'], ['max', 'max'], ['unknown', 'high']] as const) {
+      await provider.runtime.run('test', { sessionId: 'effort-test', cwd: root, effort }, { send: () => {} }, context(null));
+      const config = JSON.parse(await readFile(path.join(root, '.zcode', 'v2', 'provider_config.json'), 'utf8'));
+      assert.equal(config.config.defaultModelSelection.options.reasoningLevel, expected);
+    }
+  }, { ZCODE_TEST_HONORED: 'account:zai-offpeak-idle-plan,account:zai-start-plan,account:zai-individual-coding-plan' });
 });
 
 test('zcode streams native multi-step events before the process exits and restores history', async () => {
