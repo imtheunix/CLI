@@ -210,13 +210,13 @@ export function createJobsService(deps: {
   function handleLimitFailure(job: OrchestratorJobRow, appSessionId: string, exitCode: number): boolean {
     const run = chatRunRegistry.getRun(appSessionId);
     const events = run?.events ?? [];
-    // Claude reports its limits as an assistant message, the others as error events.
-    const text = [
-      ...events.filter((event) => event.kind === 'error'),
-      ...events.filter((event) => event.kind === 'text').slice(-3),
-    ].map((event) => String(event.content ?? '')).join('\n');
-    if (!job.backend || !text) return false;
-    const failure = classifyTurnFailure(job.backend, text, now());
+    // Only the provider's own error events (with Claude's SDK error code), never assistant prose or tool output.
+    const signals = events.filter((event) => event.kind === 'error').map((event) => ({
+      message: String(event.content ?? ''),
+      code: typeof event.errorCode === 'string' ? event.errorCode : null,
+    }));
+    if (!job.backend || signals.length === 0) return false;
+    const failure = classifyTurnFailure(job.backend, signals, now());
     if (failure.failureClass === 'other') return false;
     const previous = readLimitRecovery(job.limit_recovery);
     const result = armLimitRecovery({
@@ -253,7 +253,7 @@ export function createJobsService(deps: {
       if (chatRunRegistry.isProcessing(job.session_id)) continue;
       if (action === 'expire') {
         saveRecovery(job.id, { ...recovery, gaveUp: true });
-        appendHubEvent({ jobId: job.id, state: 'waiting', title: job.title, reason: 'usage-limit recovery more than 24 h overdue; waiting for the hub' });
+        appendHubEvent({ jobId: job.id, state: 'waiting', title: job.title, reason: `${recovery.kind === 'auth_required' ? 'login wait' : 'usage-limit recovery'} past 24 h since the first failure; waiting for the hub` });
         continue;
       }
       if (action === 'probe') {
@@ -621,7 +621,8 @@ export function createJobsService(deps: {
           return;
         }
       }
-      if (completion.exitCode !== 0 && !completion.aborted && job.state === 'active' && handleLimitFailure(job, completion.appSessionId, completion.exitCode)) return;
+      // Not gated on the exit code: Claude ends a turn that hit its limit with exit code 0 and an error event.
+      if (!completion.aborted && job.state === 'active' && handleLimitFailure(job, completion.appSessionId, completion.exitCode)) return;
       orchestratorJobsDb.update(job.id, {
         in_turn: 0,
         // A turn that did not stop on a limit or login ends the streak.

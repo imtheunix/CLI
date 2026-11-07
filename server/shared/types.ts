@@ -341,6 +341,11 @@ export type NormalizedMessage = {
   role?: 'user' | 'assistant';
   content?: string;
   /**
+   * On `error` events: the provider's structured error code when it reports one (today: the Claude
+   * SDK's assistant `error`, e.g. `rate_limit`, `authentication_failed`).
+   */
+  errorCode?: string;
+  /**
    * The model that produced this assistant message, as the provider reported
    * it on the transcript row (today: Claude's `message.model`, e.g.
    * `claude-opus-5`). Absent on user turns — no provider records which model a

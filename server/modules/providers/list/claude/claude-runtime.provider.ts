@@ -1672,6 +1672,15 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
         ws.send(msg);
       }
 
+      // The SDK marks an assistant message that stands for an API failure (usage limit, expired
+      // login) with `error`; surface it as an error event carrying that code.
+      if (message.type === 'assistant' && !message.parent_tool_use_id && typeof message.error === 'string') {
+        const failureText = (Array.isArray(message.message?.content) ? message.message.content : [])
+          .map((part: { type?: string; text?: unknown }) => (part?.type === 'text' && typeof part.text === 'string' ? part.text : ''))
+          .filter(Boolean).join('\n');
+        ws.send(createNormalizedMessage({ kind: 'error', errorCode: message.error, content: failureText || message.error, sessionId: capturedSessionId || sessionId || null, provider: 'claude' }));
+      }
+
       if (
         message.type === 'assistant'
         && !message.parent_tool_use_id

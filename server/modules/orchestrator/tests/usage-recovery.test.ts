@@ -63,6 +63,54 @@ test('glm/zcode: Z.ai limits carry their UTC+8 reset', () => {
 const usage = (resetAt: Date | null): TurnFailure & { failureClass: 'usage_limit' } => ({ failureClass: 'usage_limit', resetAt, reason: 'limit' });
 const NOW = new Date('2026-11-07T12:00:00Z');
 
+// Regression cases from the hub's refute (2026-11-07, keep/probe.ts).
+test('only provider failure signals classify: a failing test that quotes the limit text is other', () => {
+  const failingTest = 'FAIL test: expected "You have hit your usage limit" to equal "ok"';
+  assert.equal(classifyTurnFailure('codex', failingTest, NOW).failureClass, 'other');
+  for (const backend of ['claude', 'codex', 'glm', 'zcode', 'agy'] as const) {
+    assert.equal(classifyTurnFailure(backend, [{ message: failingTest }, { message: `AssertionError: ${CLAUDE_SESSION}` }], NOW).failureClass, 'other', backend);
+  }
+  // Claude: the SDK's structured error code decides; its message only supplies the reset.
+  const coded = classifyTurnFailure('claude', [{ message: 'Claude Code process exited with code 1' }, { message: CLAUDE_SESSION, code: 'rate_limit' }], new Date('2026-11-03T19:02:58Z'));
+  assert.equal(coded.failureClass, 'usage_limit');
+  assert.equal(coded.resetAt?.toISOString(), '2026-11-03T22:30:00.000Z');
+  assert.equal(classifyTurnFailure('claude', [{ message: 'Your session needs attention', code: 'authentication_failed' }], NOW).failureClass, 'auth_required');
+  assert.equal(classifyTurnFailure('claude', [{ message: 'Overloaded', code: 'overloaded' }], NOW).failureClass, 'other');
+  // A provider's JSON error object counts by its message field.
+  assert.equal(classifyTurnFailure('glm', '{"name":"APIError","data":{"message":"Weekly/Monthly Limit Exhausted. Your limit will reset at 2026-11-07 12:28:03"}}', NOW).failureClass, 'usage_limit');
+});
+
+test('handling the same failed turn twice without a reset neither advances the backoff nor moves dueAt', () => {
+  const first = armLimitRecovery({ jobId: 'j', turnId: 't', failure: usage(null), previous: null, now: NOW });
+  const repeat = armLimitRecovery({ jobId: 'j', turnId: 't', failure: usage(null), previous: first.recovery, now: new Date(NOW.getTime() + 5 * 60_000) });
+  assert.equal(first.status, 'armed');
+  assert.equal(repeat.status, 'unchanged');
+  assert.deepEqual(repeat.recovery, first.recovery);
+  assert.equal(repeat.recovery.attempt, 1);
+  // Also after the continue turn was delivered, until a new turn fails.
+  const delivered = { ...first.recovery, delivered: true };
+  assert.equal(armLimitRecovery({ jobId: 'j', turnId: 't', failure: usage(null), previous: delivered, now: NOW }).status, 'unchanged');
+  assert.equal(armLimitRecovery({ jobId: 'j', turnId: 't2', failure: usage(null), previous: delivered, now: NOW }).recovery.attempt, 2);
+});
+
+test('the 24 h give-up counts from the chain\'s first failure, at delivery as well as at arming', () => {
+  const first = armLimitRecovery({ jobId: 'j', turnId: 't', failure: usage(null), previous: null, now: NOW });
+  assert.equal(first.recovery.firstFailedAt, NOW.toISOString());
+  assert.equal(dueLimitAction(first.recovery, new Date(NOW.getTime() + 24 * 3_600_000 + 60_000)), 'expire');
+  assert.equal(dueLimitAction(first.recovery, new Date(NOW.getTime() + 20 * 60_000)), 'resume');
+  // A later turn of the same chain keeps the first failure's time.
+  const later = new Date(NOW.getTime() + 23.75 * 3_600_000);
+  const second = armLimitRecovery({ jobId: 'j', turnId: 't2', failure: usage(null), previous: { ...first.recovery, delivered: true }, now: later });
+  assert.equal(second.status, 'gave_up'); // its 30 min backoff would land past 24 h
+  const withReset = armLimitRecovery({ jobId: 'j', turnId: 't2', failure: usage(new Date(later.getTime() + 10 * 60_000)), previous: { ...first.recovery, delivered: true }, now: later, random: () => 0 });
+  assert.equal(withReset.recovery.firstFailedAt, NOW.toISOString());
+  assert.equal(withReset.status, 'armed');
+  assert.equal(dueLimitAction(withReset.recovery, new Date(NOW.getTime() + 24 * 3_600_000 + 1)), 'expire');
+  // A login wait expires the same way.
+  const auth = armLimitRecovery({ jobId: 'j', turnId: 't', failure: { failureClass: 'auth_required', resetAt: null, reason: 'login' }, previous: null, now: NOW }).recovery;
+  assert.equal(dueLimitAction(auth, new Date(NOW.getTime() + 25 * 3_600_000)), 'expire');
+});
+
 test('arming is idempotent per (job, turn, resetAt)', () => {
   const resetAt = new Date('2026-11-07T14:05:00Z');
   const first = armLimitRecovery({ jobId: 'j', turnId: 't1', failure: usage(resetAt), previous: null, now: NOW, random: () => 0.5 });
@@ -104,7 +152,7 @@ test('without a reset time the job backs off 15, 30, 60 min, then waits for the 
   }
   const fourth = armLimitRecovery({ jobId: 'j', turnId: 't4', failure: usage(null), previous, now: new Date(at) });
   assert.equal(fourth.status, 'gave_up');
-  assert.equal(fourth.recovery.since, NOW.toISOString());
+  assert.equal(fourth.recovery.firstFailedAt, NOW.toISOString());
 });
 
 test('a login wait probes every 10 min and gives up after three resumes', () => {

@@ -1123,9 +1123,9 @@ test('a usage-limited claude job resumes its own session at the stated reset, on
     const created = await jobs.create({ title: 'limited', prompt: 'task', repoPath: repo, backend: 'claude', baseBranch: null });
     await eventually(() => runtime.turns.length === 1, 'claude turn');
     const sessionId = job(created.id).session_id!;
-    // Claude reports its limit as the turn's assistant text (recorded 2026-11-03).
-    chatRunRegistry.getRun(sessionId)!.writer.send({ kind: 'text', provider: 'claude', content: "You've hit your session limit · resets 3am (America/Sao_Paulo)" });
-    runtime.finish(sessionId, { exitCode: 1 });
+    // Claude's SDK marks the limit message with error: 'rate_limit' (text recorded 2026-11-03); the turn exits 0.
+    chatRunRegistry.getRun(sessionId)!.writer.send({ kind: 'error', provider: 'claude', errorCode: 'rate_limit', content: "You've hit your session limit · resets 3am (America/Sao_Paulo)" });
+    runtime.finish(sessionId);
     const limited = job(created.id);
     assert.equal(limited.state, 'active');
     assert.equal(limited.failure_class, 'usage_limit');
@@ -1133,7 +1133,7 @@ test('a usage-limited claude job resumes its own session at the stated reset, on
     const armed = limited.limit_recovery;
     assert.deepEqual(jobs.get(created.id)?.limitWait, { failureClass: 'usage_limit', resumesAt: limited.resume_at, waitsForHub: false });
     // The same failed turn reported twice arms nothing new.
-    jobs.handleRunCompleted({ appSessionId: sessionId, exitCode: 1, aborted: false });
+    jobs.handleRunCompleted({ appSessionId: sessionId, exitCode: 0, aborted: false });
     assert.equal(job(created.id).limit_recovery, armed);
     await jobs.tick();
     assert.equal(runtime.turns.length, 1);
@@ -1150,6 +1150,21 @@ test('a usage-limited claude job resumes its own session at the stated reset, on
     runtime.finish(sessionId);
     assert.equal(job(created.id).failure_class, null);
     assert.equal(job(created.id).limit_recovery, null);
+  });
+});
+
+test('limit text in assistant prose or a failing test does not arm a recovery', async () => {
+  await withWorkspace(async ({ repo, jobs, runtime, job }) => {
+    const created = await jobs.create({ title: 'prose', prompt: 'task', repoPath: repo, backend: 'codex', baseBranch: null });
+    await eventually(() => runtime.turns.length === 1, 'codex turn');
+    const sessionId = job(created.id).session_id!;
+    const writer = chatRunRegistry.getRun(sessionId)!.writer;
+    writer.send({ kind: 'text', provider: 'codex', content: 'You’ve hit your usage limit. Try again at 10:47 AM.' });
+    writer.send({ kind: 'error', provider: 'codex', content: 'FAIL test: expected "You have hit your usage limit" to equal "ok"' });
+    runtime.finish(sessionId, { exitCode: 1 });
+    assert.equal(job(created.id).failure_class, null);
+    assert.equal(job(created.id).limit_recovery, null);
+    assert.equal(job(created.id).last_error, 'The last turn ended with exit code 1');
   });
 });
 
