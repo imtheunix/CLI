@@ -53,6 +53,8 @@ export interface IProviderRuntime {
    * settled, or the id was never one of its own.
    */
   stopBackgroundTask?(sessionId: string, taskId: string): Promise<boolean>;
+  /** Checks whether the provider child process for this session is actively running. */
+  isProcessAlive?(sessionId: string): boolean;
 }
 
 /**

@@ -1,5 +1,5 @@
 export { appendFilesInputTag, buildCodexInputItems, normalizeImageDescriptors } from './image-attachments.js';
-export { AppError, createCompleteMessage, createNormalizedMessage } from './utils.js';
+export { AppError, createCompleteMessage, createNormalizedMessage, getZcodeTranscriptPath } from './utils.js';
 export type { AnyRecord, ProviderRuntimeContext, ProviderRuntimeWriter, ProviderRuntimeGateway } from './types.js';
 
 export { findSpawningProviderSessionId } from './spawn-lineage.js';

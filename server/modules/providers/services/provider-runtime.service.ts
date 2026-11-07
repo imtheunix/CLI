@@ -122,6 +122,11 @@ export function createProviderRuntimeService(
         (provider) => provider.runtime.permissions?.listPending(sessionId) ?? [],
       );
     },
+
+    isProcessAlive(sessionId: string): boolean {
+      return dependencies.listProviders().some((provider) =>
+        Boolean(provider.runtime.isProcessAlive?.(sessionId)));
+    },
   };
 }
 

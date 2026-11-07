@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -498,6 +498,182 @@ test('stall detection: emits stalled event when working job has no transcript ac
     assert.ok(runtime.turns[0].command.includes('[tjob] stall-job Stalled Agent Job: stalled, no transcript activity for 10m'));
 
     // Another tick immediately after must NOT emit duplicate stall event
+    await service.tick();
+    assert.equal(runtime.turns.length, 1, 'does not duplicate stall event on subsequent ticks');
+
+    runtime.finish(config.hub!.sessionId);
+    service.stop();
+  });
+});
+
+test('stall detection: zcode job with transcript being appended does not alarm even past 30m', async () => {
+  await withTestContext(async ({ dir, config, runtime, eventsLogPath, offsetPath, clock }) => {
+    config.hub!.stallMin = 30; // 30 minutes stall threshold
+    config.hub!.debounceSec = 0; // immediate delivery for test
+
+    const zcodeDir = path.join(dir, 'zcode');
+    mkdirSync(zcodeDir, { recursive: true });
+
+    const jobSessionId = 'zcode-active-session';
+    const transcriptFile = path.join(zcodeDir, `${jobSessionId}.jsonl`);
+
+    // Initial transcript write
+    appendFileSync(transcriptFile, JSON.stringify({ event: 'user', content: 'Do work with GLM' }) + '\n');
+    utimesSync(transcriptFile, clock.now, clock.now);
+
+    // ZCode session has null jsonl_path in sessions table
+    sessionsDb.createSession(
+      jobSessionId,
+      'zcode',
+      dir,
+      'Active GLM Agent',
+      clock.now.toISOString(),
+      clock.now.toISOString(),
+      null,
+    );
+
+    const job = orchestratorJobsDb.create({
+      id: 'zcode-active-job',
+      title: 'Active GLM Job',
+      prompt: 'Do work with GLM',
+      repoPath: dir,
+      baseBranch: 'main',
+      branch: 'feature/zcode-active',
+      worktreePath: dir,
+      requestedBackend: 'zcode',
+    });
+
+    orchestratorJobsDb.update(job.id, {
+      state: 'active',
+      session_id: jobSessionId,
+      in_turn: 1,
+    });
+
+    chatRunRegistry.startRun({
+      appSessionId: jobSessionId,
+      provider: 'zcode',
+      providerSessionId: 'provider-active-job',
+      connection: null,
+      userId: null,
+    });
+
+    const service = createHubWakeService({
+      config: () => config,
+      runtime: runtime.gateway,
+      now: () => clock.now,
+      eventsLogPath,
+      offsetPath,
+      zcodeTranscriptsDir: zcodeDir,
+      isZcodeProcessAlive: () => true,
+    });
+    service.start();
+
+    // 10 minutes in: fake zcode transcript being appended with a skipped event
+    clock.advance(10 * 60);
+    appendFileSync(transcriptFile, JSON.stringify({ event: 'error', content: 'ZCode Built-in skipped (not-due)\n' }) + '\n');
+    await service.tick();
+    assert.equal(runtime.turns.length, 0, 'not stalled at 10 minutes');
+
+    // 25 minutes in: stream delta appended
+    clock.advance(15 * 60);
+    appendFileSync(transcriptFile, JSON.stringify({ event: 'stream_delta', content: 'generating code...' }) + '\n');
+    await service.tick();
+    assert.equal(runtime.turns.length, 0, 'not stalled at 25 minutes');
+
+    // 40 minutes from start (exceeds 30m stallMin): another line appended
+    clock.advance(15 * 60);
+    appendFileSync(transcriptFile, JSON.stringify({ event: 'tool_use', toolName: 'RunCommand' }) + '\n');
+    await service.tick();
+    assert.equal(runtime.turns.length, 0, 'no alarm at 40 minutes because transcript is actively appended');
+
+    // 50 minutes from start: only 10m since last append, still active
+    clock.advance(10 * 60);
+    await service.tick();
+    assert.equal(runtime.turns.length, 0, 'no alarm at 50 minutes (only 10m elapsed since last activity)');
+
+    runtime.finish(config.hub!.sessionId);
+    service.stop();
+  });
+});
+
+test('stall detection: zcode job with frozen transcript emits stalled event after 30 min', async () => {
+  await withTestContext(async ({ dir, config, runtime, eventsLogPath, offsetPath, clock }) => {
+    config.hub!.stallMin = 30; // 30 minutes stall threshold
+    config.hub!.debounceSec = 0; // immediate delivery for test
+
+    const zcodeDir = path.join(dir, 'zcode');
+    mkdirSync(zcodeDir, { recursive: true });
+
+    const jobSessionId = 'zcode-frozen-session';
+    const transcriptFile = path.join(zcodeDir, `${jobSessionId}.jsonl`);
+
+    // Initial transcript write at start
+    appendFileSync(transcriptFile, JSON.stringify({ event: 'user', content: 'Frozen task' }) + '\n');
+    utimesSync(transcriptFile, clock.now, clock.now);
+
+    sessionsDb.createSession(
+      jobSessionId,
+      'zcode',
+      dir,
+      'Frozen GLM Agent',
+      clock.now.toISOString(),
+      clock.now.toISOString(),
+      null,
+    );
+
+    const job = orchestratorJobsDb.create({
+      id: 'zcode-frozen-job',
+      title: 'Frozen GLM Job',
+      prompt: 'Frozen work',
+      repoPath: dir,
+      baseBranch: 'main',
+      branch: 'feature/zcode-frozen',
+      worktreePath: dir,
+      requestedBackend: 'zcode',
+    });
+
+    orchestratorJobsDb.update(job.id, {
+      state: 'active',
+      session_id: jobSessionId,
+      in_turn: 1,
+    });
+
+    chatRunRegistry.startRun({
+      appSessionId: jobSessionId,
+      provider: 'zcode',
+      providerSessionId: 'provider-frozen-job',
+      connection: null,
+      userId: null,
+    });
+
+    const service = createHubWakeService({
+      config: () => config,
+      runtime: runtime.gateway,
+      now: () => clock.now,
+      eventsLogPath,
+      offsetPath,
+      zcodeTranscriptsDir: zcodeDir,
+      isZcodeProcessAlive: () => true,
+    });
+    service.start();
+
+    // Initial tick at 0m: not stalled
+    await service.tick();
+    assert.equal(runtime.turns.length, 0, 'not stalled at start');
+
+    // 15 minutes in: not stalled yet (15m < 30m)
+    clock.advance(15 * 60);
+    await service.tick();
+    assert.equal(runtime.turns.length, 0, 'not stalled yet at 15 minutes');
+
+    // 31 minutes in: exceeds stallMin (30m) with transcript completely frozen
+    clock.advance(16 * 60);
+    await service.tick();
+
+    assert.equal(runtime.turns.length, 1, 'stall event delivered to hub after 30m without transcript activity');
+    assert.ok(runtime.turns[0].command.includes('[tjob] zcode-frozen-job Frozen GLM Job: stalled, no transcript activity for 30m'));
+
+    // Another tick immediately after must NOT duplicate stall event
     await service.tick();
     assert.equal(runtime.turns.length, 1, 'does not duplicate stall event on subsequent ticks');
 

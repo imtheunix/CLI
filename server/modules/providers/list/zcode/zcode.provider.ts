@@ -15,7 +15,7 @@ import {
 import { AbstractProvider } from '@/modules/providers/shared/base/abstract.provider.js';
 import type { IProviderRuntime, IProviderSessions, IProviderModels, IProviderAuth, IProviderMcp, IProviderSkills, IProviderSessionSynchronizer } from '@/shared/interfaces.js';
 import type { AnyRecord, NormalizedMessage, ProviderModelsDefinition } from '@/shared/types.js';
-import { AppError, createCompleteMessage, createNormalizedMessage, getZcodeDatabasePath, normalizeProviderTimestamp, readObjectRecord, sliceTailPage } from '@/shared/utils.js';
+import { AppError, createCompleteMessage, createNormalizedMessage, getZcodeDatabasePath, getZcodeTranscriptPath, normalizeProviderTimestamp, readObjectRecord, sliceTailPage } from '@/shared/utils.js';
 
 const MODEL = 'GLM-5.3-Flash';
 const EFFORTS = ['low', 'medium', 'high', 'max'];
@@ -28,7 +28,7 @@ const catalog: ProviderModelsDefinition = {
 };
 
 function transcriptPath(sessionId: string): string {
-  return path.join(os.homedir(), '.cloudcli', 'zcode', `${encodeURIComponent(sessionId)}.jsonl`);
+  return getZcodeTranscriptPath(sessionId);
 }
 
 function nativeZcodeHistory(targetProviderSessionId: string, sessionId: string): NormalizedMessage[] {
@@ -328,7 +328,21 @@ export class ZcodeProvider extends AbstractProvider {
       this.stopped.add(sessionId);
       return stopZcodeProcess(child);
     },
+    isProcessAlive: (sessionId) => this.isProcessAlive(sessionId),
   };
+
+  /** Checks whether the zcode child process for this session is actively running. */
+  isProcessAlive(sessionId: string): boolean {
+    const child = this.processes.get(sessionId);
+    if (!child || child.killed || child.exitCode !== null) return false;
+    if (typeof child.pid !== 'number') return false;
+    try {
+      process.kill(child.pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  }
 
   /**
    * One run on one plan. Its events are held back until ZCode reports the requested provider/model and either

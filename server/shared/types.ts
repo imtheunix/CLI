@@ -1810,6 +1810,8 @@ export type ProviderRuntimeGateway = {
   hasBackgroundWork(sessionId: string): boolean;
   resolveToolApproval(requestId: string, payload: ProviderPermissionDecision): void;
   getPendingApprovalsForSession(sessionId: string): unknown[];
+  /** Checks whether the provider child process for this session is actively running. */
+  isProcessAlive?(sessionId: string): boolean;
 };
 
 // ---------------------------

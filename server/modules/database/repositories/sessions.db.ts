@@ -2,7 +2,7 @@ import { getConnection } from '@/modules/database/connection.js';
 import { projectsDb } from '@/modules/database/repositories/projects.db.js';
 import { normalizeProjectPath } from '@/shared/utils.js';
 
-type SessionRow = {
+export type SessionRow = {
   session_id: string;
   provider: string;
   provider_session_id: string | null;

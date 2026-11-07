@@ -9,10 +9,13 @@ import {
   runningTurnsDb,
   sessionsDb,
   userDb,
+  type OrchestratorBackend,
+  type OrchestratorJobRow,
+  type SessionRow,
 } from '@/modules/database/index.js';
 import { chatRunRegistry, runDetachedChatTurn } from '@/modules/websocket/index.js';
 import type { ProviderRuntimeGateway } from '@/modules/websocket/index.js';
-import { AppError } from '@/shared/index.js';
+import { AppError, getZcodeTranscriptPath } from '@/shared/index.js';
 
 import {
   appendHubEvent,
@@ -160,7 +163,27 @@ export type HubWakeDependencies = {
   runTurn?: typeof runDetachedChatTurn;
   /** The durable effect outbox; defaults to this process's. */
   outbox?: EffectOutbox;
+  /** Optional directory for zcode transcripts (defaults to ~/.cloudcli/zcode). */
+  zcodeTranscriptsDir?: string;
+  /** Optional hook to check if zcode child process is alive. */
+  isZcodeProcessAlive?: (sessionId: string) => boolean;
 };
+
+/**
+ * Determines whether an orchestrator job is running on the ZCode backend.
+ * Consuming files: hub-wake.service.ts, hub-wake.service.test.ts.
+ */
+export function isZcodeJob(
+  job: OrchestratorJobRow,
+  session?: SessionRow | null,
+  cfg?: OrchestratorConfig,
+): boolean {
+  if (job.backend === 'zcode' || job.requested_backend === 'zcode') return true;
+  if (session?.provider === 'zcode') return true;
+  if (job.backend && cfg?.backends?.[job.backend as OrchestratorBackend]?.provider === 'zcode') return true;
+  if (job.backend === 'glm' && (cfg?.glmProvider === 'zcode' || cfg?.backends?.glm?.provider === 'zcode' || !cfg?.backends?.glm)) return true;
+  return false;
+}
 
 /**
  * Why a wake must not be delivered from this process, or null when it may. Outside the
@@ -234,6 +257,7 @@ export function createHubWakeService(deps: HubWakeDependencies) {
   let lastEventTimeMs = 0;
 
   const lastStallEmitted = new Map<string, number>();
+  const lastZcodeStats = new Map<string, { size: number; mtimeMs: number; lastActivityMs: number }>();
   let stallsLoaded = false;
 
   function getOffsetPath(): string {
@@ -526,6 +550,11 @@ export function createHubWakeService(deps: HubWakeDependencies) {
         pruned = true;
       }
     }
+    for (const jobId of lastZcodeStats.keys()) {
+      if (!activeJobIds.has(jobId)) {
+        lastZcodeStats.delete(jobId);
+      }
+    }
     if (pruned) {
       saveStallsState();
     }
@@ -538,20 +567,72 @@ export function createHubWakeService(deps: HubWakeDependencies) {
           lastStallEmitted.delete(job.id);
           saveStallsState();
         }
+        lastZcodeStats.delete(job.id);
         continue;
       }
 
       let lastActivityMs = 0;
 
-      // 1. Session jsonl transcript mtime
+      // 1. Session jsonl transcript mtime / activity
       const session = sessionsDb.getSessionById(job.session_id);
-      if (session?.jsonl_path) {
-        try {
-          if (fs.existsSync(session.jsonl_path)) {
-            const stat = fs.statSync(session.jsonl_path);
-            if (stat.mtimeMs > lastActivityMs) lastActivityMs = stat.mtimeMs;
-          }
-        } catch {}
+      const isZcode = isZcodeJob(job, session, cfg);
+
+      if (isZcode) {
+        let isProcessAlive = true;
+        if (typeof deps.isZcodeProcessAlive === 'function') {
+          isProcessAlive = deps.isZcodeProcessAlive(job.session_id);
+        } else if (typeof deps.runtime.isProcessAlive === 'function') {
+          isProcessAlive = deps.runtime.isProcessAlive(job.session_id);
+        }
+
+        const zcodeDir = deps.zcodeTranscriptsDir ?? process.env.ZCODE_TRANSCRIPTS_DIR;
+        const defaultZcodePath = zcodeDir
+          ? path.join(zcodeDir, `${encodeURIComponent(job.session_id)}.jsonl`)
+          : getZcodeTranscriptPath(job.session_id);
+        const candidatePaths = [
+          defaultZcodePath,
+          ...(session?.jsonl_path && session.jsonl_path !== defaultZcodePath ? [session.jsonl_path] : []),
+        ];
+
+        for (const transcriptPath of candidatePaths) {
+          try {
+            if (fs.existsSync(transcriptPath)) {
+              const stat = fs.statSync(transcriptPath);
+              if (stat.mtimeMs > lastActivityMs) {
+                lastActivityMs = stat.mtimeMs;
+              }
+
+              const prevStats = lastZcodeStats.get(job.id);
+              if (prevStats) {
+                if (stat.size !== prevStats.size || stat.mtimeMs > prevStats.mtimeMs) {
+                  if (isProcessAlive) {
+                    lastActivityMs = Math.max(lastActivityMs, stat.mtimeMs, nowMs);
+                    lastZcodeStats.set(job.id, { size: stat.size, mtimeMs: stat.mtimeMs, lastActivityMs });
+                  } else {
+                    lastZcodeStats.set(job.id, { size: stat.size, mtimeMs: stat.mtimeMs, lastActivityMs: prevStats.lastActivityMs });
+                  }
+                } else {
+                  if (prevStats.lastActivityMs > lastActivityMs) {
+                    lastActivityMs = prevStats.lastActivityMs;
+                  }
+                }
+              } else {
+                lastZcodeStats.set(job.id, { size: stat.size, mtimeMs: stat.mtimeMs, lastActivityMs });
+              }
+              break;
+            }
+          } catch {}
+        }
+      } else {
+        // Keep Claude/Codex/agy behavior unchanged
+        if (session?.jsonl_path) {
+          try {
+            if (fs.existsSync(session.jsonl_path)) {
+              const stat = fs.statSync(session.jsonl_path);
+              if (stat.mtimeMs > lastActivityMs) lastActivityMs = stat.mtimeMs;
+            }
+          } catch {}
+        }
       }
 
       // 2. Detached turn log mtime & start time

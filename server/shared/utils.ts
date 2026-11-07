@@ -1050,6 +1050,15 @@ export function getZcodeDatabasePath(): string {
 }
 
 /**
+ * Resolves the path to a ZCode session's streaming JSONL transcript file.
+ * Stored under `~/.cloudcli/zcode/<session_id>.jsonl`.
+ * Consuming modules: HubWakeService, ZcodeProvider, ProviderTokenUsageService.
+ */
+export function getZcodeTranscriptPath(sessionId: string): string {
+  return path.join(os.homedir(), '.cloudcli', 'zcode', `${encodeURIComponent(sessionId)}.jsonl`);
+}
+
+/**
  * Decodes an OpenCode text payload that was persisted as a JSON string literal.
  *
  * OpenCode can store the first user prompt (and other text parts) as `"hello"`
