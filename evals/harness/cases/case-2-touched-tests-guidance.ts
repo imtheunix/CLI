@@ -1,5 +1,5 @@
 // Based on ideas from T3 Code (evals/mcp-tool-use, evals/test-signal, evals/README.md), MIT licensed.
-import { loadOrchestratorConfig } from '@/modules/orchestrator/index.js';
+import { loadOrchestratorConfig } from '@/modules/orchestrator/services/orchestrator-config.service.js';
 import { assembleLivePrompt, maybeCallCheapModel } from '../runner.js';
 import type { HarnessCase } from '../types.js';
 

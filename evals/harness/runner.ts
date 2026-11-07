@@ -1,6 +1,6 @@
 // Based on ideas from T3 Code (evals/mcp-tool-use, evals/test-signal, evals/README.md), MIT licensed.
 import type { OrchestratorJobRow } from '@/modules/database/index.js';
-import { buildJobPrompt } from '@/modules/orchestrator/index.js';
+import { buildJobPrompt } from '@/modules/orchestrator/services/jobs.service.js';
 import { calculatePromptHash, estimateTokenCount } from './summary.js';
 import type { HarnessCaseSetup } from './types.js';
 

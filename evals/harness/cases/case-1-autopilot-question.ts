@@ -1,5 +1,5 @@
 // Based on ideas from T3 Code (evals/mcp-tool-use, evals/test-signal, evals/README.md), MIT licensed.
-import { TOOLS_REQUIRING_INTERACTION } from '@/modules/providers/index.js';
+import { TOOLS_REQUIRING_INTERACTION } from '@/modules/providers/list/claude/claude-runtime.provider.js';
 import { TOOL_CONFIGS } from '../../../src/modules/chat/tools/configs/toolConfigs.js';
 import { assembleLivePrompt, maybeCallCheapModel } from '../runner.js';
 import type { HarnessCase } from '../types.js';

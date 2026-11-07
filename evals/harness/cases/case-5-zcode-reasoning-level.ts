@@ -2,7 +2,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { planCandidates, writeZcodeSelection } from '@/modules/providers/index.js';
+import { planCandidates, writeZcodeSelection } from '@/modules/providers/list/zcode/zcode-selection.js';
 import { assembleLivePrompt } from '../runner.js';
 import type { HarnessCase } from '../types.js';
 
