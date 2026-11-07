@@ -13,6 +13,14 @@ export { sessionsService } from './services/sessions.service.js';
 // providerAuthService: used by the Orchestrator to probe a backend's login before resuming a job that waited on it.
 export { providerAuthService } from './services/provider-auth.service.js';
 
+// zcode probe: used by the Orchestrator dispatch path to probe ZCode login before starting GLM/zcode turns.
+export {
+  isZcodeProbeHealthy,
+  probeZcodeLogin,
+  recordZcodeSuccess,
+  resetZcodeProbeCache,
+} from './list/zcode/zcode-probe.js';
+
 // providerTokenUsageService: used by orchestrator jobs service and routes to compute token usage and notional cost.
 export { providerTokenUsageService } from './services/provider-token-usage.service.js';
 export { clearScanCache } from './services/usage-scan-cache.service.js';

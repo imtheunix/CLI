@@ -949,6 +949,17 @@ export type ProviderAuthStatus = {
   subscriptionOverride?: ProviderAuthSubscriptionOverride;
 };
 
+/**
+ * Outcome of a cheap ZCode login probe.
+ *
+ * Used by the providers module and orchestrator dispatch path to verify that
+ * ZCode's token exchange succeeds before starting a turn, or report when
+ * `project_token_login_failed` requires re-authentication.
+ */
+export type ZcodeProbeResult =
+  | { ok: true }
+  | { ok: false; error: 'login_failed' | 'timeout' | 'error'; message: string };
+
 // ---------------------------
 //----------------- SHARED DATABASE CREDENTIAL TYPES ------------
 /**

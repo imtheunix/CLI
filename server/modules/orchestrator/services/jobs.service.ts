@@ -12,12 +12,18 @@ import {
 } from '@/modules/database/index.js';
 import type { OrchestratorBackend, OrchestratorEffectRow, OrchestratorJobRow, OrchestratorMergeStepEvent } from '@/modules/database/index.js';
 import { abortTurn } from '@/modules/detached-turns/index.js';
-import { providerAuthService, providerTokenUsageService, sessionsService } from '@/modules/providers/index.js';
+import {
+  probeZcodeLogin,
+  providerAuthService,
+  providerTokenUsageService,
+  recordZcodeSuccess,
+  sessionsService,
+} from '@/modules/providers/index.js';
 import { captureJobCheckpoint, runGitCommand } from '@/modules/worktrees/index.js';
 import { chatRunRegistry, runDetachedChatTurn } from '@/modules/websocket/index.js';
 import type { ProviderRuntimeGateway } from '@/modules/websocket/index.js';
 import { AppError } from '@/shared/index.js';
-import type { JobTokenUsage, LLMProvider } from '@/shared/types.js';
+import type { JobTokenUsage, LLMProvider, ZcodeProbeResult } from '@/shared/types.js';
 
 import { cleanupJob } from './cleanup.service.js';
 import { getEffectOutbox, readEffectPayload } from './effect-outbox.service.js';
@@ -32,7 +38,7 @@ import {
   nextAuthProbe,
   readLimitRecovery,
 } from './usage-recovery.service.js';
-import type { LimitRecovery } from './usage-recovery.service.js';
+import type { LimitRecovery, TurnFailure } from './usage-recovery.service.js';
 import { isInGlmPeakHours, pickBackend } from './balancer.service.js';
 import { modelLabel, resolveRequestedModel } from './orchestrator-config.service.js';
 import type { OrchestratorConfig } from './orchestrator-config.service.js';
@@ -150,6 +156,8 @@ export function createJobsService(deps: {
   prepareProjectMap?: (worktreePath: string) => Promise<string>;
   /** The login check a job waiting with auth_required probes (at most every 10 min); tests stub it. */
   probeAuth?: (provider: LLMProvider) => Promise<boolean>;
+  /** Probe ZCode login before dispatching a GLM/zcode turn; tests stub it. */
+  probeZcode?: (options?: { now?: Date; timeoutMs?: number }) => Promise<ZcodeProbeResult>;
   /** The durable effect outbox; tests give each simulated server process its own. */
   outbox?: EffectOutbox;
   /** The per-turn checkpoint capture; tests inject a failing one to prove a failed snapshot never fails the turn. */
@@ -161,8 +169,13 @@ export function createJobsService(deps: {
   // start_turn rows whose turn promise this process holds; the others (re-attached after a restart) close on completion.
   const liveTurnKeys = new Set<string>();
   const prepareProjectMap = deps.prepareProjectMap ?? prepareJobProjectMap;
+  const probeZcode = deps.probeZcode ?? probeZcodeLogin;
   const probeAuth = deps.probeAuth ?? (async (provider: LLMProvider) => {
     try {
+      if (provider === 'zcode') {
+        const probe = await probeZcode({ now: now() });
+        return probe.ok;
+      }
       return (await providerAuthService.getProviderAuthStatus(provider)).authenticated;
     } catch {
       return false;
@@ -263,6 +276,36 @@ export function createJobsService(deps: {
     return true;
   }
 
+  /**
+   * Holds a job in auth_required when a dispatch probe discovers a failed login before starting a turn.
+   * Emits one hub-wake event for a new login wait; subsequent ticks probe at most every 10 min.
+   */
+  function holdForAuthRequired(job: OrchestratorJobRow, reason: string): void {
+    const failure: TurnFailure = { failureClass: 'auth_required', resetAt: null, reason };
+    const previous = readLimitRecovery(job.limit_recovery);
+    const result = armLimitRecovery({
+      jobId: job.id,
+      turnId: String(now().getTime()),
+      failure: { ...failure, failureClass: 'auth_required' },
+      previous,
+      now: now(),
+    });
+    orchestratorJobsDb.update(job.id, { in_turn: 0, last_error: `auth_required: ${reason}` });
+    if (result.status === 'unchanged') return;
+    saveRecovery(job.id, result.recovery);
+    const login = true;
+    if (result.status !== 'armed' || (login && previous?.kind !== 'auth_required')) {
+      appendHubEvent({
+        jobId: job.id,
+        state: 'waiting',
+        title: job.title,
+        reason: result.status === 'armed'
+          ? `login needed for ${job.backend}; resumes when its login check passes (${reason})`
+          : `login needed, ${result.status === 'refused' ? 'stated reset already past' : 'recovery exhausted'}; waiting for the hub (${reason})`,
+      });
+    }
+  }
+
   /** Tick: delivers due recoveries (continue turn) and probes logins, at most once per due time. */
   async function sweepLimitRecoveries(): Promise<void> {
     for (const job of orchestratorJobsDb.listByState(['active'])) {
@@ -335,6 +378,15 @@ export function createJobsService(deps: {
   async function sendTurn(job: OrchestratorJobRow, content: string, resumeKey: string | null = null): Promise<boolean> {
     if (!job.session_id || !job.backend || orchestratorJobsDb.get(job.id)?.state === 'cancelled') return false;
     const backend = deps.config().backends[job.backend];
+
+    if (job.backend === 'glm' || job.backend === 'zcode' || backend.provider === 'zcode') {
+      const probe = await probeZcode({ now: now() });
+      if (!probe.ok && probe.error === 'login_failed') {
+        holdForAuthRequired(job, probe.message);
+        return false;
+      }
+    }
+
     // Recorded before the turn starts; process-bound: a restart never starts it again (recover() decides).
     const turnKey = `turn:${job.id}:${randomUUID()}`;
     const begun = outbox.begin({ key: turnKey, jobId: job.id, kind: 'start_turn', replay: 'process_bound', payload: { sessionId: job.session_id, resumeKey } });
@@ -748,6 +800,11 @@ export function createJobsService(deps: {
       }
       // Not gated on the exit code: Claude ends a turn that hit its limit with exit code 0 and an error event.
       if (!completion.aborted && job.state === 'active' && handleLimitFailure(job, completion.appSessionId, completion.exitCode)) return;
+      if (!completion.aborted && completion.exitCode === 0) {
+        if (job.backend && (job.backend === 'glm' || job.backend === 'zcode' || deps.config().backends[job.backend]?.provider === 'zcode')) {
+          recordZcodeSuccess(now());
+        }
+      }
       orchestratorJobsDb.update(job.id, {
         in_turn: 0,
         // A turn that did not stop on a limit or login ends the streak.

@@ -116,7 +116,7 @@ async function withWorkspace(
   tune(config);
 
   const runtime = createRuntime();
-  const jobs = createJobsService({ runtime: runtime.gateway, config: () => config, ...extraDeps });
+  const jobs = createJobsService({ runtime: runtime.gateway, config: () => config, probeZcode: async () => ({ ok: true }), ...extraDeps });
   const unsubscribe = chatRunRegistry.onRunCompleted((completion) => jobs.handleRunCompleted(completion));
   try {
     await runTest({ root, repo, upstream, config, runtime, jobs, job: (id) => orchestratorJobsDb.get(id) as OrchestratorJobRow });

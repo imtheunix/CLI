@@ -7,12 +7,18 @@ import test from 'node:test';
 import type { NormalizedMessage, ProviderRuntimeContext } from '@/shared/types.js';
 
 import { ZcodeProvider } from '../list/zcode/zcode.provider.js';
+import {
+  isZcodeProbeHealthy,
+  probeZcodeLogin,
+  recordZcodeSuccess,
+  resetZcodeProbeCache,
+} from '../list/zcode/zcode-probe.js';
 
 // ZCode reports reset times in UTC+8; keep the fixture in the future on every run.
 const quotaReset = new Date(Math.floor((Date.now() + 7 * 86400_000) / 1000) * 1000);
 const quotaResetInChina = new Date(quotaReset.getTime() + 8 * 3600_000).toISOString().slice(0, 19).replace('T', ' ');
 
-const PLAN_ENV = ['ZCODE_TEST_HONORED', 'ZCODE_TEST_EXHAUSTED', 'ZCODE_TEST_FORCE'];
+const PLAN_ENV = ['ZCODE_TEST_HONORED', 'ZCODE_TEST_EXHAUSTED', 'ZCODE_TEST_FORCE', 'ZCODE_TEST_LOGIN_FAILED', 'ZCODE_TEST_PROBE_HANG'];
 
 async function withCli(run: (root: string, provider: ZcodeProvider) => Promise<void>, env: Record<string, string> = {}) {
   const root = await mkdtemp(path.join(os.tmpdir(), 'zcode-provider-'));
@@ -27,6 +33,18 @@ fs.writeFileSync(process.env.ZCODE_TEST_ARGS, JSON.stringify(args));
 if (args[1] === 'hang') { setInterval(() => {}, 1000); }
 else if (args[0] === 'version') {
   process.stdout.write('ZCode 0.17.1\\n');
+}
+else if (args[0] === '-p' && args[1] === 'ok') {
+  if (process.env.ZCODE_TEST_LOGIN_FAILED) {
+    process.stderr.write("[project-access-token] { family: 'zai', stage: 'resolve', code: 'project_token_login_failed' }\\n");
+    process.exit(1);
+  }
+  if (process.env.ZCODE_TEST_PROBE_HANG) {
+    setInterval(() => {}, 1000);
+  } else {
+    process.stdout.write(JSON.stringify({ event: 'result', result: { status: 'SUCCESS' } }) + '\\n');
+    process.exit(0);
+  }
 }
 else {
 // Like headless ZCode 0.17.1: an unentitled default silently becomes the Coding Plan's full GLM-5.3.
@@ -296,4 +314,68 @@ test('zcode auth status reflects installed binary and credentials file existence
     assert.equal(statusAfter.installed, true);
     assert.equal(statusAfter.authenticated, true);
   });
+});
+
+test('zcode probe returns ok when healthy and caches for 10 minutes', async () => {
+  resetZcodeProbeCache();
+  await withCli(async (root) => {
+    const t0 = new Date('2026-11-07T10:00:00.000Z');
+    assert.equal(isZcodeProbeHealthy(t0), false);
+
+    const result = await probeZcodeLogin({ now: t0 });
+    assert.equal(result.ok, true);
+    assert.equal(isZcodeProbeHealthy(t0), true);
+
+    // 5 minutes later: still healthy via cache
+    const t5 = new Date('2026-11-07T10:05:00.000Z');
+    assert.equal(isZcodeProbeHealthy(t5), true);
+    const cached = await probeZcodeLogin({ now: t5 });
+    assert.equal(cached.ok, true);
+
+    // 11 minutes later: cache expired
+    const t11 = new Date('2026-11-07T10:11:00.000Z');
+    assert.equal(isZcodeProbeHealthy(t11), false);
+
+    // A successful turn refreshes the 10-minute window
+    recordZcodeSuccess(t11);
+    assert.equal(isZcodeProbeHealthy(t11), true);
+    assert.equal(isZcodeProbeHealthy(new Date('2026-11-07T10:20:00.000Z')), true);
+    assert.equal(isZcodeProbeHealthy(new Date('2026-11-07T10:22:00.000Z')), false);
+  });
+  resetZcodeProbeCache();
+});
+
+test('zcode probe detects project_token_login_failed and clears cache', async () => {
+  resetZcodeProbeCache();
+  await withCli(async () => {
+    const t0 = new Date('2026-11-07T10:00:00.000Z');
+    recordZcodeSuccess(t0);
+    assert.equal(isZcodeProbeHealthy(t0), true);
+
+    // When probe encounters project_token_login_failed
+    resetZcodeProbeCache();
+    const result = await probeZcodeLogin({ now: t0 });
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.equal(result.error, 'login_failed');
+      assert.match(result.message, /project_token_login_failed/);
+    }
+    assert.equal(isZcodeProbeHealthy(t0), false);
+  }, { ZCODE_TEST_LOGIN_FAILED: '1' });
+  resetZcodeProbeCache();
+});
+
+test('zcode probe handles timeout and reports error without caching', async () => {
+  resetZcodeProbeCache();
+  await withCli(async () => {
+    const t0 = new Date('2026-11-07T10:00:00.000Z');
+    const result = await probeZcodeLogin({ timeoutMs: 100, now: t0 });
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.equal(result.error, 'timeout');
+      assert.match(result.message, /timed out after 100ms/);
+    }
+    assert.equal(isZcodeProbeHealthy(t0), false);
+  }, { ZCODE_TEST_PROBE_HANG: '1' });
+  resetZcodeProbeCache();
 });

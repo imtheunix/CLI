@@ -7,6 +7,7 @@ import { randomUUID } from 'node:crypto';
 import Database from 'better-sqlite3';
 
 import { ZcodeSessionSynchronizer } from '@/modules/providers/list/zcode/zcode-session-synchronizer.provider.js';
+import { recordZcodeSuccess } from '@/modules/providers/list/zcode/zcode-probe.js';
 import {
   acquireZcodeConfigLock, classifyPlanFailure, planCandidates, recordPlanUnavailable, recordSessionPlan, unavailableUntil, writeZcodeSelection,
   type ZcodePlan,
@@ -315,6 +316,9 @@ export class ZcodeProvider extends AbstractProvider {
         });
         if (outcome.done || this.stopped.has(sessionId)) { exitCode = outcome.done ? outcome.exitCode : 1; break; }
         record({ event: 'provider_fallback', providerId: plan.providerId, plan: plan.label, modelId: model, reason: outcome.reason });
+      }
+      if (exitCode === 0 && !options.abortController?.signal.aborted) {
+        recordZcodeSuccess();
       }
       writer.send(createCompleteMessage({ provider: 'zcode', sessionId, exitCode, aborted: Boolean(options.abortController?.signal.aborted) }));
     },
