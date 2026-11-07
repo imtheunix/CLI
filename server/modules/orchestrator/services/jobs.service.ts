@@ -101,8 +101,8 @@ function firstUserId(): number | null {
   return typeof user?.id === 'number' ? user.id : null;
 }
 
-/** The first turn of a job: the task, plus how a job ends. */
-function buildJobPrompt(
+// buildJobPrompt: used by orchestrator jobs and evals/harness to assemble live prompt text.
+export function buildJobPrompt(
   job: OrchestratorJobRow,
   label: string,
   projectMapGuidance: string,

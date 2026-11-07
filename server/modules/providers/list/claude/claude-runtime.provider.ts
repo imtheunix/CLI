@@ -101,7 +101,8 @@ const TOOL_APPROVAL_TIMEOUT_MS = parseInt(process.env.CLAUDE_TOOL_APPROVAL_TIMEO
 // forever. The timer resets on every message, so it measures silence, not total time.
 const BG_WAIT_CEILING_MS = 30 * 60 * 1000;
 
-const TOOLS_REQUIRING_INTERACTION = new Set(['AskUserQuestion', 'ExitPlanMode']);
+// TOOLS_REQUIRING_INTERACTION: used by Claude runtime and evals/harness to identify interactive blocking tools.
+export const TOOLS_REQUIRING_INTERACTION = new Set(['AskUserQuestion', 'ExitPlanMode']);
 
 // Ultracode is a session-scoped setting rather than an SDK effort level: it pairs xhigh
 // effort with standing dynamic-workflow orchestration, and the CLI only honours it when

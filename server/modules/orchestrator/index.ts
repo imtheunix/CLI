@@ -7,3 +7,8 @@ export type { HubEventInput, HubEventState } from './services/hub-events.service
 export { createHubWakeService } from './services/hub-wake.service.js';
 export type { HubWakeService, HubWakeDependencies, LoggedHubEvent } from './services/hub-wake.service.js';
 export type { HubWakeConfig } from './services/orchestrator-config.service.js';
+// buildJobPrompt: used by evals/harness to assemble live job prompts for deterministic replay.
+export { buildJobPrompt } from './services/jobs.service.js';
+// loadOrchestratorConfig: used by evals/harness and orchestrator to read live config and jobGuidance.
+export { loadOrchestratorConfig } from './services/orchestrator-config.service.js';
+export type { OrchestratorConfig } from './services/orchestrator-config.service.js';

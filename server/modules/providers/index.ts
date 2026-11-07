@@ -15,3 +15,10 @@ export { providerAuthService } from './services/provider-auth.service.js';
 
 export { initializeSessionsWatcher } from './services/sessions-watcher.service.js';
 export { closeSessionsWatcher } from './services/sessions-watcher.service.js';
+
+// TOOLS_REQUIRING_INTERACTION: used by evals/harness to verify interactive blocking tools in unattended jobs.
+export { TOOLS_REQUIRING_INTERACTION } from './list/claude/claude-runtime.provider.js';
+
+// ZCode plan and model selection: used by evals/harness to verify ZCode model and reasoningLevel selection.
+export { writeZcodeSelection, readSelectionState, planCandidates, classifyPlanFailure, ZCODE_PLANS } from './list/zcode/zcode-selection.js';
+export type { ZcodePlan } from './list/zcode/zcode-selection.js';
