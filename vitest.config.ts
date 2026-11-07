@@ -11,38 +11,38 @@ const evalsDir = fileURLToPath(new URL('./evals', import.meta.url));
 // added alongside the state refactor rely on real effects, DOM events and
 // localStorage — none of which run under react-dom/server.
 export default defineConfig({
+  plugins: [
+    {
+      name: 'alias-server-modules',
+      enforce: 'pre',
+      resolveId(source, importer) {
+        if (!importer || (!importer.includes('/server/') && !importer.includes('/evals/'))) {
+          return null;
+        }
+        let subpath: string | null = null;
+        if (source.startsWith('@/')) {
+          subpath = source.slice(2);
+        } else if (source.startsWith(srcDir)) {
+          subpath = source.slice(srcDir.length + 1);
+        }
+        if (!subpath) return null;
+
+        const absPath = path.resolve(serverDir, subpath);
+        const tsPath = absPath.replace(/\.js$/, '.ts');
+        if (existsSync(tsPath)) return tsPath;
+        const tsxPath = absPath.replace(/\.js$/, '.tsx');
+        if (existsSync(tsxPath)) return tsxPath;
+        if (existsSync(absPath)) return absPath;
+        const indexTs = path.join(absPath, 'index.ts');
+        if (existsSync(indexTs)) return indexTs;
+        return absPath;
+      },
+    },
+  ],
   resolve: {
-    alias: [
-      {
-        find: '@src',
-        replacement: srcDir,
-      },
-      {
-        find: '@server',
-        replacement: serverDir,
-      },
-      {
-        find: '@evals',
-        replacement: evalsDir,
-      },
-      {
-        find: /^@\/(.*)$/,
-        replacement: '$1',
-        customResolver(id, importer) {
-          const isServerOrEval = importer && (importer.includes('/server/') || importer.includes('/evals/'));
-          const basePath = isServerOrEval ? serverDir : srcDir;
-          const target = path.resolve(basePath, id);
-          const tsTarget = target.replace(/\.js$/, '.ts');
-          if (existsSync(tsTarget)) return tsTarget;
-          const tsxTarget = target.replace(/\.js$/, '.tsx');
-          if (existsSync(tsxTarget)) return tsxTarget;
-          if (existsSync(target)) return target;
-          const indexTs = path.join(target, 'index.ts');
-          if (existsSync(indexTs)) return indexTs;
-          return target;
-        },
-      },
-    ],
+    alias: {
+      '@': srcDir,
+    },
   },
   define: {
     __APP_VERSION__: JSON.stringify('0.0.0-test'),
