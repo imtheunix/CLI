@@ -152,8 +152,11 @@ export function createJobsService(deps: {
   probeAuth?: (provider: LLMProvider) => Promise<boolean>;
   /** The durable effect outbox; tests give each simulated server process its own. */
   outbox?: EffectOutbox;
+  /** The per-turn checkpoint capture; tests inject a failing one to prove a failed snapshot never fails the turn. */
+  captureCheckpoint?: (job: { jobId: string; worktreePath: string }) => Promise<unknown>;
 }) {
   const now = deps.now ?? (() => new Date());
+  const captureCheckpoint = deps.captureCheckpoint ?? ((job: { jobId: string; worktreePath: string }) => captureJobCheckpoint(job, { runGit: runGitCommand }));
   const outbox = deps.outbox ?? getEffectOutbox();
   // start_turn rows whose turn promise this process holds; the others (re-attached after a restart) close on completion.
   const liveTurnKeys = new Set<string>();
@@ -714,9 +717,19 @@ export function createJobsService(deps: {
         if (row.state === 'running' && !liveTurnKeys.has(row.key)) outbox.finish(row.key, { ok: true, note: 'turn ended (re-attached)' });
       }
       // One checkpoint per ended turn (T3 Code-style): snapshot the worktree as the
-      // agent left it, so `tjob rollback` can restore any earlier turn. Best effort
-      // and fire-and-forget: a failed snapshot never blocks the job's state handling.
-      const capture = captureJobCheckpoint({ jobId: job.id, worktreePath: job.worktree_path }, { runGit: runGitCommand });
+      // agent left it, so `tjob rollback` can restore any earlier turn. Recorded in the
+      // outbox (non-blocking, process-bound) and fire-and-forget: a failed snapshot
+      // never fails or blocks the job's turn or its state handling.
+      const turnKey = outbox.latest(job.id, 'start_turn')?.key ?? `ended@${now().toISOString()}`;
+      let capture: Promise<unknown>;
+      try {
+        capture = outbox.run(
+          { key: `checkpoint:${turnKey}`, jobId: job.id, kind: 'checkpoint', replay: 'process_bound' },
+          () => captureCheckpoint({ jobId: job.id, worktreePath: job.worktree_path }),
+        );
+      } catch (error) {
+        capture = Promise.reject(error);
+      }
       pendingCheckpoints.add(capture);
       void capture
         .finally(() => pendingCheckpoints.delete(capture))

@@ -21,7 +21,9 @@ export type OrchestratorEffectKind =
   | 'push'
   | 'cleanup'
   | 'hub_wake'
-  | 'recovery_resume';
+  | 'recovery_resume'
+  | 'checkpoint'
+  | 'rollback';
 
 /** safe: idempotent, replayed after a restart; process_bound: tied to the process that ran it, dropped after a restart. */
 export type OrchestratorEffectReplay = 'safe' | 'process_bound';
