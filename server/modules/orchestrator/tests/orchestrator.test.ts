@@ -1542,3 +1542,62 @@ test('with codexQuotaFallback unset, a usage-limited codex job waits for its res
     assert.equal(ctx.runtime.turns.length, 1);
   });
 });
+
+// Regression (hub review, 2026-11-07): a second ZCode probe at the handover's first turn could fail and arm a
+// login wait whose resume sent only "Continue where you left off.", losing the handover prompt.
+test('a handover starts its first GLM turn on the handover probe: no second probe can drop the handover prompt', async () => {
+  let probes = 0;
+  let clock = Date.now();
+  await withWorkspace(async (ctx) => {
+    const { id } = await limitCodexTurn(ctx);
+    await ctx.jobs.afterHandovers();
+    clock += 11 * 60_000;
+    await ctx.jobs.tick();
+    await eventually(() => ctx.runtime.turns.length === 2, 'GLM Flash turn');
+    assert.equal(probes, 1, 'the handover probe is the only one before the first GLM turn');
+    assert.equal(ctx.job(id).backend, 'glm');
+    assert.equal(ctx.job(id).failure_class, null);
+    assert.match(ctx.runtime.turns[1].command, /build the widget/);
+    assert.match(ctx.runtime.turns[1].command, /Step 1 of the widget is committed/);
+    assert.equal(readBackendHandovers(ctx.job(id)).at(-1)?.pendingPrompt ?? null, null, 'sent, so no longer pending');
+  }, (config) => { config.codexQuotaFallback = 'glm-flash'; }, {
+    now: () => new Date(clock),
+    probeAuth: async () => true,
+    probeZcode: async () => {
+      probes += 1;
+      return probes === 2 ? { ok: false, error: 'login_failed', message: 'injected login failure' } : { ok: true };
+    },
+  });
+});
+
+test('a handed-over job whose first GLM turn never started resumes a login wait with the saved handover prompt', async () => {
+  let loginOk = true;
+  let clock = Date.now();
+  await withWorkspace(async (ctx) => {
+    const { id } = await limitCodexTurn(ctx);
+    await ctx.jobs.afterHandovers();
+    await eventually(() => ctx.runtime.turns.length === 2, 'GLM Flash turn');
+    const handoverPrompt = ctx.runtime.turns[1].command;
+    ctx.runtime.finish(ctx.job(id).session_id!);
+    await eventually(() => ctx.job(id).in_turn === 0, 'GLM turn end');
+    // As if the first GLM turn had never started (a restart between the handover and that turn).
+    const history = readBackendHandovers(ctx.job(id));
+    history[history.length - 1] = { ...history[history.length - 1], pendingPrompt: handoverPrompt };
+    orchestratorJobsDb.update(id, { backend_history: JSON.stringify(history) });
+    // The next turn finds the ZCode login failed: the job waits for login.
+    loginOk = false;
+    assert.equal(await ctx.jobs.notify(ctx.job(id), 'CI: lint failed'), false);
+    assert.equal(ctx.job(id).failure_class, 'auth_required');
+    // Login back: the resume carries the full handover prompt, not a bare continue line.
+    loginOk = true;
+    clock += 11 * 60_000;
+    await ctx.jobs.tick();
+    await eventually(() => ctx.runtime.turns.length === 3, 'login recovery turn');
+    assert.ok(ctx.runtime.turns[2].command.startsWith(handoverPrompt));
+    assert.equal(readBackendHandovers(ctx.job(id)).at(-1)?.pendingPrompt ?? null, null);
+  }, (config) => { config.codexQuotaFallback = 'glm-flash'; }, {
+    now: () => new Date(clock),
+    probeAuth: async () => true,
+    probeZcode: async () => (loginOk ? { ok: true } : { ok: false, error: 'login_failed', message: 'injected login failure' }),
+  });
+});

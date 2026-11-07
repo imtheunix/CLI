@@ -402,6 +402,8 @@ export function createJobsService(deps: {
   }
 
   const RESTART_PROMPT = 'The CLI server restarted while you were working. Check the state of the worktree (git status, git log) and continue where you left off.';
+  /** Resume lines a pending handover prompt replaces (anything else, e.g. a CI message, is appended to it). */
+  const GENERIC_RESUMES = new Set([LIMIT_CONTINUE_PROMPT, RESTART_PROMPT]);
 
   /** Replays a resume the old process recorded: sent once, unless its turn already started. */
   const replayResume: EffectReplayHandler = async (row, payload) => {
@@ -440,11 +442,17 @@ export function createJobsService(deps: {
   };
 
   /** Starts a turn in the job's session. False when the session is busy or gone. */
-  async function sendTurn(job: OrchestratorJobRow, content: string, resumeKey: string | null = null): Promise<boolean> {
+  async function sendTurn(
+    job: OrchestratorJobRow,
+    content: string,
+    resumeKey: string | null = null,
+    // The caller probed ZCode moments ago (a handover): no second probe before the first turn.
+    options: { zcodeProbed?: boolean } = {},
+  ): Promise<boolean> {
     if (!job.session_id || !job.backend || orchestratorJobsDb.get(job.id)?.state === 'cancelled') return false;
     const backend = deps.config().backends[job.backend];
 
-    if (job.backend === 'glm' || job.backend === 'zcode' || backend.provider === 'zcode') {
+    if (!options.zcodeProbed && (job.backend === 'glm' || job.backend === 'zcode' || backend.provider === 'zcode')) {
       const probe = await probeZcode({ now: now() });
       if (!probe.ok && probe.error === 'login_failed') {
         holdForAuthRequired(job, probe.message);
@@ -462,6 +470,12 @@ export function createJobsService(deps: {
     }
     liveTurnKeys.add(turnKey);
     orchestratorJobsDb.update(job.id, { in_turn: 1 });
+    // A handed-over job whose first turn on this backend never started: that turn carries the handover prompt.
+    const pendingPrompt = pendingHandoverPrompt(orchestratorJobsDb.get(job.id) ?? job);
+    if (pendingPrompt) {
+      if (content !== pendingPrompt) content = GENERIC_RESUMES.has(content) ? pendingPrompt : `${pendingPrompt}\n\n${content}`;
+      savePendingHandoverPrompt(job.id, null);
+    }
     const turn = runDetachedChatTurn({
       sessionId: job.session_id,
       userId: firstUserId(),
@@ -509,6 +523,20 @@ export function createJobsService(deps: {
       if (text) return text.length > 4000 ? text.slice(-4000) : text;
     }
     return null;
+  }
+
+  /** The saved first prompt of the job's latest handover, while its first turn on the new backend has not started. */
+  function pendingHandoverPrompt(job: OrchestratorJobRow): string | null {
+    const latest = readBackendHandovers(job).at(-1);
+    return latest && latest.toBackend === job.backend && latest.pendingPrompt ? latest.pendingPrompt : null;
+  }
+
+  function savePendingHandoverPrompt(jobId: string, prompt: string | null): void {
+    const job = orchestratorJobsDb.get(jobId);
+    const history = job ? readBackendHandovers(job) : [];
+    if (!history.length) return;
+    history[history.length - 1] = { ...history[history.length - 1], pendingPrompt: prompt };
+    orchestratorJobsDb.update(jobId, { backend_history: JSON.stringify(history) });
   }
 
   /** GLM's Flash model (the backend's model whose id names Flash), else GLM's default. */
@@ -569,7 +597,7 @@ export function createJobsService(deps: {
           in_turn: 0,
         }) as OrchestratorJobRow;
         // start() takes the GLM slot synchronously (state preparing, backend glm), then a new GLM session.
-        await start(updated, 'glm');
+        await start(updated, 'glm', { zcodeProbed: true });
         return true;
       },
     );
@@ -577,7 +605,7 @@ export function createJobsService(deps: {
   }
 
   /** Gives a queued (or half-prepared) job its backend, worktree and session, then starts its first turn. */
-  async function start(job: OrchestratorJobRow, backend: OrchestratorBackend): Promise<void> {
+  async function start(job: OrchestratorJobRow, backend: OrchestratorBackend, options: { zcodeProbed?: boolean } = {}): Promise<void> {
     const config = deps.config();
     const backendConfig = config.backends[backend];
     // The model asked for, when the backend that took the job offers it (a
@@ -622,7 +650,10 @@ export function createJobsService(deps: {
       if (orchestratorJobsDb.get(job.id)?.state !== 'preparing') return;
       const ready = orchestratorJobsDb.update(job.id, { session_id: sessionId, state: 'active' }) as OrchestratorJobRow;
       const repoGuidance = deps.config().jobGuidance[path.basename(ready.repo_path)] ?? '';
-      await sendTurn(ready, buildJobPrompt(ready, label, projectMapGuidance, continuation, repoGuidance, handoverNote));
+      const prompt = buildJobPrompt(ready, label, projectMapGuidance, continuation, repoGuidance, handoverNote);
+      // Saved before the turn: a failed start (login, restart) resumes with this prompt, not a bare continue line.
+      if (handoverNote) savePendingHandoverPrompt(job.id, prompt);
+      await sendTurn(orchestratorJobsDb.get(job.id) as OrchestratorJobRow, prompt, null, options);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.error(`[Orchestrator] Job ${job.id} could not start`, message);

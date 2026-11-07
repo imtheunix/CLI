@@ -30,6 +30,11 @@ export type OrchestratorBackendHandover = {
   turnKey: string;
   /** The previous agent's last message (at most 4000 characters), for the handover note. */
   lastMessage: string | null;
+  /**
+   * The full first prompt on the new backend, kept until that turn starts: any resume before then (a login wait,
+   * a restart) sends it instead of a bare continue line. Null once sent.
+   */
+  pendingPrompt?: string | null;
 };
 
 export type OrchestratorJobRow = {
