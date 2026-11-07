@@ -226,6 +226,31 @@ export function createMergeQueueService(deps: {
     setStep(job, 'deploy', { pushed_sha: head, deploy_waiting_since: new Date(now()).toISOString(), last_error: null });
   }
 
+  /**
+   * A stacked job (its base is another job's branch) lands where its parent lands: pushed onto the parent's branch it
+   * would only count as merged there. It waits while the parent is on its way, follows the parent's base once the parent
+   * is merged, and is blocked when the parent was cancelled or failed (its branch never reaches a landing branch).
+   */
+  async function landsOnItsBase(job: OrchestratorJobRow): Promise<boolean> {
+    for (let current = job, depth = 0; depth < 10; depth += 1) {
+      const parent = orchestratorJobsDb.list().find((other) =>
+        other.id !== current.id && other.repo_path === current.repo_path && other.branch === current.base_branch);
+      if (!parent) return true;
+      if (parent.merge_step === 'merged') {
+        const note = `base was job ${parent.id}'s branch ${current.base_branch}, merged into ${parent.base_branch}: lands on ${parent.base_branch}`;
+        console.warn(`[Orchestrator] Job ${job.id}: ${note}`);
+        current = orchestratorJobsDb.update(job.id, { base_branch: parent.base_branch, last_error: note }) as OrchestratorJobRow;
+        continue;
+      }
+      if (parent.state === 'cancelled' || parent.state === 'failed') {
+        await block(job, `origin/${current.base_branch} is job ${parent.id}'s branch, and that job is ${parent.state}: a push there never reaches ${parent.base_branch}, so it would not be merged. Land job ${parent.id}, or create a job based on ${parent.base_branch} with these commits.`, false);
+        return false;
+      }
+      return false; // the parent is still on its way: this job lands after it
+    }
+    return false;
+  }
+
   async function stepPush(job: OrchestratorJobRow): Promise<void> {
     const cwd = job.worktree_path;
     const head = await revParse(cwd, 'HEAD');
@@ -256,6 +281,13 @@ export function createMergeQueueService(deps: {
       }
       // A pre-push hook (the project's own checks) or the remote refused it.
       await backToAgent(job, `git push to ${job.base_branch} failed:\n\n\`\`\`\n${tail(push.stderr, 40)}\n\`\`\``);
+      return;
+    }
+    // Merged only when origin says so: a push that exits 0 but leaves the commits off the base is not a merge.
+    const after = await git(cwd, 'fetch', '--quiet', 'origin', job.base_branch);
+    if (after.code !== 0) throw new Error(`git fetch after the push failed: ${tail(after.stderr, 10)}`);
+    if ((await git(cwd, 'merge-base', '--is-ancestor', head, `origin/${job.base_branch}`)).code !== 0) {
+      await block(job, `git push to ${job.base_branch} exited 0, but ${head.slice(0, 8)} is not on origin/${job.base_branch} afterwards:\n\n\`\`\`\n${tail(push.stderr, 20)}\n\`\`\``, false);
       return;
     }
     recordPush(job, head);
@@ -346,6 +378,7 @@ export function createMergeQueueService(deps: {
     switch (job.merge_step) {
       case 'queued': {
         if (deps.jobs.isSessionBusy(job)) return; // the agent's last turn is still going
+        if (!await landsOnItsBase(job)) return;
         const laneTaken = orchestratorJobsDb.listInMergeQueue().some((other) =>
           other.id !== job.id && other.repo_path === job.repo_path && LANE_STEPS.includes(other.merge_step));
         if (!laneTaken) setStep(job, 'rebase');

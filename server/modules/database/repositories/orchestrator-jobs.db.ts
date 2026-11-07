@@ -39,11 +39,11 @@ export type OrchestratorJobRow = {
 
 type JobPatch = Partial<Pick<OrchestratorJobRow,
   'backend' | 'model' | 'session_id' | 'state' | 'in_turn' | 'merge_step' | 'merge_attempts'
-  | 'pushed_sha' | 'deploy_waiting_since' | 'last_error'>>;
+  | 'pushed_sha' | 'deploy_waiting_since' | 'last_error' | 'base_branch'>>;
 
 const PATCHABLE_COLUMNS: Array<keyof JobPatch> = [
   'backend', 'model', 'session_id', 'state', 'in_turn', 'merge_step', 'merge_attempts',
-  'pushed_sha', 'deploy_waiting_since', 'last_error',
+  'pushed_sha', 'deploy_waiting_since', 'last_error', 'base_branch',
 ];
 
 /** Used by the Orchestrator's views: a job's CI/CD queue history, oldest first. */

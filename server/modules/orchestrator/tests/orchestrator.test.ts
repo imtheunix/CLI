@@ -518,6 +518,67 @@ test('a restart between the push and recording it resumes at the deploy, without
   });
 });
 
+/** A parent job with a commit on origin/<its branch>, out of the queue, and a finished child job based on that branch. */
+async function stackedJobs(ctx: Parameters<Parameters<typeof withWorkspace>[0]>[0]) {
+  const parent = await finishedJob(ctx, (worktree) => commitFile(worktree, 'parent.txt', 'p\n', 'parent'));
+  orchestratorJobsDb.update(parent, { merge_step: 'none' });
+  const parentRow = ctx.job(parent);
+  git(parentRow.worktree_path, 'push', '-q', 'origin', `HEAD:refs/heads/${parentRow.branch}`);
+  const created = await ctx.jobs.create({ title: 'child', prompt: 'p', repoPath: ctx.repo, backend: 'glm', baseBranch: parentRow.branch });
+  await eventually(() => ctx.job(created.id).state === 'active', 'child start');
+  commitFile(ctx.job(created.id).worktree_path, 'child.txt', 'c\n', 'child');
+  ctx.runtime.finish(ctx.job(created.id).session_id!);
+  await ctx.jobs.markDone(created.id);
+  return { parent, child: created.id, parentBranch: parentRow.branch };
+}
+
+test('a job stacked on a cancelled job\'s branch is blocked, never merged into that dead branch (88328da6)', async () => {
+  await withWorkspace(async (ctx) => {
+    const { parent, child, parentBranch } = await stackedJobs(ctx);
+    const queue = createMergeQueueService({ jobs: ctx.jobs, config: () => ctx.config });
+    await queue.tick();
+    await queue.tick();
+    assert.equal(ctx.job(child).merge_step, 'queued', 'waits while its parent is on its way');
+
+    orchestratorJobsDb.update(parent, { state: 'cancelled' });
+    await drain(queue, () => ctx.job(child), ['merged', 'blocked']);
+    assert.equal(ctx.job(child).merge_step, 'blocked');
+    assert.match(ctx.job(child).last_error ?? '', /cancelled.*never reaches main/);
+    assert.equal(ctx.job(child).pushed_sha, null);
+    const parentTip = git(ctx.repo, 'ls-remote', 'origin', `refs/heads/${parentBranch}`).split('\t')[0];
+    assert.equal(parentTip, git(ctx.job(parent).worktree_path, 'rev-parse', 'HEAD'), 'nothing pushed onto the parent branch');
+  });
+});
+
+test('a job stacked on a merged job\'s branch lands on that job\'s base', async () => {
+  await withWorkspace(async (ctx) => {
+    const { parent, child } = await stackedJobs(ctx);
+    git(ctx.job(parent).worktree_path, 'push', '-q', 'origin', 'HEAD:refs/heads/main');
+    orchestratorJobsDb.update(parent, { merge_step: 'merged' });
+    ctx.config.waitForDeploy = { demo: false };
+    const queue = createMergeQueueService({ jobs: ctx.jobs, config: () => ctx.config });
+    await drain(queue, () => ctx.job(child), ['merged', 'blocked']);
+    assert.equal(ctx.job(child).merge_step, 'merged');
+    assert.equal(ctx.job(child).base_branch, 'main');
+    git(ctx.upstream, 'pull', '-q', 'origin', 'main');
+    assert.ok(existsSync(path.join(ctx.upstream, 'child.txt')));
+    assert.ok(existsSync(path.join(ctx.upstream, 'parent.txt')));
+  });
+});
+
+test('a push that exits 0 but leaves the commit off origin/<base> blocks instead of merging', async () => {
+  await withWorkspace(async (ctx) => {
+    const id = await finishedJob(ctx, (worktree) => commitFile(worktree, 'feature.txt', 'f\n', 'feature'));
+    ctx.config.waitForDeploy = { demo: false };
+    const run: typeof runCommand = async (command, args, options) =>
+      command === 'git' && args[0] === 'push' ? { code: 0, stdout: '', stderr: 'Everything up-to-date' } : runCommand(command, args, options);
+    const queue = createMergeQueueService({ jobs: ctx.jobs, config: () => ctx.config, run });
+    await drain(queue, () => ctx.job(id), ['merged', 'blocked']);
+    assert.equal(ctx.job(id).merge_step, 'blocked');
+    assert.match(ctx.job(id).last_error ?? '', /is not on origin\/main afterwards/);
+  });
+});
+
 test('the deploy is watched on Forgejo: running waits, a failure blocks and tells the agent, retry watches again', async () => {
   await withWorkspace(async (ctx) => {
     writeFileSync(ctx.config.forgejo.tokenFile, 'secret\n');
