@@ -295,6 +295,36 @@ test('cancelling a running job aborts its turn and refuses late completion', asy
   });
 });
 
+test('finished cleanup waits for sessions, supports dry run, and recreates a cancelled worktree on resume', async () => {
+  await withWorkspace(async ({ root, repo, runtime, jobs, job, config }) => {
+    config.cleanup.buildDirs.demo = path.join(root, 'build', '{id}');
+    const created = await jobs.create({ title: 'cleanup', prompt: 'work', repoPath: repo, backend: 'agy', baseBranch: null });
+    await eventually(() => runtime.turns.length === 1, 'running turn');
+    const original = job(created.id);
+    const build = path.join(root, 'build', created.id);
+    await mkdir(build, { recursive: true });
+    orchestratorJobsDb.update(created.id, { state: 'done', merge_step: 'merged' });
+    assert.match((await jobs.sweepCleanup(true))[0].status, /busy/);
+    assert.ok(existsSync(original.worktree_path));
+    runtime.finish(original.session_id!);
+    let preview = await jobs.sweepCleanup(true);
+    for (let i = 0; i < 120 && preview[0].status === 'session busy; kept'; i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      preview = await jobs.sweepCleanup(true);
+    }
+    assert.equal(preview[0].status, 'would clean');
+    assert.ok(existsSync(original.worktree_path) && existsSync(build));
+    assert.equal((await jobs.sweepCleanup())[0].status, 'cleaned');
+    assert.ok(!existsSync(original.worktree_path) && !existsSync(build));
+    git(repo, 'rev-parse', '--verify', original.branch);
+
+    orchestratorJobsDb.update(created.id, { state: 'cancelled', merge_step: 'none' });
+    await jobs.resume(created.id);
+    await eventually(() => job(created.id).state === 'active', 'resumed job');
+    assert.ok(existsSync(original.worktree_path));
+  });
+});
+
 test('a session waiting for an answer keeps its slot; only `done` with committed work frees it', async () => {
   await withWorkspace(async ({ repo, runtime, jobs, job }) => {
     const created = await jobs.create({ title: 'feature', prompt: 'p', repoPath: repo, backend: 'codex', baseBranch: null });
