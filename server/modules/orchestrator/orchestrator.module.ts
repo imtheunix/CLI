@@ -69,11 +69,11 @@ export function createOrchestratorModule(input: { runtime: ProviderRuntimeGatewa
         },
       }).catch((error) => console.error('[DetachedTurns] Reattach failed', error));
       // The outbox before anything new runs: safe effects the old process left are replayed once, process-bound
-      // ones dropped (a re-attached turn is kept), failed undos retried.
+      // ones dropped (a re-attached turn is kept), failed undos retried; a job whose undo still fails keeps its rows held.
       await getEffectOutbox().recover({ ...jobs.effectHandlers(), ...mergeQueue.effectHandlers() }, (row) => jobs.adoptEffect(row))
         .then((report) => {
-          if (report.replayed.length + report.dropped.length + report.failed.length + report.adopted.length > 0) {
-            console.log(`[Orchestrator] Effect outbox after restart: ${report.replayed.length} replayed, ${report.adopted.length} adopted, ${report.dropped.length} dropped, ${report.failed.length} failed`);
+          if (report.replayed.length + report.dropped.length + report.failed.length + report.adopted.length + report.held.length > 0) {
+            console.log(`[Orchestrator] Effect outbox after restart: ${report.replayed.length} replayed, ${report.adopted.length} adopted, ${report.dropped.length} dropped, ${report.failed.length} failed, ${report.held.length} held by a failed undo`);
           }
         })
         .catch((error) => console.error('[Orchestrator] Effect outbox recovery failed', error));

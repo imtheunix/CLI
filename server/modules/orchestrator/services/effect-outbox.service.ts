@@ -29,7 +29,7 @@ export type EffectRun<T> = { status: 'ran'; value: T } | EffectSkip;
 /** Startup: replays a safe effect cut short by the restart; must be idempotent (it may have run, fully or in part). */
 export type EffectReplayHandler = (row: OrchestratorEffectRow, payload: Record<string, unknown>) => Promise<void>;
 
-export type EffectRecoveryReport = { replayed: string[]; adopted: string[]; dropped: string[]; failed: string[] };
+export type EffectRecoveryReport = { replayed: string[]; adopted: string[]; dropped: string[]; failed: string[]; held: string[] };
 
 /** Thrown by a test's boundary hook: the process "dies" there, so nothing after it is written. */
 export class SimulatedCrash extends Error {
@@ -69,6 +69,12 @@ export function createEffectOutbox(options: { bootId?: string; boundary?: (bound
     return orchestratorEffectsDb.listByJob(jobId).find((row) => row.blocking === 1 && row.state === 'failed') ?? null;
   }
 
+  /** The per-job barrier, for live and replayed effects alike: a failed undo of the job holds its new work. */
+  function barrier(spec: Pick<EffectSpec, 'key' | 'jobId' | 'kind'>): OrchestratorEffectRow | null {
+    const blocker = GATED_KINDS.has(spec.kind) ? blockingFailure(spec.jobId) : null;
+    return blocker && blocker.key !== spec.key ? blocker : null;
+  }
+
   function begin(spec: EffectSpec): EffectBegin {
     hit('before_write', spec.key);
     const existing = orchestratorEffectsDb.get(spec.key);
@@ -76,8 +82,8 @@ export function createEffectOutbox(options: { bootId?: string; boundary?: (bound
     if (existing && (existing.state === 'pending' || existing.state === 'running') && existing.boot_id === bootId) {
       return { status: 'skipped', reason: 'in_flight', row: existing };
     }
-    const blocker = GATED_KINDS.has(spec.kind) ? blockingFailure(spec.jobId) : null;
-    if (blocker && blocker.key !== spec.key) return { status: 'skipped', reason: 'blocked', row: blocker };
+    const blocker = barrier(spec);
+    if (blocker) return { status: 'skipped', reason: 'blocked', row: blocker };
     if (!existing) {
       orchestratorEffectsDb.insert({
         key: spec.key,
@@ -180,7 +186,7 @@ export function createEffectOutbox(options: { bootId?: string; boundary?: (bound
      * are retried, so a job they block gets a chance to go on.
      */
     async recover(handlers: Partial<Record<OrchestratorEffectKind, EffectReplayHandler>>, adopt: (row: OrchestratorEffectRow) => boolean = () => false): Promise<EffectRecoveryReport> {
-      const report: EffectRecoveryReport = { replayed: [], adopted: [], dropped: [], failed: [] };
+      const report: EffectRecoveryReport = { replayed: [], adopted: [], dropped: [], failed: [], held: [] };
       orchestratorEffectsDb.prune(new Date(Date.now() - RETENTION_MS).toISOString());
       const unfinished = orchestratorEffectsDb.listByState(['pending', 'running', 'failed'])
         .filter((row) => row.boot_id !== bootId)
@@ -199,6 +205,14 @@ export function createEffectOutbox(options: { bootId?: string; boundary?: (bound
             });
             report.dropped.push(row.key);
           }
+          continue;
+        }
+        // Undos ran first, so a job whose undo still failed is known here: its gated rows wait, unfinished
+        // and still owned by the old boot, until the undo is done (`tjob resume`, the next tick, the next start).
+        const blocker = barrier({ key: row.key, jobId: row.job_id, kind: row.kind });
+        if (blocker) {
+          orchestratorEffectsDb.update(row.key, { state: 'pending', last_error: `held: undo ${blocker.key} of the job failed` });
+          report.held.push(row.key);
           continue;
         }
         const handler = handlers[row.kind];

@@ -383,6 +383,48 @@ test('a failing cleanup blocks the job: no new turn before the old work is undon
   });
 });
 
+for (const kind of ['push', 'recovery_resume'] as const) {
+  test(`startup replay keeps the job's barrier: a ${kind} cut by a restart waits while the job's cleanup still fails`, async () => {
+    await withWorkspace(async () => {
+      // Regression (refute 2026-11-07): recover() retried the failed cleanup, then replayed the push anyway.
+      const old = createEffectOutbox({ bootId: 'old' });
+      old.begin({ key: kind, jobId: 'a', kind, replay: 'safe' });
+      await assert.rejects(old.run({ key: 'cleanup', jobId: 'a', kind: 'cleanup', replay: 'safe', blocking: true }, async () => { throw new Error('cleanup failed'); }));
+      // An unrelated job's same effect is not held.
+      old.begin({ key: `${kind}-b`, jobId: 'b', kind, replay: 'safe' });
+
+      let runs = 0;
+      let cleanupFails = true;
+      const handlers = {
+        cleanup: async () => { if (cleanupFails) throw new Error('still failed'); },
+        [kind]: async () => { runs += 1; },
+      };
+      const second = createEffectOutbox({ bootId: 'new' });
+      const report = await second.recover(handlers);
+      assert.deepEqual(report.failed, ['cleanup']);
+      assert.deepEqual(report.held, [kind]);
+      assert.deepEqual(report.replayed, [`${kind}-b`]);
+      assert.equal(runs, 1, 'only the other job ran');
+      assert.equal(orchestratorEffectsDb.get(kind)?.state, 'pending');
+      assert.match(orchestratorEffectsDb.get(kind)?.last_error ?? '', /held: undo cleanup/);
+      // The live path is held too: the same effect asked for again by the state machine is blocked.
+      const live = await second.run({ key: kind, jobId: 'a', kind, replay: 'safe' }, async () => { runs += 1; });
+      assert.equal(live.status === 'skipped' && live.reason, 'blocked');
+      assert.equal(runs, 1);
+
+      // Once the cleanup succeeds (next start), the held effect runs exactly once.
+      cleanupFails = false;
+      const third = createEffectOutbox({ bootId: 'third' });
+      const after = await third.recover(handlers);
+      assert.deepEqual(after.replayed, ['cleanup', kind]);
+      assert.equal(runs, 2);
+      assert.equal(orchestratorEffectsDb.get(kind)?.state, 'done');
+      assert.deepEqual((await createEffectOutbox({ bootId: 'fourth' }).recover(handlers)).replayed, []);
+      assert.equal(runs, 2);
+    });
+  });
+}
+
 test('usage-limit resume cut after its outbox row is delivered once, by the replay', async () => {
   await withWorkspace(async (ctx) => {
     const first = ctx.boot();
