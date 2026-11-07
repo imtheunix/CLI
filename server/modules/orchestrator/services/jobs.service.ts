@@ -10,10 +10,12 @@ import {
   userDb,
 } from '@/modules/database/index.js';
 import type { OrchestratorBackend, OrchestratorJobRow, OrchestratorMergeStepEvent } from '@/modules/database/index.js';
+import { abortTurn } from '@/modules/detached-turns/index.js';
 import { sessionsService } from '@/modules/providers/index.js';
 import { chatRunRegistry, runDetachedChatTurn } from '@/modules/websocket/index.js';
 import type { ProviderRuntimeGateway } from '@/modules/websocket/index.js';
 import { AppError } from '@/shared/index.js';
+import type { LLMProvider } from '@/shared/types.js';
 
 import { detectGlmQuotaReset, getGlmQuotaReset, recordGlmQuotaReset } from './glm-quota.service.js';
 import { appendHubEvent } from './hub-events.service.js';
@@ -161,7 +163,7 @@ export function createJobsService(deps: {
 
   /** Starts a turn in the job's session. False when the session is busy or gone. */
   async function sendTurn(job: OrchestratorJobRow, content: string): Promise<boolean> {
-    if (!job.session_id || !job.backend) return false;
+    if (!job.session_id || !job.backend || orchestratorJobsDb.get(job.id)?.state === 'cancelled') return false;
     const backend = deps.config().backends[job.backend];
     orchestratorJobsDb.update(job.id, { in_turn: 1 });
     const turn = runDetachedChatTurn({
@@ -206,6 +208,7 @@ export function createJobsService(deps: {
       });
       const projectMapGuidance = await prepareProjectMap(job.worktree_path);
 
+      if (orchestratorJobsDb.get(job.id)?.state !== 'preparing') return;
       let sessionId = job.session_id;
       if (sessionId && sessionsDb.getSessionById(sessionId)?.provider !== backendConfig.provider) sessionId = null;
       if (!sessionId) {
@@ -221,7 +224,7 @@ export function createJobsService(deps: {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.error(`[Orchestrator] Job ${job.id} could not start`, message);
-      orchestratorJobsDb.update(job.id, { state: 'failed', last_error: message });
+      if (orchestratorJobsDb.get(job.id)?.state === 'preparing') orchestratorJobsDb.update(job.id, { state: 'failed', last_error: message });
     } finally {
       preparing.delete(job.id);
     }
@@ -382,6 +385,9 @@ export function createJobsService(deps: {
       if (!await hasCommitsAhead(job.worktree_path, job.base_branch)) {
         throw new AppError(`The branch has no commits ahead of origin/${job.base_branch}`, { code: 'JOB_EMPTY', statusCode: 409 });
       }
+      if (orchestratorJobsDb.get(id)?.state !== job.state) {
+        throw new AppError(`Job ${id} is no longer active`, { code: 'JOB_NOT_ACTIVE', statusCode: 409 });
+      }
       const mergeStep = deps.config().review ? 'review' : 'queued';
       orchestratorJobsDb.update(id, { state: 'done', merge_step: mergeStep, merge_attempts: 0,
                                        pushed_sha: null, last_error: null });
@@ -417,7 +423,17 @@ export function createJobsService(deps: {
       if (['rebase', 'check', 'push', 'deploy', 'merged'].includes(job.merge_step)) {
         throw new AppError(`Job ${id} is already in the CI/CD queue (${job.merge_step})`, { code: 'JOB_MERGING', statusCode: 409 });
       }
-      orchestratorJobsDb.update(id, { state: 'cancelled', merge_step: 'none' });
+      orchestratorJobsDb.update(id, { state: 'cancelled', merge_step: 'none', in_turn: 0 });
+      if (job.session_id) {
+        const run = chatRunRegistry.getRun(job.session_id);
+        if (run?.status === 'running') {
+          run.abortController.abort();
+          chatRunRegistry.completeRunIfCurrent(run, { exitCode: 0, aborted: true });
+        }
+        abortTurn(job.session_id);
+        const session = sessionsDb.getSessionById(job.session_id);
+        if (session) await deps.runtime.abort(session.provider as LLMProvider, job.session_id);
+      }
       await this.tick();
       return view(orchestratorJobsDb.get(id) as OrchestratorJobRow);
     },

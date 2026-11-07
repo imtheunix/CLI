@@ -721,6 +721,10 @@ export async function reattachActiveTurns(options: {
   console.log(`[DetachedTurns] Inspecting ${turns.length} in-flight turn(s) across restarts...`);
 
   for (const turn of turns) {
+    if (turn.job_id && orchestratorJobsDb.get(turn.job_id)?.state === 'cancelled') {
+      abortTurn(turn.session_id);
+      continue;
+    }
     const alive = isTurnAlive(turn.unit_name);
 
     if (alive) {

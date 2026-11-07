@@ -51,7 +51,7 @@ function createRuntime() {
       stopBackgroundTask: async () => false,
       resolveToolApproval: () => undefined,
       getPendingApprovalsForSession: () => [],
-      abort: async () => true,
+      abort: async (_provider: string, sessionId: string) => { open.get(sessionId)?.(); open.delete(sessionId); return true; },
       run: (_provider: string, command: string, options: Record<string, unknown>, writer: TurnWriter) => {
         const sessionId = String(options.sessionId);
         turns.push({ sessionId, command, options });
@@ -279,6 +279,20 @@ test('a requested backend at its cap sends the job to GLM; with GLM full too, it
     await eventually(() => job(waiting.id).state === 'active', 'd to start');
     assert.equal(job(waiting.id).backend, 'claude');
   }, (config) => { config.backends.glm.cap = 1; });
+});
+
+test('cancelling a running job aborts its turn and refuses late completion', async () => {
+  await withWorkspace(async ({ repo, runtime, jobs, job }) => {
+    const created = await jobs.create({ title: 'cancel running', prompt: 'work', repoPath: repo, backend: 'agy', baseBranch: null });
+    await eventually(() => runtime.turns.length === 1, 'running turn');
+    const sessionId = job(created.id).session_id!;
+    await jobs.cancel(created.id);
+    assert.equal(job(created.id).state, 'cancelled');
+    assert.equal(chatRunRegistry.isProcessing(sessionId), false);
+    await assert.rejects(jobs.markDone(created.id), /not active/);
+    await jobs.recover();
+    assert.equal(runtime.turns.length, 1);
+  });
 });
 
 test('a session waiting for an answer keeps its slot; only `done` with committed work frees it', async () => {

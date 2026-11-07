@@ -1,6 +1,6 @@
 import type { ProviderRuntimeGateway } from '@/shared/index.js';
 import { dispatchQueuedChatMessage } from '@/modules/websocket/services/queued-chat.service.js';
-import { sessionDraftsDb } from '@/modules/database/index.js';
+import { orchestratorJobsDb, sessionDraftsDb } from '@/modules/database/index.js';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 
@@ -217,6 +217,11 @@ async function dispatchRun(
   beforeRun?: (run: NonNullable<ReturnType<typeof chatRunRegistry.startRun>>) => void | Promise<void>,
 ): Promise<{ started: boolean; error: string | null }> {
   const provider = session.provider as LLMProvider;
+  if (orchestratorJobsDb.getBySessionId(sessionId)?.state === 'cancelled') {
+    const error = 'This job is cancelled; resume it before starting another turn.';
+    if (ws) sendProtocolError(ws, 'JOB_CANCELLED', error, sessionId);
+    return { started: false, error };
+  }
 
   const run = chatRunRegistry.startRun({
     appSessionId: sessionId,
@@ -652,6 +657,10 @@ export async function runDetachedChatTurn(
   const provider = session.provider as LLMProvider;
   if (!dependencies.runtime.hasRuntime(provider)) {
     return { started: false, error: `Provider "${provider}" is not available.` };
+  }
+
+  if (orchestratorJobsDb.getBySessionId(input.sessionId)?.state === 'cancelled') {
+    return { started: false, error: 'This job is cancelled; resume it before starting another turn.' };
   }
 
   const activeRun = chatRunRegistry.getRun(input.sessionId);

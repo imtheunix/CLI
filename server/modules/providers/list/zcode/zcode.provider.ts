@@ -163,6 +163,14 @@ function normalize(raw: unknown, sessionId: string | null): NormalizedMessage[] 
   return [];
 }
 
+/** Stop the CLI and its descendants when a turn is interrupted. */
+function stopZcodeProcess(child: import('node:child_process').ChildProcess): boolean {
+  if (child.pid && process.platform !== 'win32') {
+    try { process.kill(-child.pid, 'SIGTERM'); return true; } catch { /* already exited */ }
+  }
+  return child.kill('SIGTERM');
+}
+
 /** Providers registry: zcode non-interactive runs with durable streamed transcripts and conversation resumption. */
 export class ZcodeProvider extends AbstractProvider {
   private readonly processes = new Map<string, ReturnType<typeof spawn>>();
@@ -303,7 +311,7 @@ export class ZcodeProvider extends AbstractProvider {
       const child = this.processes.get(sessionId);
       if (!child) return false;
       this.stopped.add(sessionId);
-      return child.kill('SIGTERM');
+      return stopZcodeProcess(child);
     },
   };
 
@@ -331,7 +339,7 @@ export class ZcodeProvider extends AbstractProvider {
     const lockTimer = setTimeout(release, 60_000);
 
     return new Promise((resolve) => {
-      const child = spawn('zcode', input.args, { cwd: input.cwd, stdio: ['ignore', 'pipe', 'pipe'] });
+      const child = spawn('zcode', input.args, { cwd: input.cwd, stdio: ['ignore', 'pipe', 'pipe'], detached: process.platform !== 'win32' });
       this.processes.set(sessionId, child);
       let buffer = '';
       let pending: AnyRecord[] | null = [];
@@ -353,7 +361,7 @@ export class ZcodeProvider extends AbstractProvider {
       };
       const stop = (reason: string) => {
         if (!mismatch) mismatch = reason;
-        child.kill('SIGTERM');
+        stopZcodeProcess(child);
       };
 
       const finish = (code: number) => {
@@ -398,7 +406,7 @@ export class ZcodeProvider extends AbstractProvider {
         resolve({ done: true, exitCode: failed ? 1 : code });
       };
 
-      const abort = () => { child.kill('SIGTERM'); };
+      const abort = () => { stopZcodeProcess(child); };
       input.signal?.addEventListener('abort', abort, { once: true });
       if (input.signal?.aborted) abort();
 
