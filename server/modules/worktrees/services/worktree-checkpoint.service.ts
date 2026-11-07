@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { unlink } from 'node:fs/promises';
+import { appendFile, mkdir, readFile, rename, unlink } from 'node:fs/promises';
 import path from 'node:path';
 
 // Snapshot/restore approach reimplemented from T3 Code's CheckpointStore and GitVcsDriver
@@ -17,6 +17,7 @@ import type {
   JobCheckpointRollbackResult,
   GitCommandResult,
   GitEnvCommandRunner,
+  WorktreePorcelainEntry,
 } from '@/shared/types.js';
 import { AppError, normalizeProjectPath } from '@/shared/utils.js';
 import { findWorktreeEntryByPath, listWorktreePorcelainEntries } from '@/modules/worktrees/services/worktree-git.service.js';
@@ -42,6 +43,30 @@ const CHECKPOINT_IDENTITY = {
   GIT_COMMITTER_NAME: 'Tribeira CLI',
   GIT_COMMITTER_EMAIL: 'checkpoints@tribeira.local',
 } as const;
+
+/** Worktree-relative folder rollback moves untracked work into (`discardUntracked`); excluded from checkpoints. */
+export const ROLLBACK_ASIDE_DIR = '.tribeira-rollback';
+
+/** How many times a capture retries with the next turn number when another writer took its ref. */
+const CAPTURE_REF_ATTEMPTS = 5;
+
+/**
+ * In-process lock per job: captures (and rollbacks) of one job run one at a
+ * time, so two turn-end hooks firing close together never pick the same turn.
+ * The ref update is also compare-and-swap, for writers outside this process.
+ */
+const jobLocks = new Map<string, Promise<unknown>>();
+
+function withJobLock<T>(jobId: string, work: () => Promise<T>): Promise<T> {
+  const previous = jobLocks.get(jobId) ?? Promise.resolve();
+  const next = previous.catch(() => undefined).then(work);
+  const tail = next.catch(() => undefined);
+  jobLocks.set(jobId, tail);
+  void tail.then(() => {
+    if (jobLocks.get(jobId) === tail) jobLocks.delete(jobId);
+  });
+  return next;
+}
 
 /**
  * Job ids are UUID fragments, but every value that reaches a ref name is
@@ -120,19 +145,23 @@ export async function captureJobCheckpoint(
   input: JobCheckpointCaptureInput,
   dependencies: { runGit: GitEnvCommandRunner },
 ): Promise<JobCheckpointCaptureResult | null> {
-  const { runGit } = dependencies;
   const jobId = validateJobId(input.jobId);
-  const worktreePath = input.worktreePath;
+  return withJobLock(jobId, () => captureLocked(jobId, input.worktreePath, dependencies.runGit));
+}
+
+async function captureLocked(
+  jobId: string,
+  worktreePath: string,
+  runGit: GitEnvCommandRunner,
+): Promise<JobCheckpointCaptureResult | null> {
   if (!existsSync(worktreePath)) return null;
 
   const { stdout: commonDir } = await runGit(
     ['rev-parse', '--path-format=absolute', '--git-common-dir'],
     worktreePath,
   );
+  await ensureAsideDirExcluded(commonDir.trim());
   const headSha = await resolveHeadCommit(worktreePath, runGit);
-  const existingTurns = await listCheckpointTurns(jobId, worktreePath, runGit);
-  const turn = (existingTurns.at(-1) ?? 0) + 1;
-  const ref = checkpointRef(jobId, turn);
 
   // The scratch index lives in the common dir: same filesystem as the real
   // index, and relative index paths keep working.
@@ -151,26 +180,55 @@ export async function captureJobCheckpoint(
         statusCode: 500,
       });
     }
-    const { stdout: commitSha } = await runGit(
-      ['commit-tree', trimmedTree, ...(headSha ? ['-p', headSha] : []), '-m', `tribeira checkpoint job=${jobId} turn=${turn}`],
-      worktreePath,
-      CHECKPOINT_IDENTITY,
-    );
-    const trimmedCommit = commitSha.trim();
-    if (!trimmedCommit) {
-      throw new AppError('git commit-tree returned an empty commit', {
-        code: 'CHECKPOINT_CAPTURE_FAILED',
-        statusCode: 500,
-      });
+    let lastError: unknown = null;
+    for (let attempt = 0; attempt < CAPTURE_REF_ATTEMPTS; attempt += 1) {
+      const turn = ((await listCheckpointTurns(jobId, worktreePath, runGit)).at(-1) ?? 0) + 1;
+      const ref = checkpointRef(jobId, turn);
+      const { stdout: commitSha } = await runGit(
+        ['commit-tree', trimmedTree, ...(headSha ? ['-p', headSha] : []), '-m', `tribeira checkpoint job=${jobId} turn=${turn}`],
+        worktreePath,
+        CHECKPOINT_IDENTITY,
+      );
+      const trimmedCommit = commitSha.trim();
+      if (!trimmedCommit) {
+        throw new AppError('git commit-tree returned an empty commit', {
+          code: 'CHECKPOINT_CAPTURE_FAILED',
+          statusCode: 500,
+        });
+      }
+      try {
+        // Compare-and-swap: an empty old value means "the ref must not exist yet";
+        // a writer that took this turn first makes this fail, and we take the next one.
+        await runGit(['update-ref', ref, trimmedCommit, ''], worktreePath);
+        return { jobId, turn, ref, commitSha: trimmedCommit };
+      } catch (error) {
+        lastError = error;
+        if ((await resolveCheckpointCommit(ref, worktreePath, runGit)) === null) throw error;
+      }
     }
-    await runGit(['update-ref', ref, trimmedCommit], worktreePath);
-    return { jobId, turn, ref, commitSha: trimmedCommit };
+    throw new AppError(`Checkpoint of job ${jobId} lost the ref race ${CAPTURE_REF_ATTEMPTS} times: ${String(lastError)}`, {
+      code: 'CHECKPOINT_CAPTURE_FAILED',
+      statusCode: 409,
+    });
   } finally {
     // The lock file can outlive a failed git run; remove both, best-effort.
     for (const candidate of [tempIndexPath, `${tempIndexPath}.lock`]) {
       await unlink(candidate).catch(() => undefined);
     }
   }
+}
+
+/**
+ * Rollback's aside folder must never be snapshotted nor counted as untracked work
+ * a later rollback would move again: it is listed in the common dir's info/exclude.
+ */
+async function ensureAsideDirExcluded(commonDir: string): Promise<void> {
+  const excludePath = path.join(commonDir, 'info', 'exclude');
+  const line = `/${ROLLBACK_ASIDE_DIR}/`;
+  const current = await readFile(excludePath, 'utf8').catch(() => '');
+  if (current.split('\n').some((entry) => entry.trim() === line)) return;
+  await mkdir(path.dirname(excludePath), { recursive: true });
+  await appendFile(excludePath, `${current.length > 0 && !current.endsWith('\n') ? '\n' : ''}${line}\n`);
 }
 
 /**
@@ -184,10 +242,14 @@ export async function captureJobCheckpoint(
  * (`CHECKPOINT_NOT_FOUND`). A worktree removed by cleanup is recreated from
  * the job's retained branch first.
  *
+ * Ownership: the worktree must be registered at the job row's `worktree_path`
+ * with the job's branch checked out (`WORKTREE_NOT_OWNED` otherwise).
+ *
  * Restore semantics, explicit: tracked files are restored to the checkpoint
- * content; files that appeared after the checkpoint are deleted (they are part
- * of what is being undone); untracked files recorded in the checkpoint come
- * back as untracked; ignored files (build output, dependencies) are never
+ * content; tracked files that appeared after the checkpoint are deleted (git
+ * still has them); untracked work the restore would lose refuses the rollback
+ * unless `discardUntracked` moves it aside (never unlinked); untracked files
+ * recorded in the checkpoint come back as untracked; ignored files (build output, dependencies) are never
  * touched. HEAD does not move — commits made after the checkpoint remain and
  * show up as unstaged differences — and the index is reset to HEAD, so the
  * worktree reads exactly like it did when the turn ended.
@@ -200,10 +262,20 @@ export async function rollbackJobCheckpoint(
     getJob: (jobId: string) => OrchestratorJobRow | null;
     /** The Orchestrator's liveness check (preparing, in-turn, session busy). */
     isJobRunning: (job: OrchestratorJobRow) => boolean;
+    /** The aside folder's timestamp; tests pin it. */
+    now?: () => Date;
   },
 ): Promise<JobCheckpointRollbackResult> {
-  const { runGit, getJob, isJobRunning } = dependencies;
   const jobId = validateJobId(input.jobId);
+  return withJobLock(jobId, () => rollbackLocked(jobId, input, dependencies));
+}
+
+async function rollbackLocked(
+  jobId: string,
+  input: JobCheckpointRollbackInput,
+  dependencies: Parameters<typeof rollbackJobCheckpoint>[1],
+): Promise<JobCheckpointRollbackResult> {
+  const { runGit, getJob, isJobRunning } = dependencies;
   if (!Number.isInteger(input.turn) || input.turn < 1) {
     throw new AppError(`Invalid checkpoint turn: ${input.turn}`, {
       code: 'INVALID_CHECKPOINT_TURN',
@@ -243,61 +315,131 @@ export async function rollbackJobCheckpoint(
     await runGit(['worktree', 'add', job.worktree_path, job.branch], job.repo_path);
     recreatedWorktree = true;
   } else {
-    const entries = await listWorktreePorcelainEntries(job.worktree_path, runGit);
-    const entry = findWorktreeEntryByPath(entries, job.worktree_path);
-    if (entry === entries[0]) {
-      throw new AppError('Rollback refuses the repository main checkout: it is shared with every other session', {
-        code: 'WORKTREE_SHARED',
-        statusCode: 409,
-      });
-    }
-    if (!samePath(entries[0].path, job.repo_path)) {
-      throw new AppError(`Worktree belongs to ${entries[0].path}, not to the job's repository`, {
-        code: 'WORKTREE_REPOSITORY_MISMATCH',
-        statusCode: 409,
-      });
-    }
+    await assertJobOwnsWorktree(job, runGit);
   }
 
-  await restoreCheckpointTree(job.worktree_path, commitSha, runGit);
-  return { jobId, turn: input.turn, ref, commitSha, recreatedWorktree };
+  const moved = await restoreCheckpointTree(job.worktree_path, commitSha, runGit, {
+    discardUntracked: input.discardUntracked === true,
+    now: dependencies.now ?? (() => new Date()),
+  });
+  return { jobId, turn: input.turn, ref, commitSha, recreatedWorktree, ...moved };
 }
 
 /**
- * Applies a checkpoint commit's tree to a worktree: files that appeared after
- * the checkpoint are deleted, the checkpoint's files are restored into index
- * and worktree, and the index is reset to HEAD so checkpoint-only files read
- * as untracked and checkpoint edits read as unstaged changes.
+ * The worktree a rollback writes must be the job's own: a linked worktree of the
+ * job's repository, registered at exactly the job row's `worktree_path`, with
+ * the job's branch checked out. The main checkout, another repository, another
+ * job's worktree (or any folder that is not a registered worktree) is refused.
+ */
+async function assertJobOwnsWorktree(job: OrchestratorJobRow, runGit: GitEnvCommandRunner): Promise<void> {
+  const entries = await listWorktreePorcelainEntries(job.worktree_path, runGit);
+  if (entries.length === 0 || !samePath(entries[0].path, job.repo_path)) {
+    throw new AppError(`Worktree belongs to ${entries[0]?.path ?? 'no repository'}, not to the job's repository`, {
+      code: 'WORKTREE_REPOSITORY_MISMATCH',
+      statusCode: 409,
+    });
+  }
+  let entry: WorktreePorcelainEntry;
+  try {
+    entry = findWorktreeEntryByPath(entries, job.worktree_path);
+  } catch {
+    throw new AppError(`${job.worktree_path} is not a registered worktree of job ${job.id}`, {
+      code: 'WORKTREE_NOT_OWNED',
+      statusCode: 409,
+    });
+  }
+  if (entry === entries[0]) {
+    throw new AppError('Rollback refuses the repository main checkout: it is shared with every other session', {
+      code: 'WORKTREE_SHARED',
+      statusCode: 409,
+    });
+  }
+  if (entry.branch !== job.branch) {
+    throw new AppError(`Worktree ${entry.path} has ${entry.branch ?? 'a detached HEAD'} checked out, not job ${job.id}'s branch ${job.branch}`, {
+      code: 'WORKTREE_NOT_OWNED',
+      statusCode: 409,
+    });
+  }
+}
+
+/** git reports repository-relative paths; anything that could escape the worktree is skipped. */
+function isSafeRelativePath(file: string): boolean {
+  return !path.isAbsolute(file) && !file.split('/').includes('..');
+}
+
+/**
+ * Applies a checkpoint commit's tree to a worktree: tracked files absent from the
+ * checkpoint are deleted (git still has them), the checkpoint's files are
+ * restored into index and worktree, and the index is reset to HEAD so
+ * checkpoint-only files read as untracked and checkpoint edits read as
+ * unstaged changes.
+ *
+ * Untracked files are never unlinked. Those the restore would lose (absent from
+ * the checkpoint, or with different content) refuse the rollback by default
+ * (`ROLLBACK_UNTRACKED_AT_RISK`, paths listed in the message and `details`);
+ * with `discardUntracked` they are moved into `.tribeira-rollback/<timestamp>/`.
+ * The check runs before anything is written.
  */
 async function restoreCheckpointTree(
   worktreePath: string,
   commitSha: string,
   runGit: GitEnvCommandRunner,
-): Promise<void> {
+  options: { discardUntracked: boolean; now: () => Date },
+): Promise<{ movedUntrackedTo: string | null; movedUntracked: string[] }> {
   const nulSeparated = (result: GitCommandResult) =>
     result.stdout.split('\0').filter((entry) => entry.length > 0);
 
-  const snapshotFiles = new Set(
-    nulSeparated(await runGit(['ls-tree', '-r', '--name-only', '-z', commitSha], worktreePath)),
-  );
-  const currentFiles = [
-    ...nulSeparated(await runGit(['ls-files', '-z'], worktreePath)),
-    ...nulSeparated(await runGit(['ls-files', '--others', '--exclude-standard', '-z'], worktreePath)),
-  ];
+  // `<mode> <type> <sha>\t<path>` per entry.
+  const snapshotBlobs = new Map<string, string>();
+  for (const line of nulSeparated(await runGit(['ls-tree', '-r', '-z', commitSha], worktreePath))) {
+    const tab = line.indexOf('\t');
+    snapshotBlobs.set(line.slice(tab + 1), line.slice(0, tab).split(' ')[2]);
+  }
+  const trackedFiles = nulSeparated(await runGit(['ls-files', '-z'], worktreePath));
+  const untrackedFiles = nulSeparated(
+    await runGit(['ls-files', '--others', '--exclude-standard', '-z', '--', '.', `:(exclude)${ROLLBACK_ASIDE_DIR}`], worktreePath),
+  ).filter(isSafeRelativePath);
 
-  for (const file of currentFiles) {
-    if (snapshotFiles.has(file)) continue;
-    // git reports repository-relative paths; refuse anything that could escape the worktree.
-    if (path.isAbsolute(file) || file.split('/').includes('..')) continue;
+  // Untracked files the restore would delete or overwrite with other content.
+  const inSnapshot = untrackedFiles.filter((file) => snapshotBlobs.has(file));
+  const currentBlobs = inSnapshot.length > 0
+    ? (await runGit(['hash-object', '--', ...inSnapshot], worktreePath)).stdout.split('\n').map((sha) => sha.trim())
+    : [];
+  const atRisk = untrackedFiles.filter((file) => {
+    if (!snapshotBlobs.has(file)) return true;
+    return currentBlobs[inSnapshot.indexOf(file)] !== snapshotBlobs.get(file);
+  });
+
+  let movedUntrackedTo: string | null = null;
+  if (atRisk.length > 0) {
+    if (!options.discardUntracked) {
+      const shown = atRisk.slice(0, 50).join(', ') + (atRisk.length > 50 ? `, … (${atRisk.length - 50} more)` : '');
+      throw new AppError(
+        `Rollback would lose ${atRisk.length} untracked file(s): ${shown}. Commit or move them, or pass --discard-untracked to move them into ${ROLLBACK_ASIDE_DIR}/<timestamp>/`,
+        { code: 'ROLLBACK_UNTRACKED_AT_RISK', statusCode: 409, details: { untracked: atRisk } },
+      );
+    }
+    movedUntrackedTo = path.posix.join(ROLLBACK_ASIDE_DIR, options.now().toISOString().replace(/[:.]/g, '-'));
+    await ensureAsideDirExcluded((await runGit(['rev-parse', '--path-format=absolute', '--git-common-dir'], worktreePath)).stdout.trim());
+    for (const file of atRisk) {
+      const target = path.join(worktreePath, movedUntrackedTo, file);
+      await mkdir(path.dirname(target), { recursive: true });
+      await rename(path.join(worktreePath, file), target);
+    }
+  }
+
+  for (const file of trackedFiles) {
+    if (snapshotBlobs.has(file) || !isSafeRelativePath(file)) continue;
     await unlink(path.join(worktreePath, file)).catch(() => undefined);
   }
 
   // An empty checkpoint (worktree was empty at capture time) has nothing for
   // restore's pathspec to match; reset below still empties the index to HEAD.
-  if (snapshotFiles.size > 0) {
+  if (snapshotBlobs.size > 0) {
     await runGit(['restore', '--source', commitSha, '--worktree', '--staged', '--', '.'], worktreePath);
   }
   await runGit(['reset', '--quiet', '--', '.'], worktreePath);
+  return { movedUntrackedTo, movedUntracked: movedUntrackedTo ? atRisk : [] };
 }
 
 /**

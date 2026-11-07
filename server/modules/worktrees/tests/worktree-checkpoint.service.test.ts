@@ -62,11 +62,11 @@ function setup() {
 }
 
 /** sha256 over every file (relative path + bytes), so "restored exactly" is one comparison. */
-function hashTree(root: string): string {
+function hashTree(root: string, skip: string[] = []): string {
   const hash = createHash('sha256');
   const walk = (dir: string, rel: string): void => {
     for (const entry of readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
-      if (entry.name === '.git') continue;
+      if (entry.name === '.git' || (!rel && skip.includes(entry.name))) continue;
       const childRel = rel ? `${rel}/${entry.name}` : entry.name;
       if (entry.isDirectory()) {
         walk(path.join(dir, entry.name), childRel);
@@ -189,18 +189,127 @@ test('rollback restores the worktree files exactly and keeps HEAD, untracked sem
     writeFileSync(path.join(worktree, 'u2.txt'), 'born after the checkpoint\n');
     const headAfterTurn2 = git(worktree, 'rev-parse', 'HEAD').trim();
 
-    const rolled = await rollbackJobCheckpoint({ jobId: job.id, turn: 1 }, dependencies);
+    // Untracked work the restore would lose (u1.txt changed, u2.txt new) refuses the
+    // rollback by default, lists the paths and writes nothing.
+    const beforeRefusal = hashTree(worktree);
+    await assert.rejects(
+      rollbackJobCheckpoint({ jobId: job.id, turn: 1 }, dependencies),
+      (error: unknown) => error instanceof AppError && error.code === 'ROLLBACK_UNTRACKED_AT_RISK' && error.statusCode === 409 &&
+        JSON.stringify((error.details as { untracked: string[] }).untracked) === JSON.stringify(['u1.txt', 'u2.txt']) &&
+        error.message.includes('u2.txt') && error.message.includes('--discard-untracked'),
+    );
+    assert.equal(hashTree(worktree), beforeRefusal, 'a refused rollback changes nothing');
+
+    // With discardUntracked they are moved aside, never unlinked.
+    const rolled = await rollbackJobCheckpoint(
+      { jobId: job.id, turn: 1, discardUntracked: true },
+      { ...dependencies, now: () => new Date('2026-11-07T12:00:00.000Z') },
+    );
     assert.equal(rolled.commitSha, captured.commitSha);
     assert.equal(rolled.recreatedWorktree, false);
+    assert.equal(rolled.movedUntrackedTo, '.tribeira-rollback/2026-11-07T12-00-00-000Z');
+    assert.deepEqual(rolled.movedUntracked, ['u1.txt', 'u2.txt']);
+    const aside = path.join(worktree, rolled.movedUntrackedTo);
+    assert.equal(readFileSync(path.join(aside, 'u1.txt'), 'utf8'), 'changed later\n');
+    assert.equal(readFileSync(path.join(aside, 'u2.txt'), 'utf8'), 'born after the checkpoint\n');
 
-    // The files are exactly as the first turn left them…
-    assert.equal(hashTree(worktree), snapshotTree);
+    // The files are exactly as the first turn left them (the aside folder apart)…
+    assert.equal(hashTree(worktree, ['.tribeira-rollback']), snapshotTree);
     // …and HEAD never moved, so the later commit survives.
     assert.equal(git(worktree, 'rev-parse', 'HEAD').trim(), headAfterTurn2);
     // The status reads like it did at capture time (' M a.txt', '?? u1.txt'), plus
     // c.txt: it is in HEAD now, so matching the snapshot can only show as a
-    // deletion. b.txt is back (checkpoint content), u2.txt is simply gone.
+    // deletion. b.txt is back (checkpoint content); the aside folder is excluded.
     assert.deepEqual(sortedStatus(worktree), [' D c.txt', ' M a.txt', '?? u1.txt']);
+  } finally {
+    context.cleanup();
+  }
+});
+
+test('rollback leaves untracked files that match the checkpoint in place and needs no flag', async () => {
+  const context = setup();
+  try {
+    const { job, worktree, dependencies } = context;
+    writeFileSync(path.join(worktree, 'keep.txt'), 'same as the checkpoint\n');
+    await captureJobCheckpoint({ jobId: job.id, worktreePath: worktree }, dependencies);
+    writeFileSync(path.join(worktree, 'a.txt'), 'tracked edit after the checkpoint\n');
+    const rolled = await rollbackJobCheckpoint({ jobId: job.id, turn: 1 }, dependencies);
+    assert.equal(rolled.movedUntrackedTo, null);
+    assert.equal(readFileSync(path.join(worktree, 'keep.txt'), 'utf8'), 'same as the checkpoint\n');
+    assert.equal(readFileSync(path.join(worktree, 'a.txt'), 'utf8'), 'v1\n');
+  } finally {
+    context.cleanup();
+  }
+});
+
+test('rollback refuses a linked worktree of the same repository that is not the job\'s (Terra repro 2)', async () => {
+  const context = setup();
+  try {
+    const { git, job, repo, root, dependencies } = context;
+    await captureJobCheckpoint({ jobId: job.id, worktreePath: job.worktree_path }, dependencies);
+    const other = path.join(root, 'other');
+    git(repo, 'worktree', 'add', '-b', 'other', other);
+    writeFileSync(path.join(other, 'a.txt'), 'other work\n');
+    // The row points at another job's worktree (its branch is not the job's).
+    await assert.rejects(
+      rollbackJobCheckpoint({ jobId: job.id, turn: 1 }, {
+        ...dependencies,
+        getJob: (id) => (id === job.id ? { ...job, worktree_path: other } : null),
+      }),
+      (error: unknown) => error instanceof AppError && error.code === 'WORKTREE_NOT_OWNED' && error.statusCode === 409,
+    );
+    assert.equal(readFileSync(path.join(other, 'a.txt'), 'utf8'), 'other work\n');
+    // A folder inside the job's worktree is not the registered worktree path either.
+    const nested = path.join(job.worktree_path, 'nested');
+    mkdirSync(nested);
+    await assert.rejects(
+      rollbackJobCheckpoint({ jobId: job.id, turn: 1 }, {
+        ...dependencies,
+        getJob: (id) => (id === job.id ? { ...job, worktree_path: nested } : null),
+      }),
+      (error: unknown) => error instanceof AppError && error.code === 'WORKTREE_NOT_OWNED',
+    );
+    // The job's worktree with another branch checked out is refused too.
+    git(job.worktree_path, 'checkout', '-q', '-b', 'switched');
+    await assert.rejects(
+      rollbackJobCheckpoint({ jobId: job.id, turn: 1 }, dependencies),
+      (error: unknown) => error instanceof AppError && error.code === 'WORKTREE_NOT_OWNED',
+    );
+  } finally {
+    context.cleanup();
+  }
+});
+
+test('overlapping captures of one job get distinct turns and both refs survive (Terra repro 3)', async () => {
+  const context = setup();
+  try {
+    const { job, repo, worktree, dependencies } = context;
+    const results = await Promise.all([1, 2, 3].map(() => captureJobCheckpoint({ jobId: job.id, worktreePath: worktree }, dependencies)));
+    assert.deepEqual(results.map((result) => result?.turn), [1, 2, 3]);
+    assert.equal(checkpointRefs(repo, job.id).length, 3);
+  } finally {
+    context.cleanup();
+  }
+});
+
+test('a capture whose turn ref was taken by another writer retries with the next turn (compare-and-swap)', async () => {
+  const context = setup();
+  try {
+    const { git, job, repo, worktree, dependencies } = context;
+    const head = git(repo, 'rev-parse', 'HEAD').trim();
+    let raced = false;
+    // Another process creates turn 1 between this capture's listing and its ref update.
+    const runGit: typeof runGitCommand = async (args, cwd, env) => {
+      if (!raced && args[0] === 'update-ref' && args[1] === `refs/tribeira/checkpoints/${job.id}/1`) {
+        raced = true;
+        git(repo, 'update-ref', args[1], head);
+      }
+      return runGitCommand(args, cwd, env);
+    };
+    const captured = await captureJobCheckpoint({ jobId: job.id, worktreePath: worktree }, { runGit });
+    assert.equal(captured?.turn, 2);
+    assert.equal(git(repo, 'rev-parse', `refs/tribeira/checkpoints/${job.id}/1`).trim(), head, 'the other writer\'s ref is kept');
+    assert.equal(checkpointRefs(repo, job.id).length, 2);
   } finally {
     context.cleanup();
   }

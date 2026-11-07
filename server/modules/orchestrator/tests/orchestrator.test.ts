@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-import { closeConnection, initializeDatabase, orchestratorJobsDb, sessionsDb, userDb } from '@/modules/database/index.js';
+import { closeConnection, initializeDatabase, orchestratorEffectsDb, orchestratorJobsDb, sessionsDb, userDb } from '@/modules/database/index.js';
 import type { OrchestratorJobRow } from '@/modules/database/index.js';
 import { chatRunRegistry } from '@/modules/websocket/index.js';
 import type { NormalizedMessage } from '@/shared/types.js';
@@ -83,6 +83,7 @@ async function withWorkspace(
     job: (id: string) => OrchestratorJobRow;
   }) => Promise<void>,
   tune: (config: OrchestratorConfig) => void = () => undefined,
+  extraDeps: Partial<Parameters<typeof createJobsService>[0]> = {},
 ): Promise<void> {
   const previousDatabasePath = process.env.DATABASE_PATH;
   const root = await mkdtemp(path.join(tmpdir(), 'orchestrator-'));
@@ -115,7 +116,7 @@ async function withWorkspace(
   tune(config);
 
   const runtime = createRuntime();
-  const jobs = createJobsService({ runtime: runtime.gateway, config: () => config });
+  const jobs = createJobsService({ runtime: runtime.gateway, config: () => config, ...extraDeps });
   const unsubscribe = chatRunRegistry.onRunCompleted((completion) => jobs.handleRunCompleted(completion));
   try {
     await runTest({ root, repo, upstream, config, runtime, jobs, job: (id) => orchestratorJobsDb.get(id) as OrchestratorJobRow });
@@ -130,6 +131,34 @@ async function withWorkspace(
     else process.env.DATABASE_PATH = previousDatabasePath;
     await rm(root, { recursive: true, force: true });
   }
+}
+
+for (const [label, captureCheckpoint] of [
+  ['rejects', async () => { throw new Error('injected checkpoint failure'); }],
+  ['throws synchronously', () => { throw new Error('injected checkpoint failure'); }],
+] as const) {
+  test(`a turn-end checkpoint hook that ${label} never fails or blocks the job's turn`, async () => {
+    let calls = 0;
+    await withWorkspace(async ({ repo, jobs, runtime, job }) => {
+      const created = await jobs.create({ title: 'ckpt', prompt: 'task', repoPath: repo, backend: 'claude', baseBranch: null });
+      await eventually(() => runtime.turns.length === 1, 'first turn');
+      const sessionId = job(created.id).session_id!;
+      runtime.finish(sessionId);
+      await jobs.afterCheckpoints();
+      assert.equal(calls, 1, 'the hook ran once for the ended turn');
+      const after = job(created.id);
+      assert.equal(after.state, 'active');
+      assert.equal(after.in_turn, 0);
+      assert.equal(after.last_error, null);
+      const rows = orchestratorEffectsDb.listByJob(created.id, 'checkpoint');
+      assert.equal(rows.length, 1);
+      assert.equal(rows[0].state, 'failed');
+      assert.equal(rows[0].blocking, 0);
+      // The job takes its next turn as usual.
+      assert.equal(await jobs.notify(after, 'next'), true);
+      await eventually(() => runtime.turns.length === 2, 'next turn');
+    }, undefined, { captureCheckpoint: (...args) => { calls += 1; return (captureCheckpoint as (...a: unknown[]) => Promise<unknown>)(...args); } });
+  });
 }
 
 test('jobs go to the least busy backend, each a named session in its own worktree', async () => {

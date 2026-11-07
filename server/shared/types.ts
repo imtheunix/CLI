@@ -1304,6 +1304,13 @@ export type JobCheckpointCaptureResult = {
 export type JobCheckpointRollbackInput = {
   jobId: string;
   turn: number;
+  /**
+   * Untracked work the rollback would lose (files absent from the checkpoint, or
+   * whose content differs from it) is refused by default (`ROLLBACK_UNTRACKED_AT_RISK`,
+   * listing the paths). When true, those files are moved into
+   * `.tribeira-rollback/<timestamp>/` inside the worktree instead; nothing is unlinked.
+   */
+  discardUntracked?: boolean;
 };
 
 /**
@@ -1321,6 +1328,10 @@ export type JobCheckpointRollbackResult = {
   commitSha: string;
   /** True when the worktree had been removed (cleanup) and was recreated for the rollback. */
   recreatedWorktree: boolean;
+  /** Worktree-relative folder the untracked files were moved into (`discardUntracked`), or null when none were. */
+  movedUntrackedTo: string | null;
+  /** The untracked paths moved aside, relative to the worktree. */
+  movedUntracked: string[];
 };
 
 /**

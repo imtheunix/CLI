@@ -61,7 +61,7 @@ export function createOrchestratorRouter(services: {
   caps: () => Record<OrchestratorBackend, number>;
   authenticate: RequestHandler;
   /** `tjob rollback`: restore a job's worktree from a per-turn checkpoint (Worktrees module). */
-  rollbackJobCheckpoint: (jobId: string, turn: number) => Promise<JobCheckpointRollbackResult>;
+  rollbackJobCheckpoint: (jobId: string, turn: number, options: { discardUntracked: boolean }) => Promise<JobCheckpointRollbackResult>;
 }): express.Router {
   const router = express.Router();
 
@@ -158,7 +158,7 @@ export function createOrchestratorRouter(services: {
   router.post('/:id/rollback', asyncHandler(async (req, res) => {
     const body = (req.body && typeof req.body === 'object' ? req.body : {}) as Record<string, unknown>;
     const jobId = String(req.params.id);
-    const rollback = await services.rollbackJobCheckpoint(jobId, readCheckpointTurn(body.turn));
+    const rollback = await services.rollbackJobCheckpoint(jobId, readCheckpointTurn(body.turn), { discardUntracked: body.discardUntracked === true });
     res.json(createApiSuccessResponse({ rollback, job: services.jobs.get(jobId) }));
   }));
 

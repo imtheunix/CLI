@@ -10,7 +10,9 @@
 #   tjob retry <id>         a blocked merge goes on from where it stopped
 #   tjob cancel <id>        the person does not want the job anymore: frees its slot, leaves the CI/CD queue
 #   tjob resume <id>        a cancelled or failed job takes a slot again
-#   tjob rollback <id> <turn>  reset the job's worktree files to how an earlier turn left them (per-turn checkpoint; refuses while the job runs)
+#   tjob rollback <id> <turn> [--discard-untracked]  reset the job's worktree files to how an earlier turn left them (per-turn
+#                              checkpoint; refuses while the job runs, and when untracked files would be lost unless
+#                              --discard-untracked moves them into .tribeira-rollback/<timestamp>/)
 #   tjob cleanup [--dry-run]  sweep merged and cancelled jobs
 #   tjob hub-wake [--test]  wake the orchestrating session (the hub) on job events
 set -euo pipefail
@@ -115,10 +117,14 @@ case "$cmd" in
   show) api GET "/${1:?id}" | render show ;;
   done|approve|retry|resume|cancel) api POST "/${1:?id}/$cmd" '{}' | render "$cmd" ;;
   rollback)
-    id=${1:?usage: tjob rollback <id> <turn>}; shift
-    turn=${1:?usage: tjob rollback <id> <turn>}; shift
-    [ $# -eq 0 ] || { echo "usage: tjob rollback <id> <turn>" >&2; exit 2; }
-    api POST "/$id/rollback" "{\"turn\":$turn}" | python3 -c '
+    usage="usage: tjob rollback <id> <turn> [--discard-untracked]"
+    id=${1:?$usage}; shift
+    turn=${1:?$usage}; shift
+    case $turn in ''|*[!0-9]*) echo "$usage" >&2; exit 2 ;; esac
+    discard=false
+    if [ "${1:-}" = "--discard-untracked" ]; then discard=true; shift; fi
+    [ $# -eq 0 ] || { echo "$usage" >&2; exit 2; }
+    api POST "/$id/rollback" "{\"turn\":$turn,\"discardUntracked\":$discard}" | python3 -c '
 import json, sys
 body = json.load(sys.stdin)
 if not body.get("success", False):
@@ -126,6 +132,8 @@ if not body.get("success", False):
 r = body["data"]["rollback"]
 where = "recreated worktree, " if r.get("recreatedWorktree") else ""
 print("rolled back %s to turn %s: %scommit %s" % (r["jobId"], r["turn"], where, r["commitSha"][:8]))
+if r.get("movedUntrackedTo"):
+    print("moved %d untracked file(s) into %s" % (len(r.get("movedUntracked") or []), r["movedUntrackedTo"]))
 ' ;;
   cleanup)
     dry=false
