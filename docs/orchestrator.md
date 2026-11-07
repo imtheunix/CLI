@@ -48,6 +48,14 @@ A turn is classified per backend from its provider's own failure signals only: i
 
 A turn that ends without a limit or login failure clears the job's recovery. Reimplemented after T3 Code's UsageLimitRecoveryWorker (MIT).
 
+### Codex out of quota: hand over to GLM Flash (`codexQuotaFallback`)
+
+The person, 2026-11-07: "when Terra is out of quota replace it with GLM flash". Set `"codexQuotaFallback": "glm-flash"` in `orchestrator.json` (default `"wait"`: today's wait-and-resume above).
+
+When a Codex job's turn ends on `usage_limit`, the wait is armed first as usual; then, with `glm-flash`, the job is handed over only if it is still `active` with no CI/CD step (never in review or the merge queue), a GLM slot is free (GLM's cap, no GLM quota cooldown) and the ZCode login probe passes. Otherwise the armed wait stays. The handover keeps the job id, worktree and branch; the job's backend becomes `glm` on its Flash model (`zai-coding-plan/glm-5.3-flash`, or `GLM-5.3-Flash` on ZCode) in a new session. The first GLM turn gets the original job prompt plus a handover note: the Codex agent's last message, `git log` of the branch since its base, `git status --short`, and `Continue where the previous agent stopped.`
+
+Each handover is recorded on the job (`backend_history`: from/to backend and model, the previous session, reason `quota`, the stated `resetAt`, the failed turn's recovery key) and runs once per failed turn (that key, also the outbox `handover` effect's key). `tjob ls` shows `codex->glm (quota)`; the job view's `usageByBackend` lists each backend's session and usage, so Codex and GLM usage stay attributed to their own backend.
+
 ### Configuration
 
 Caps, models and the rest can be overridden in `~/.config/cli/orchestrator.json` (see `orchestrator-config.service.ts`), with no rebuild. For example, switching GLM jobs to ZCode, and setting GLM even in its peak hours:

@@ -11,6 +11,27 @@ export type OrchestratorMergeStep = 'none' | 'review' | 'queued' | 'rebase' | 'c
 /** One entry of a job's CI/CD queue history: a step (or `check:run`, its check starting) and when it began. */
 export type OrchestratorMergeStepEvent = { step: OrchestratorMergeStep | 'check:run'; at: string };
 
+/**
+ * One backend handover (e.g. Codex out of quota, continued on GLM Flash): the job kept its id, worktree and
+ * branch; the previous backend's session stays for its transcript and usage.
+ */
+export type OrchestratorBackendHandover = {
+  at: string;
+  fromBackend: OrchestratorBackend;
+  fromModel: string | null;
+  fromSessionId: string | null;
+  toBackend: OrchestratorBackend;
+  toModel: string;
+  /** Why: `quota` (the provider's usage limit). */
+  reason: 'quota';
+  /** The reset the provider stated, ISO 8601; null without one. */
+  resetAt: string | null;
+  /** The limit recovery key of the failed turn: one handover per turn. */
+  turnKey: string;
+  /** The previous agent's last message (at most 4000 characters), for the handover note. */
+  lastMessage: string | null;
+};
+
 export type OrchestratorJobRow = {
   id: string;
   title: string;
@@ -39,6 +60,8 @@ export type OrchestratorJobRow = {
   resume_at: string | null;
   /** JSON of the orchestrator's armed LimitRecovery; persisted so it survives a restart. */
   limit_recovery: string | null;
+  /** JSON array of OrchestratorBackendHandover; read it with `readBackendHandovers`. */
+  backend_history: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -46,13 +69,23 @@ export type OrchestratorJobRow = {
 type JobPatch = Partial<Pick<OrchestratorJobRow,
   'backend' | 'model' | 'session_id' | 'state' | 'in_turn' | 'merge_step' | 'merge_attempts'
   | 'pushed_sha' | 'deploy_waiting_since' | 'last_error' | 'base_branch'
-  | 'failure_class' | 'resume_at' | 'limit_recovery'>>;
+  | 'failure_class' | 'resume_at' | 'limit_recovery' | 'backend_history'>>;
 
 const PATCHABLE_COLUMNS: Array<keyof JobPatch> = [
   'backend', 'model', 'session_id', 'state', 'in_turn', 'merge_step', 'merge_attempts',
   'pushed_sha', 'deploy_waiting_since', 'last_error', 'base_branch',
-  'failure_class', 'resume_at', 'limit_recovery',
+  'failure_class', 'resume_at', 'limit_recovery', 'backend_history',
 ];
+
+/** Used by the Orchestrator's views: a job's backend handovers, oldest first. */
+export function readBackendHandovers(job: Pick<OrchestratorJobRow, 'backend_history'>): OrchestratorBackendHandover[] {
+  try {
+    const parsed = JSON.parse(job.backend_history ?? '[]') as unknown;
+    return Array.isArray(parsed) ? parsed as OrchestratorBackendHandover[] : [];
+  } catch {
+    return [];
+  }
+}
 
 /** Used by the Orchestrator's views: a job's CI/CD queue history, oldest first. */
 export function readMergeStepHistory(job: Pick<OrchestratorJobRow, 'merge_step_history'>): OrchestratorMergeStepEvent[] {

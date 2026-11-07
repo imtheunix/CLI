@@ -22,6 +22,7 @@ export type OrchestratorEffectKind =
   | 'cleanup'
   | 'hub_wake'
   | 'recovery_resume'
+  | 'handover'
   | 'checkpoint'
   | 'rollback';
 

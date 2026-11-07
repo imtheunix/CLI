@@ -494,6 +494,12 @@ const addOrchestratorJobLimitRecoveryColumns = (db: Database): void => {
   addColumnToTableIfNotExists(db, 'orchestrator_jobs', columnNames, 'limit_recovery', 'TEXT');
 };
 
+/** Jobs from before backend handovers never changed backend mid-job; NULL reads as no handover. */
+const addOrchestratorJobBackendHistoryColumn = (db: Database): void => {
+  const columnNames = getTableInfo(db, 'orchestrator_jobs').map((column) => column.name);
+  addColumnToTableIfNotExists(db, 'orchestrator_jobs', columnNames, 'backend_history', 'TEXT');
+};
+
 /**
  * Adds the reasoning-effort metadata columns to the custom-model library.
  *
@@ -625,6 +631,7 @@ export const runMigrations = (db: Database) => {
     addOrchestratorJobModelColumn(db);
     addOrchestratorJobMergeStepHistoryColumn(db);
     addOrchestratorJobLimitRecoveryColumns(db);
+    addOrchestratorJobBackendHistoryColumn(db);
     db.exec(RUNNING_TURNS_TABLE_SCHEMA_SQL);
     db.exec(ORCHESTRATOR_EFFECTS_TABLE_SCHEMA_SQL);
     db.exec('CREATE INDEX IF NOT EXISTS idx_running_turns_status ON running_turns(status)');

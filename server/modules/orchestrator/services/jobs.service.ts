@@ -6,11 +6,18 @@ import {
   orchestratorEffectsDb,
   orchestratorJobsDb,
   projectsDb,
+  readBackendHandovers,
   readMergeStepHistory,
   sessionsDb,
   userDb,
 } from '@/modules/database/index.js';
-import type { OrchestratorBackend, OrchestratorEffectRow, OrchestratorJobRow, OrchestratorMergeStepEvent } from '@/modules/database/index.js';
+import type {
+  OrchestratorBackend,
+  OrchestratorBackendHandover,
+  OrchestratorEffectRow,
+  OrchestratorJobRow,
+  OrchestratorMergeStepEvent,
+} from '@/modules/database/index.js';
 import { abortTurn } from '@/modules/detached-turns/index.js';
 import {
   probeZcodeLogin,
@@ -77,7 +84,44 @@ export type OrchestratorJobView = OrchestratorJobRow & {
   limitWait: { failureClass: 'usage_limit' | 'auth_required'; resumesAt: string | null; waitsForHub: boolean } | null;
   /** Token usage and notional API cost calculated from session transcript. */
   usage: JobTokenUsage | null;
+  /** `tjob ls`: the job's backend handovers, e.g. `codex->glm (quota)`; null when it never changed backend. */
+  handover: string | null;
+  /** Usage per backend when the job changed backend (each backend's own session); null otherwise. */
+  usageByBackend: Array<{ backend: OrchestratorBackend; model: string | null; sessionId: string; usage: JobTokenUsage | null }> | null;
 };
+
+/** The ending of the first turn a job handed over to another backend gets (see buildJobPrompt). */
+export const HANDOVER_CONTINUE = 'Continue where the previous agent stopped.';
+
+/**
+ * Jobs service: the handover note of a job moved to another backend at its quota: who stopped and why, the
+ * previous agent's last message, the branch's commits since its base and the worktree's status.
+ */
+export function buildHandoverNote(input: {
+  handover: Pick<OrchestratorBackendHandover, 'fromBackend' | 'reason' | 'resetAt'>;
+  lastMessage: string | null;
+  gitLog: string;
+  gitStatus: string;
+}): string {
+  const { handover } = input;
+  const why = handover.reason === 'quota'
+    ? `hit its usage limit${handover.resetAt ? ` (resets ${handover.resetAt})` : ''}`
+    : handover.reason;
+  return [
+    `Handover: the previous agent on this job (${handover.fromBackend}) ${why} and stopped; you take the job over in the same worktree and branch.`,
+    '',
+    "The previous agent's last message:",
+    input.lastMessage?.trim() ? input.lastMessage.trim() : '(none recorded)',
+    '',
+    `Commits on this branch since its base (git log):`,
+    input.gitLog.trim() || '(none yet)',
+    '',
+    'Worktree status (git status --short):',
+    input.gitStatus.trim() || '(clean)',
+    '',
+    HANDOVER_CONTINUE,
+  ].join('\n');
+}
 
 export type OrchestratorMergeStepTiming = OrchestratorMergeStepEvent & { durationMs: number | null };
 
@@ -120,13 +164,14 @@ export function buildJobPrompt(
   projectMapGuidance: string,
   continuation = false,
   repoGuidance = '',
+  handoverNote = '',
 ): string {
   return [
     `You are ${label}, working on job ${job.id} — "${job.title}".`,
     `You are in your own git worktree (${job.worktree_path}), on branch ${job.branch}, made from origin/${job.base_branch} of ${job.repo_path}.`,
     '',
     job.prompt.trim(),
-    ...(continuation ? ['', 'Another model started this job and stopped at its quota; read `git log`, `git status` and the diff, then continue from where it stopped.'] : []),
+    ...(handoverNote ? ['', handoverNote] : continuation ? ['', 'Another model started this job and stopped at its quota; read `git log`, `git status` and the diff, then continue from where it stopped.'] : []),
     ...(projectMapGuidance ? ['', projectMapGuidance] : []),
     '',
     'How this job works:',
@@ -191,6 +236,8 @@ export function createJobsService(deps: {
   // In-flight per-turn checkpoints; `afterCheckpoints` lets lifecycle tests wait
   // until the worktrees they remove are no longer being snapshotted.
   const pendingCheckpoints = new Set<Promise<unknown>>();
+  // In-flight Codex -> GLM Flash handovers; `afterHandovers` lets tests wait for them.
+  const pendingHandovers = new Set<Promise<unknown>>();
 
   function loads(): Record<OrchestratorBackend, number> {
     const counts: Record<OrchestratorBackend, number> = { claude: 0, codex: 0, glm: 0, agy: 0, zcode: 0 };
@@ -217,6 +264,21 @@ export function createJobsService(deps: {
       model,
       limitWait: limitWait(job),
       usage: job.session_id ? providerTokenUsageService.getJobTokenUsage(job.session_id, model) : null,
+      ...handoverView(job, model),
+    };
+  }
+
+  function handoverView(job: OrchestratorJobRow, model: string | null): Pick<OrchestratorJobView, 'handover' | 'usageByBackend'> {
+    const handovers = readBackendHandovers(job);
+    if (handovers.length === 0) return { handover: null, usageByBackend: null };
+    // Each backend keeps its own session, so its usage stays attributed to it.
+    const sessions = [
+      ...handovers.filter((entry) => entry.fromSessionId).map((entry) => ({ backend: entry.fromBackend, model: entry.fromModel, sessionId: entry.fromSessionId as string })),
+      ...(job.session_id && job.backend ? [{ backend: job.backend, model, sessionId: job.session_id }] : []),
+    ];
+    return {
+      handover: handovers.map((entry) => `${entry.fromBackend}->${entry.toBackend} (${entry.reason})`).join(', '),
+      usageByBackend: sessions.map((entry) => ({ ...entry, usage: providerTokenUsageService.getJobTokenUsage(entry.sessionId, entry.model) })),
     };
   }
 
@@ -428,6 +490,92 @@ export function createJobsService(deps: {
     return { recovery_resume: replayResume, abort_turn: replayAbort, cleanup: replayCleanup };
   }
 
+  /** A git command's output in the job's worktree; empty when it fails (the handover note says so). */
+  async function gitOutput(job: OrchestratorJobRow, args: string[]): Promise<string> {
+    try {
+      return (await runGitCommand(args, job.worktree_path)).stdout;
+    } catch {
+      return '';
+    }
+  }
+
+  /** The last assistant message of a session's run (at most its last 4000 characters). */
+  function lastAssistantMessage(appSessionId: string): string | null {
+    const events = chatRunRegistry.getRun(appSessionId)?.events ?? [];
+    for (let index = events.length - 1; index >= 0; index -= 1) {
+      const event = events[index];
+      if (event.kind !== 'text' || event.role !== 'assistant') continue;
+      const text = String(event.content ?? '').trim();
+      if (text) return text.length > 4000 ? text.slice(-4000) : text;
+    }
+    return null;
+  }
+
+  /** GLM's Flash model (the backend's model whose id names Flash), else GLM's default. */
+  function glmFlashModel(config: OrchestratorConfig): string {
+    const glm = config.backends.glm;
+    return [glm.model, ...Object.keys(glm.models)].find((model) => /flash/i.test(model)) ?? glm.model;
+  }
+
+  /**
+   * codexQuotaFallback 'glm-flash' (the person, 2026-11-07: "when Terra is out of quota replace it with GLM
+   * flash"): a Codex job whose turn just armed a usage-limit wait moves to GLM Flash, same id, worktree and
+   * branch, when a GLM slot is free and the ZCode login probe passes. Otherwise the armed wait stays (today's
+   * behavior). Once per failed turn: keyed by the recovery's key in the job's history and the outbox.
+   */
+  async function tryCodexHandover(jobId: string, lastMessage: string | null): Promise<boolean> {
+    const config = deps.config();
+    const job = orchestratorJobsDb.get(jobId);
+    if (!job || config.codexQuotaFallback !== 'glm-flash' || job.backend !== 'codex') return false;
+    // Only a job at work: never one in review or the CI/CD queue.
+    if (job.state !== 'active' || job.merge_step !== 'none') return false;
+    const recovery = readLimitRecovery(job.limit_recovery);
+    if (!recovery || recovery.kind !== 'usage_limit' || recovery.delivered) return false;
+    if (readBackendHandovers(job).some((entry) => entry.turnKey === recovery.key)) return false;
+    if (job.session_id && chatRunRegistry.isProcessing(job.session_id)) return false;
+    const slotFree = () => loads().glm < config.backends.glm.cap && !getGlmQuotaReset(now());
+    if (!slotFree()) return false;
+    try {
+      if (!(await probeZcode({ now: now() })).ok) return false;
+    } catch {
+      return false;
+    }
+    const toModel = glmFlashModel(config);
+    const result = await outbox.run(
+      { key: `handover:${job.id}:${recovery.key}`, jobId: job.id, kind: 'handover', replay: 'process_bound', payload: { from: 'codex', to: 'glm', model: toModel } },
+      async () => {
+        // Re-read after the probe: the job may have moved on, or the slot been taken, meanwhile.
+        const current = orchestratorJobsDb.get(job.id);
+        if (!current || current.state !== 'active' || current.merge_step !== 'none' || current.backend !== 'codex'
+          || current.limit_recovery !== job.limit_recovery || !slotFree()) return false;
+        const entry: OrchestratorBackendHandover = {
+          at: now().toISOString(),
+          fromBackend: 'codex',
+          fromModel: current.model,
+          fromSessionId: current.session_id,
+          toBackend: 'glm',
+          toModel,
+          reason: 'quota',
+          resetAt: recovery.resetAt,
+          turnKey: recovery.key,
+          lastMessage,
+        };
+        const updated = orchestratorJobsDb.update(job.id, {
+          model: toModel,
+          backend_history: JSON.stringify([...readBackendHandovers(current), entry]),
+          failure_class: null,
+          resume_at: null,
+          limit_recovery: null,
+          in_turn: 0,
+        }) as OrchestratorJobRow;
+        // start() takes the GLM slot synchronously (state preparing, backend glm), then a new GLM session.
+        await start(updated, 'glm');
+        return true;
+      },
+    );
+    return result.status === 'ran' && result.value;
+  }
+
   /** Gives a queued (or half-prepared) job its backend, worktree and session, then starts its first turn. */
   async function start(job: OrchestratorJobRow, backend: OrchestratorBackend): Promise<void> {
     const config = deps.config();
@@ -460,9 +608,21 @@ export function createJobsService(deps: {
         sessionsDb.setSessionModel(sessionId, model);
         if (backendConfig.effort) sessionsDb.setSessionEffort(sessionId, backendConfig.effort);
       }
+      // A job handed over to this backend (its session still the previous backend's): the handover note.
+      const handover = readBackendHandovers(job).at(-1);
+      const handoverNote = handover && handover.toBackend === backend && job.session_id && handover.fromSessionId === job.session_id
+        ? buildHandoverNote({
+          handover,
+          lastMessage: handover.lastMessage,
+          gitLog: await gitOutput(job, ['log', '--oneline', '--no-decorate', '-n', '50', `origin/${job.base_branch}..HEAD`])
+            || await gitOutput(job, ['log', '--oneline', '--no-decorate', '-n', '50', `${job.base_branch}..HEAD`]),
+          gitStatus: await gitOutput(job, ['status', '--short']),
+        })
+        : '';
+      if (orchestratorJobsDb.get(job.id)?.state !== 'preparing') return;
       const ready = orchestratorJobsDb.update(job.id, { session_id: sessionId, state: 'active' }) as OrchestratorJobRow;
       const repoGuidance = deps.config().jobGuidance[path.basename(ready.repo_path)] ?? '';
-      await sendTurn(ready, buildJobPrompt(ready, label, projectMapGuidance, continuation, repoGuidance));
+      await sendTurn(ready, buildJobPrompt(ready, label, projectMapGuidance, continuation, repoGuidance, handoverNote));
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.error(`[Orchestrator] Job ${job.id} could not start`, message);
@@ -759,6 +919,11 @@ export function createJobsService(deps: {
       await Promise.allSettled([...pendingCheckpoints]);
     },
 
+    /** Tests: waits for the Codex -> GLM Flash handovers in flight. */
+    async afterHandovers(): Promise<void> {
+      await Promise.allSettled([...pendingHandovers]);
+    },
+
     /**
      * A turn ended, finished or stopped: either way the job keeps its slot. A
      * stop is a change of direction or more context coming, not the end of
@@ -802,7 +967,17 @@ export function createJobsService(deps: {
         }
       }
       // Not gated on the exit code: Claude ends a turn that hit its limit with exit code 0 and an error event.
-      if (!completion.aborted && job.state === 'active' && handleLimitFailure(job, completion.appSessionId, completion.exitCode)) return;
+      if (!completion.aborted && job.state === 'active' && handleLimitFailure(job, completion.appSessionId, completion.exitCode)) {
+        // The wait is armed either way; a Codex job may still move to GLM Flash instead.
+        if (job.backend === 'codex' && deps.config().codexQuotaFallback === 'glm-flash') {
+          const handover = tryCodexHandover(job.id, lastAssistantMessage(completion.appSessionId));
+          pendingHandovers.add(handover);
+          void handover
+            .finally(() => pendingHandovers.delete(handover))
+            .catch((error) => console.warn(`[Orchestrator] Handover of ${job.id} to GLM Flash failed; it waits for the reset`, error));
+        }
+        return;
+      }
       if (!completion.aborted && completion.exitCode === 0) {
         if (job.backend && (job.backend === 'glm' || job.backend === 'zcode' || deps.config().backends[job.backend]?.provider === 'zcode')) {
           recordZcodeSuccess(now());

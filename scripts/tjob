@@ -43,6 +43,7 @@ def line(j):
     merge = "" if j["merge_step"] == "none" else "  ci:" + j["merge_step"]
     err = ("  ! " + j["last_error"].splitlines()[0][:100]) if j.get("last_error") else ""
     fallback = "  (glm quota fallback)" if j.get("quotaFallback") else ""
+    if j.get("handover"): fallback += "  " + j["handover"]
     wait = j.get("limitWait")
     if wait:
         what = "usage limit" if wait["failureClass"] == "usage_limit" else "login needed"

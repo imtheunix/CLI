@@ -86,6 +86,7 @@ test('orchestrator job view attaches usage from transcript with notional USD', a
         },
         fallbackBackend: 'glm',
         glmQuotaFallback: 'wait',
+        codexQuotaFallback: 'wait',
         glmProvider: 'zcode',
         worktreesRoot: tempDir,
         workspacesRoot: tempDir,

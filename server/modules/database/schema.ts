@@ -162,6 +162,8 @@ CREATE TABLE IF NOT EXISTS orchestrator_jobs (
     resume_at TEXT,
     -- JSON LimitRecovery: the armed recovery (key, due time, attempts), so it survives a restart.
     limit_recovery TEXT,
+    -- JSON [{at, fromBackend, toBackend, toModel, reason, resetAt, ...}]: backend handovers (Codex quota -> GLM Flash).
+    backend_history TEXT,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );

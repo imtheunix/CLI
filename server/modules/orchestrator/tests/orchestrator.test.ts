@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-import { closeConnection, initializeDatabase, orchestratorEffectsDb, orchestratorJobsDb, sessionsDb, userDb } from '@/modules/database/index.js';
+import { closeConnection, initializeDatabase, orchestratorEffectsDb, orchestratorJobsDb, readBackendHandovers, sessionsDb, userDb } from '@/modules/database/index.js';
 import type { OrchestratorJobRow } from '@/modules/database/index.js';
 import { chatRunRegistry } from '@/modules/websocket/index.js';
 import type { NormalizedMessage } from '@/shared/types.js';
@@ -1437,5 +1437,108 @@ test('orchestrator test harness injects a healthy probeZcode stub by default acr
     assert.equal(job(created.id).state, 'active');
     assert.equal(job(created.id).backend, 'glm');
     assert.equal(job(created.id).failure_class, null);
+  });
+});
+
+// codexQuotaFallback (the person, 2026-11-07: "when Terra is out of quota replace it with GLM flash").
+const CODEX_LIMIT = 'You’ve hit your usage limit. Upgrade to Pro or try again at Nov 9th, 2099 10:36 AM.';
+
+async function limitCodexTurn(
+  ctx: { repo: string; jobs: ReturnType<typeof createJobsService>; runtime: ReturnType<typeof createRuntime>; job: (id: string) => OrchestratorJobRow },
+): Promise<{ id: string; codexSession: string }> {
+  const created = await ctx.jobs.create({ title: 'terra', prompt: 'build the widget', repoPath: ctx.repo, backend: 'codex', baseBranch: null });
+  await eventually(() => ctx.runtime.turns.length === 1, 'codex turn');
+  const codexSession = ctx.job(created.id).session_id!;
+  commitFile(ctx.job(created.id).worktree_path, 'widget.txt', 'half\n', 'feat: half of the widget');
+  const writer = chatRunRegistry.getRun(codexSession)!.writer;
+  writer.send({ kind: 'text', role: 'assistant', provider: 'codex', content: 'Step 1 of the widget is committed; step 2 is next.' });
+  writer.send({ kind: 'error', provider: 'codex', content: CODEX_LIMIT });
+  ctx.runtime.finish(codexSession, { exitCode: 1 });
+  return { id: created.id, codexSession };
+}
+
+test('a usage-limited codex job is handed to GLM Flash once: same job, worktree and branch, with a handover prompt', async () => {
+  await withWorkspace(async (ctx) => {
+    const { jobs, runtime, job } = ctx;
+    const { id, codexSession } = await limitCodexTurn(ctx);
+    // The same failed turn reported again while the handover runs: still one handover.
+    jobs.handleRunCompleted({ appSessionId: codexSession, exitCode: 1, aborted: false });
+    await jobs.afterHandovers();
+    await eventually(() => runtime.turns.length === 2, 'GLM Flash turn');
+    const moved = job(id);
+    assert.equal(moved.backend, 'glm');
+    assert.equal(moved.model, 'zai-coding-plan/glm-5.3-flash');
+    assert.equal(moved.state, 'active');
+    assert.notEqual(moved.session_id, codexSession);
+    assert.equal(moved.branch, `feature/terra-${id}`);
+    assert.ok(moved.worktree_path.endsWith(id));
+    assert.equal(moved.failure_class, null);
+    assert.equal(moved.limit_recovery, null);
+    const history = readBackendHandovers(moved);
+    assert.equal(history.length, 1);
+    assert.equal(history[0].fromBackend, 'codex');
+    assert.equal(history[0].fromSessionId, codexSession);
+    assert.equal(history[0].toModel, 'zai-coding-plan/glm-5.3-flash');
+    assert.equal(history[0].reason, 'quota');
+    assert.ok(history[0].resetAt?.startsWith('2099-11-09'));
+    const turn = runtime.turns[1];
+    assert.equal(turn.sessionId, moved.session_id);
+    assert.equal(turn.options.model, 'zai-coding-plan/glm-5.3-flash');
+    assert.match(turn.command, /build the widget/);
+    assert.match(turn.command, /previous agent on this job \(codex\) hit its usage limit/);
+    assert.match(turn.command, /Step 1 of the widget is committed; step 2 is next\./);
+    assert.match(turn.command, /feat: half of the widget/);
+    assert.match(turn.command, /Continue where the previous agent stopped\./);
+    const shown = jobs.get(id)!;
+    assert.equal(shown.handover, 'codex->glm (quota)');
+    assert.deepEqual(shown.usageByBackend?.map((entry) => [entry.backend, entry.sessionId]), [['codex', codexSession], ['glm', moved.session_id]]);
+    // The Codex turn reported once more after the move: nothing new.
+    jobs.handleRunCompleted({ appSessionId: codexSession, exitCode: 1, aborted: false });
+    await jobs.afterHandovers();
+    await jobs.tick();
+    assert.equal(readBackendHandovers(job(id)).length, 1);
+    assert.equal(runtime.turns.length, 2);
+  }, (config) => { config.codexQuotaFallback = 'glm-flash'; });
+});
+
+test('a usage-limited codex job waits for its reset when no GLM slot is free', async () => {
+  await withWorkspace(async (ctx) => {
+    const { id } = await limitCodexTurn(ctx);
+    await ctx.jobs.afterHandovers();
+    const waiting = ctx.job(id);
+    assert.equal(waiting.backend, 'codex');
+    assert.equal(waiting.failure_class, 'usage_limit');
+    // A reset more than 24 h away: today's recovery waits for the hub.
+    assert.equal(ctx.jobs.get(id)?.limitWait?.waitsForHub, true);
+    assert.equal(waiting.backend_history, null);
+    assert.equal(ctx.runtime.turns.length, 1);
+  }, (config) => { config.codexQuotaFallback = 'glm-flash'; config.backends.glm.cap = 0; });
+});
+
+test('a usage-limited codex job waits for its reset when the ZCode login probe fails', async () => {
+  let probes = 0;
+  await withWorkspace(async (ctx) => {
+    const { id } = await limitCodexTurn(ctx);
+    await ctx.jobs.afterHandovers();
+    assert.equal(probes, 1);
+    const waiting = ctx.job(id);
+    assert.equal(waiting.backend, 'codex');
+    assert.equal(waiting.failure_class, 'usage_limit');
+    assert.equal(waiting.backend_history, null);
+    assert.equal(ctx.jobs.get(id)?.handover, null);
+    assert.equal(ctx.runtime.turns.length, 1);
+  }, (config) => { config.codexQuotaFallback = 'glm-flash'; }, {
+    probeZcode: async () => { probes += 1; return { ok: false, error: 'login_failed', message: 'project_token_login_failed' }; },
+  });
+});
+
+test('with codexQuotaFallback unset, a usage-limited codex job waits for its reset', async () => {
+  await withWorkspace(async (ctx) => {
+    assert.equal(ctx.config.codexQuotaFallback, 'wait');
+    const { id } = await limitCodexTurn(ctx);
+    await ctx.jobs.afterHandovers();
+    assert.equal(ctx.job(id).backend, 'codex');
+    assert.equal(ctx.job(id).failure_class, 'usage_limit');
+    assert.equal(ctx.runtime.turns.length, 1);
   });
 });

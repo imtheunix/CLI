@@ -38,6 +38,7 @@ export function assembleLivePrompt(setup: HarnessCaseSetup): AssembledCasePrompt
     failure_class: setup.job.failure_class ?? null,
     resume_at: setup.job.resume_at ?? null,
     limit_recovery: setup.job.limit_recovery ?? null,
+    backend_history: setup.job.backend_history ?? null,
     created_at: setup.job.created_at ?? new Date().toISOString(),
     updated_at: setup.job.updated_at ?? new Date().toISOString(),
   };

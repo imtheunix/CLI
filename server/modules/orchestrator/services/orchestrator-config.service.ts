@@ -31,6 +31,12 @@ export type OrchestratorConfig = {
   fallbackBackend: OrchestratorBackend;
   /** Jobs service: continue quota-stopped GLM jobs on agy, or wait for reset. */
   glmQuotaFallback: 'agy' | 'wait';
+  /**
+   * Jobs service: a Codex job that hits its usage limit continues on GLM Flash (same job, worktree and branch)
+   * when a GLM slot is free and the ZCode login probe passes; otherwise, and with 'wait', it waits for the reset.
+   * The person, 2026-11-07: "when Terra is out of quota replace it with GLM flash".
+   */
+  codexQuotaFallback: 'glm-flash' | 'wait';
   /** Run glm jobs on zcode instead of opencode. Default 'opencode'. */
   glmProvider: 'opencode' | 'zcode';
   /** Where job worktrees are created, one folder per job. */
@@ -121,6 +127,7 @@ function defaults(): OrchestratorConfig {
     },
     fallbackBackend: 'glm',
     glmQuotaFallback: 'agy',
+    codexQuotaFallback: 'wait',
     glmProvider: 'opencode',
     worktreesRoot: path.join(workspacesRoot, '.jobs'),
     workspacesRoot,
@@ -163,6 +170,7 @@ export function loadOrchestratorConfig(file = path.join(os.homedir(), '.config/c
     config.fallbackBackend = override.fallbackBackend as OrchestratorBackend;
   }
   if (override.glmQuotaFallback === 'agy' || override.glmQuotaFallback === 'wait') config.glmQuotaFallback = override.glmQuotaFallback;
+  if (override.codexQuotaFallback === 'glm-flash' || override.codexQuotaFallback === 'wait') config.codexQuotaFallback = override.codexQuotaFallback;
   if (override.glmProvider === 'opencode' || override.glmProvider === 'zcode') {
     config.glmProvider = override.glmProvider;
   }
