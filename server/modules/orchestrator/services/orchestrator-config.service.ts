@@ -41,6 +41,8 @@ export type OrchestratorConfig = {
   conflictResolver: { command: string; model: string };
   /** Per-repository check commands (keyed by the repository folder's name), run before a push: a light gate, not the full suite. */
   checks: Record<string, string>;
+  /** Per-repository build directory templates containing {id}. */
+  cleanup: { buildDirs: Record<string, string> };
   /**
    * Per-repository lines added to every job prompt (keyed by the repository folder's name), e.g. where heavy
    * work runs (the person, 2026-11-05: a load balancer over the workstation and the VM pool, defined in the
@@ -126,6 +128,7 @@ function defaults(): OrchestratorConfig {
     checks: {
       tribeiracli: 'npm run typecheck && npm run lint',
     },
+    cleanup: { buildDirs: {} },
     jobGuidance: {},
     maxConcurrentChecks: 1,
     waitForDeploy: {},
@@ -173,6 +176,14 @@ export function loadOrchestratorConfig(file = path.join(os.homedir(), '.config/c
   if (typeof override.worktreesRoot === 'string') config.worktreesRoot = override.worktreesRoot;
   config.conflictResolver = { ...config.conflictResolver, ...(override.conflictResolver as object ?? {}) };
   config.checks = { ...config.checks, ...(override.checks as Record<string, string> ?? {}) };
+  if (override.cleanup && typeof override.cleanup === 'object') {
+    const dirs = (override.cleanup as Record<string, unknown>).buildDirs;
+    if (dirs && typeof dirs === 'object' && !Array.isArray(dirs)) {
+      for (const [repo, template] of Object.entries(dirs)) {
+        if (typeof template === 'string' && template.includes('{id}')) config.cleanup.buildDirs[repo] = template;
+      }
+    }
+  }
   if (override.jobGuidance && typeof override.jobGuidance === 'object') {
     for (const [repo, text] of Object.entries(override.jobGuidance as Record<string, unknown>)) {
       if (typeof text === 'string' && text.trim()) config.jobGuidance[repo] = text.trim();

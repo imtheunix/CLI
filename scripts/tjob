@@ -10,6 +10,7 @@
 #   tjob retry <id>         a blocked merge goes on from where it stopped
 #   tjob cancel <id>        the person does not want the job anymore: frees its slot, leaves the CI/CD queue
 #   tjob resume <id>        a cancelled or failed job takes a slot again
+#   tjob cleanup [--dry-run]  sweep merged and cancelled jobs
 #   tjob hub-wake [--test]  wake the orchestrating session (the hub) on job events
 set -euo pipefail
 
@@ -91,6 +92,16 @@ case "$cmd" in
   ls) api GET "" | render ls ;;
   show) api GET "/${1:?id}" | render show ;;
   done|approve|retry|resume|cancel) api POST "/${1:?id}/$cmd" '{}' | render "$cmd" ;;
+  cleanup)
+    dry=false
+    if [ "${1:-}" = "--dry-run" ]; then dry=true; shift; fi
+    [ $# -eq 0 ] || { echo "usage: tjob cleanup [--dry-run]" >&2; exit 2; }
+    api POST "/cleanup" "{\"dryRun\":$dry}" | python3 -c '
+import json, sys
+body = json.load(sys.stdin)
+if not body.get("success", False): sys.exit("tjob: " + str(body.get("error")))
+for item in body["data"]["results"]: print(item["id"] + "  " + item["status"])
+' ;;
   hub-wake)
     test_arg="false"
     if [ "${1:-}" = "--test" ]; then test_arg="true"; fi

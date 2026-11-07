@@ -1,3 +1,4 @@
+import { cleanupJob } from './cleanup.service.js';
 import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
@@ -135,6 +136,8 @@ export function createJobsService(deps: {
   const prepareProjectMap = deps.prepareProjectMap ?? prepareJobProjectMap;
   // A job is set up once at a time; a tick that finds it mid-preparation leaves it.
   const preparing = new Set<string>();
+  const cleaning = new Set<string>();
+  const cleanupAttempted = new Set<string>();
 
   function loads(): Record<OrchestratorBackend, number> {
     const counts: Record<OrchestratorBackend, number> = { claude: 0, codex: 0, glm: 0, agy: 0, zcode: 0 };
@@ -414,7 +417,7 @@ export function createJobsService(deps: {
     /**
      * `tjob cancel`: the person said they do not want the job anymore (in
      * its session, where its agent runs this, or from a shell). It frees its
-     * slot and leaves the CI/CD queue; worktree, branch and session are kept.
+     * slot and leaves the CI/CD queue; branch and session are kept; a clean worktree is removed after the session stops.
      * A merge already past its rebase is not taken back.
      */
     async cancel(id: string): Promise<OrchestratorJobView> {
@@ -442,10 +445,41 @@ export function createJobsService(deps: {
     async resume(id: string): Promise<OrchestratorJobView> {
       const job = orchestratorJobsDb.get(id);
       if (!job) throw new AppError(`Job ${id} was not found`, { code: 'JOB_NOT_FOUND', statusCode: 404 });
-      if (job.state === 'cancelled') orchestratorJobsDb.update(id, { state: job.session_id ? 'active' : 'queued' });
+      if (cleaning.has(id)) throw new AppError(`Job ${id} is being cleaned`, { code: 'JOB_CLEANING', statusCode: 409 });
+      cleanupAttempted.delete(id);
+      if (job.state === 'cancelled' && !existsSync(job.worktree_path)) orchestratorJobsDb.update(id, { state: 'queued' });
+      else if (job.state === 'cancelled') orchestratorJobsDb.update(id, { state: job.session_id ? 'active' : 'queued' });
       if (job.state === 'failed') orchestratorJobsDb.update(id, { state: 'queued', last_error: null });
       await this.tick();
       return view(orchestratorJobsDb.get(id) as OrchestratorJobRow);
+    },
+
+    /** Routes and the balancer use this to clean finished jobs after their sessions stop. */
+    async sweepCleanup(dryRun = false, automatic = false): Promise<Array<{ id: string; status: string }>> {
+      const results: Array<{ id: string; status: string }> = [];
+      for (const job of orchestratorJobsDb.list()) {
+        if (job.state !== 'cancelled' && job.merge_step !== 'merged') continue;
+        if (cleaning.has(job.id) || preparing.has(job.id) || this.isSessionBusy(job)) {
+          results.push({ id: job.id, status: 'session busy; kept' });
+          continue;
+        }
+        if (automatic && cleanupAttempted.has(job.id)) continue;
+        cleaning.add(job.id);
+        try {
+          const current = orchestratorJobsDb.get(job.id);
+          if (!current || (current.state !== 'cancelled' && current.merge_step !== 'merged')) continue;
+          const outcome = await cleanupJob(current, deps.config(), dryRun);
+          results.push(outcome);
+          if (!dryRun) {
+            cleanupAttempted.add(job.id);
+            if (outcome.status !== 'cleaned') console.warn(`[Orchestrator] Cleanup ${job.id}: ${outcome.status}`);
+          }
+        } catch (error) {
+          results.push({ id: job.id, status: `cleanup failed: ${String(error)}` });
+          console.warn(`[Orchestrator] Cleanup ${job.id} failed`, error);
+        } finally { cleaning.delete(job.id); }
+      }
+      return results;
     },
 
     /** Used by the CI/CD queue: hands a failure back to the job's agent, which takes its slot again. */
@@ -505,6 +539,7 @@ export function createJobsService(deps: {
      * queued jobs a backend while there is room, oldest first.
      */
     async tick(): Promise<void> {
+      await this.sweepCleanup(false, true);
       for (const job of orchestratorJobsDb.listByState(['active', 'done'])) {
         if (!job.session_id || !chatRunRegistry.isProcessing(job.session_id)) continue;
         if (job.state === 'done' && (job.merge_step === 'queued' || job.merge_step === 'review') && startedAfter(job.session_id, job.updated_at)) {

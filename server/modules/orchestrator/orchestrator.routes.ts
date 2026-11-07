@@ -114,6 +114,11 @@ export function createOrchestratorRouter(services: {
     res.json(createApiSuccessResponse(result));
   }));
 
+  router.post('/cleanup', asyncHandler(async (req, res) => {
+    const dryRun = req.body?.dryRun === true;
+    res.json(createApiSuccessResponse({ results: await services.jobs.sweepCleanup(dryRun) }));
+  }));
+
   router.get('/:id', asyncHandler(async (req, res) => {
     const job = services.jobs.get(String(req.params.id));
     if (!job) throw new AppError('Job not found', { code: 'JOB_NOT_FOUND', statusCode: 404 });
