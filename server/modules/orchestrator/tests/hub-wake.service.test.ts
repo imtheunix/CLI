@@ -1417,3 +1417,71 @@ test('under test, a wake never reaches the configured real hub: no live DB, no l
     }
   });
 });
+
+test('stacked job wake: a base job sitting at review past 30m wakes the hub once for the queued job it holds', async () => {
+  await withTestContext(async ({ dir, config, runtime, eventsLogPath, offsetPath, clock }) => {
+    config.hub!.debounceSec = 0; // immediate delivery for test
+
+    const service = createHubWakeService({
+      config: () => config,
+      runtime: runtime.gateway,
+      now: () => clock.now,
+      eventsLogPath,
+      offsetPath,
+    });
+    service.start();
+
+    // The base job, done and at review; the stacked job, done and held at `queued` by the queue.
+    const base = orchestratorJobsDb.create({
+      id: 'basejob1',
+      title: 'Base Job',
+      prompt: 'p',
+      repoPath: dir,
+      baseBranch: 'main',
+      branch: 'feature/base-job',
+      worktreePath: dir,
+      requestedBackend: 'glm',
+    });
+    orchestratorJobsDb.update(base.id, { state: 'done', merge_step: 'review' });
+    const stacked = orchestratorJobsDb.create({
+      id: 'stacked1',
+      title: 'Stacked Job',
+      prompt: 'p',
+      repoPath: dir,
+      baseBranch: base.branch,
+      branch: 'feature/stacked-job',
+      worktreePath: dir,
+      requestedBackend: 'glm',
+    });
+    orchestratorJobsDb.update(stacked.id, { state: 'done', merge_step: 'queued' });
+
+    // Fresh in review (10 minutes): nothing yet. (The clock moves in steps so it stays
+    // past the wall-clock timestamps the events were written with.)
+    clock.advance(10 * 60);
+    await service.tick();
+    assert.equal(runtime.turns.length, 0, 'no wake while the base is fresh in review');
+
+    // The review has been sitting for 40 minutes (per the clock): one wake naming the wait.
+    orchestratorJobsDb.recordMergeStep(base.id, 'review', new Date(clock.now.getTime() - 40 * 60_000).toISOString());
+    clock.advance(30);
+    await service.tick();
+    assert.equal(runtime.turns.length, 1, 'one wake once the base sits at review past 30m');
+    const line = runtime.turns[0].command.split('\n').find((entry) => entry.includes('stacked1'));
+    assert.ok(line?.includes('stacked on base job basejob1'), `wake names the wait: ${line}`);
+
+    // The same wait never fires twice; the dedupe state survives a restart.
+    clock.advance(10 * 60);
+    await service.tick();
+    assert.equal(runtime.turns.length, 1, 'does not repeat the wake for the same wait');
+    assert.ok(existsSync(`${eventsLogPath}.stacks.json`), 'the dedupe state is persisted');
+
+    // A base still being worked on, or already merged, wakes nothing.
+    orchestratorJobsDb.update(base.id, { merge_step: 'none' });
+    clock.advance(30);
+    await service.tick();
+    assert.equal(runtime.turns.length, 1, 'no wake once the base leaves review');
+
+    runtime.finish(config.hub!.sessionId);
+    service.stop();
+  });
+});

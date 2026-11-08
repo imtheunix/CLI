@@ -652,6 +652,27 @@ test('a job stacked on a merged job\'s branch lands on that job\'s base', async 
   });
 });
 
+test('tjob ls marks a stacked job with "! waiting for base <id> (<state>)" while its base is unmerged', async () => {
+  await withWorkspace(async (ctx) => {
+    const { parent, child } = await stackedJobs(ctx);
+    // `tjob ls`: where the base is in the CI/CD queue follows the marker.
+    orchestratorJobsDb.update(parent, { merge_step: 'review' });
+    assert.deepEqual(ctx.jobs.get(child)?.baseWait, { jobId: parent, state: 'review' });
+    orchestratorJobsDb.update(parent, { merge_step: 'queued' });
+    assert.deepEqual(ctx.jobs.get(child)?.baseWait, { jobId: parent, state: 'queued' });
+    // Out of the queue, the base's own state is shown.
+    orchestratorJobsDb.update(parent, { merge_step: 'none' });
+    assert.deepEqual(ctx.jobs.get(child)?.baseWait, { jobId: parent, state: 'done' });
+
+    // A merged base releases the job; a cancelled job shows no wait of its own.
+    orchestratorJobsDb.update(parent, { merge_step: 'merged' });
+    assert.equal(ctx.jobs.get(child)?.baseWait, null);
+    orchestratorJobsDb.update(parent, { merge_step: 'none' });
+    orchestratorJobsDb.update(child, { state: 'cancelled' });
+    assert.equal(ctx.jobs.get(child)?.baseWait, null);
+  });
+});
+
 test('a push that exits 0 but leaves the commit off origin/<base> blocks instead of merging', async () => {
   await withWorkspace(async (ctx) => {
     const id = await finishedJob(ctx, (worktree) => commitFile(worktree, 'feature.txt', 'f\n', 'feature'));

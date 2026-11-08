@@ -86,6 +86,8 @@ export type OrchestratorJobView = OrchestratorJobRow & {
   usage: JobTokenUsage | null;
   /** `tjob ls`: the job's backend handovers, e.g. `codex->glm (quota)`; null when it never changed backend. */
   handover: string | null;
+  /** `tjob ls`: the job's base branch is another unmerged job's branch (`! waiting for base <id> (<state>)`); null otherwise. */
+  baseWait: { jobId: string; state: string } | null;
   /** Usage per backend when the job changed backend (each backend's own session); null otherwise. */
   usageByBackend: Array<{ backend: OrchestratorBackend; model: string | null; sessionId: string; usage: JobTokenUsage | null }> | null;
 };
@@ -155,6 +157,17 @@ function startedAfter(sessionId: string, sqliteTimestamp: string): boolean {
 function firstUserId(): number | null {
   const user = userDb.getFirstUser() as { id?: number } | null | undefined;
   return typeof user?.id === 'number' ? user.id : null;
+}
+
+/**
+ * The unmerged job whose branch this job stacks on, for `tjob ls` (`! waiting for base <id> (<state>)`):
+ * the state shown is where the base is in the CI/CD queue, or its state while it is still only that.
+ */
+function baseWaitFor(job: OrchestratorJobRow, jobs: OrchestratorJobRow[]): OrchestratorJobView['baseWait'] {
+  if (job.state === 'cancelled' || job.merge_step === 'merged') return null;
+  const base = jobs.find((other) => other.id !== job.id && other.repo_path === job.repo_path && other.branch === job.base_branch);
+  if (!base || base.merge_step === 'merged') return null;
+  return { jobId: base.id, state: base.merge_step !== 'none' ? base.merge_step : base.state };
 }
 
 // buildJobPrompt: used by orchestrator jobs and evals/harness to assemble live prompt text.
@@ -264,6 +277,7 @@ export function createJobsService(deps: {
       model,
       limitWait: limitWait(job),
       usage: job.session_id ? providerTokenUsageService.getJobTokenUsage(job.session_id, model) : null,
+      baseWait: baseWaitFor(job, orchestratorJobsDb.list()),
       ...handoverView(job, model),
     };
   }

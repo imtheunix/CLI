@@ -55,6 +55,9 @@ def line(j):
         elif wait.get("waitsForHub"):
             what += ", waiting for the hub"
         err = "  ! " + what
+    base = j.get("baseWait")
+    if base:
+        err += "  ! waiting for base %s (%s)" % (base["jobId"], base["state"])
     model = (j.get("model") or "").split("/")[-1]
     return "%s  %-6s %-14s %-11s%-13s %s%s" % (j["id"], j.get("backend") or "-", model or "-", doing, merge, j["title"][:60], err + fallback)
 if mode == "ls":

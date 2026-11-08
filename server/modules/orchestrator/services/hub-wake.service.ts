@@ -6,6 +6,7 @@ import {
   appConfigDb,
   getConnection,
   orchestratorJobsDb,
+  readMergeStepHistory,
   runningTurnsDb,
   sessionsDb,
   userDb,
@@ -41,6 +42,9 @@ const MAX_READ_CHUNK = 64 * 1024;
 
 /** Upper bound on in-memory pending events buffer to prevent memory exhaustion. */
 const MAX_PENDING_EVENTS = 500;
+
+/** A stacked job whose base job stays at review this long wakes the hub once (the 2026-11-07 queue deadlocks). */
+const STACKED_BASE_REVIEW_WAKE_MS = 30 * 60_000;
 
 /** Simple async FIFO lock to serialize log reads and wake dispatches. */
 class AsyncLock {
@@ -158,6 +162,8 @@ export type HubWakeDependencies = {
   eventsLogPath?: string;
   offsetPath?: string;
   stallsPath?: string;
+  /** Optional path for the stacked-base wake dedupe state (defaults to `<events log>.stacks.json`). */
+  stacksPath?: string;
   turnTimeoutMs?: number;
   /** The test sink: under test, a wake is delivered only through an injected runTurn or an isolated DB and log. */
   runTurn?: typeof runDetachedChatTurn;
@@ -223,6 +229,10 @@ function resolveStallsPath(deps: HubWakeDependencies, logPath: string): string {
   return deps.stallsPath ?? `${logPath}.stalls.json`;
 }
 
+function resolveStacksPath(deps: HubWakeDependencies, logPath: string): string {
+  return deps.stacksPath ?? `${logPath}.stacks.json`;
+}
+
 function firstUserId(): number | null {
   const user = userDb.getFirstUser() as { id?: number } | null | undefined;
   return typeof user?.id === 'number' ? user.id : null;
@@ -260,12 +270,20 @@ export function createHubWakeService(deps: HubWakeDependencies) {
   const lastZcodeStats = new Map<string, { size: number; mtimeMs: number; lastActivityMs: number }>();
   let stallsLoaded = false;
 
+  /** One stacked-base wake per wait: key `<stacked job id>:<base job id>:<the review's start>`, value: when it fired. */
+  const lastStackWakeEmitted = new Map<string, number>();
+  let stacksLoaded = false;
+
   function getOffsetPath(): string {
     return resolveOffsetPath(deps, resolveEventsLogPath(deps));
   }
 
   function getStallsPath(): string {
     return resolveStallsPath(deps, resolveEventsLogPath(deps));
+  }
+
+  function getStacksPath(): string {
+    return resolveStacksPath(deps, resolveEventsLogPath(deps));
   }
 
   function loadStoredOffset(): number {
@@ -395,6 +413,106 @@ export function createHubWakeService(deps: HubWakeDependencies) {
     try {
       appConfigDb.set('orchestrator.hub_wake_stalls', json);
     } catch {}
+  }
+
+  function ensureStacksLoaded(): void {
+    if (stacksLoaded) return;
+    stacksLoaded = true;
+
+    // 1. Load from file
+    const stacksFile = getStacksPath();
+    try {
+      if (fs.existsSync(stacksFile)) {
+        const parsed = JSON.parse(fs.readFileSync(stacksFile, 'utf8')) as Record<string, unknown>;
+        if (parsed && typeof parsed === 'object') {
+          for (const [k, v] of Object.entries(parsed)) {
+            if (typeof v === 'number' && Number.isFinite(v)) {
+              lastStackWakeEmitted.set(k, v);
+            }
+          }
+        }
+      }
+    } catch {}
+
+    // 2. Load from appConfigDb
+    try {
+      const raw = appConfigDb.get('orchestrator.hub_wake_stacks');
+      if (raw) {
+        const parsed = JSON.parse(raw) as Record<string, unknown>;
+        if (parsed && typeof parsed === 'object') {
+          for (const [k, v] of Object.entries(parsed)) {
+            if (typeof v === 'number' && Number.isFinite(v) && !lastStackWakeEmitted.has(k)) {
+              lastStackWakeEmitted.set(k, v);
+            }
+          }
+        }
+      }
+    } catch {}
+  }
+
+  function saveStacksState(): void {
+    const stacksFile = getStacksPath();
+    const data: Record<string, number> = {};
+    for (const [key, value] of lastStackWakeEmitted.entries()) {
+      data[key] = value;
+    }
+    const json = JSON.stringify(data);
+    try {
+      fs.mkdirSync(path.dirname(stacksFile), { recursive: true });
+      fs.writeFileSync(stacksFile, json, 'utf8');
+    } catch (err) {
+      console.error('[HubWake] Failed to persist stacks file:', err);
+    }
+    try {
+      appConfigDb.set('orchestrator.hub_wake_stacks', json);
+    } catch {}
+  }
+
+  /** A stacked job held at `queued` whose base job sits at review, with when that review began. */
+  type StackedWait = { stacked: OrchestratorJobRow; base: OrchestratorJobRow; reviewAtMs: number };
+
+  /**
+   * A queued job whose base branch is another job's branch waits for that job to merge; a base left waiting at
+   * review for more than 30 min is a deadlock the hub forgot about (two on 2026-11-07): wake it once per wait.
+   */
+  function checkStackedWaits(nowMs: number): void {
+    const cfg = deps.config();
+    if (!cfg.hub?.wake || !cfg.hub.sessionId) return;
+    ensureStacksLoaded();
+
+    const jobs = orchestratorJobsDb.list();
+    const currentWaits = new Map<string, StackedWait>();
+    for (const job of jobs) {
+      if (job.merge_step !== 'queued') continue; // the queue holds the job here while its base is on its way
+      const base = jobs.find((other) => other.id !== job.id && other.repo_path === job.repo_path && other.branch === job.base_branch);
+      if (!base || base.merge_step !== 'review' || base.state === 'cancelled' || base.state === 'failed') continue;
+      const reviewAt = readMergeStepHistory(base).filter((event) => event.step === 'review').at(-1)?.at;
+      const reviewAtMs = reviewAt ? Date.parse(reviewAt) : Number.NaN;
+      if (!Number.isFinite(reviewAtMs) || nowMs - reviewAtMs < STACKED_BASE_REVIEW_WAKE_MS) continue;
+      currentWaits.set(`${job.id}:${base.id}:${reviewAt}`, { stacked: job, base, reviewAtMs });
+    }
+
+    // Waits that ended (the base moved on, the stacked job left the queue) drop their keys.
+    let changed = false;
+    for (const key of lastStackWakeEmitted.keys()) {
+      if (!currentWaits.has(key)) {
+        lastStackWakeEmitted.delete(key);
+        changed = true;
+      }
+    }
+    for (const [key, wait] of currentWaits) {
+      if (lastStackWakeEmitted.has(key)) continue;
+      const minutes = Math.max(1, Math.round((nowMs - wait.reviewAtMs) / 60_000));
+      appendHubEvent({
+        jobId: wait.stacked.id,
+        state: 'waiting',
+        title: wait.stacked.title,
+        reason: `stacked on base job ${wait.base.id}, sitting at review for ${minutes}m: review or approve it so this job can follow`,
+      });
+      lastStackWakeEmitted.set(key, nowMs);
+      changed = true;
+    }
+    if (changed) saveStacksState();
   }
 
   /** Reads unread events from hub-events.log starting at the stored offset. */
@@ -948,6 +1066,7 @@ export function createHubWakeService(deps: HubWakeDependencies) {
   return {
     start(): void {
       ensureStallsLoaded();
+      ensureStacksLoaded();
       unsubscribeEvents = onHubEvent((event) => {
         const cfg = deps.config();
         if (!cfg.hub?.wake || !cfg.hub.sessionId) return;
@@ -972,6 +1091,7 @@ export function createHubWakeService(deps: HubWakeDependencies) {
     async tick(): Promise<void> {
       const nowMs = now().getTime();
       checkStalls(nowMs);
+      checkStackedWaits(nowMs);
       await flushPendingIfEligible();
     },
 
