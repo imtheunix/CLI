@@ -132,6 +132,12 @@ async function withGateway(
 /** The handler is async and the socket listener does not await it. */
 const settle = () => new Promise((resolve) => { setTimeout(resolve, 30); });
 
+/** Waits for a condition instead of a fixed delay; the full suite can be slow enough to miss 30 ms. */
+async function until(condition: () => boolean, timeoutMs = 5_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!condition() && Date.now() < deadline) await settle();
+}
+
 test('an edit resumes through the turn before the one being replaced', async () => {
   await withGateway('claude', async ({ socket, runs }) => {
     socket.emit('message', JSON.stringify({
@@ -246,7 +252,7 @@ test('a refused send never rewinds the conversation', async () => {
         sessionId: SESSION_ID,
         content: 'a turn that is already running',
       }));
-      await settle();
+      await until(() => runs.length === 1);
       assert.equal(runs.length, 1);
 
       socket.emit('message', JSON.stringify({
@@ -255,7 +261,7 @@ test('a refused send never rewinds the conversation', async () => {
         anchorId: 'turn-b',
         content: 'an edit that arrives too late',
       }));
-      await settle();
+      await until(() => socket.frames.at(-1)?.code === 'RUN_IN_PROGRESS');
     } finally {
       sessionsService.rewindSessionForEdit = realRewind;
     }
