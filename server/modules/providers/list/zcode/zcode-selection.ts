@@ -29,8 +29,8 @@ function statePath(): string {
   return path.join(os.homedir(), '.cloudcli', 'zcode', 'provider-state.json');
 }
 
-function configPath(): string {
-  return path.join(os.homedir(), '.zcode', 'v2', 'provider_config.json');
+function configPath(home: string = os.homedir()): string {
+  return path.join(home, '.zcode', 'v2', 'provider_config.json');
 }
 
 function writeAtomic(file: string, text: string): void {
@@ -102,18 +102,21 @@ export function unavailableUntil(now: Date): Date {
   return new Date(now.getTime() + UNAVAILABLE_COOLDOWN_MS);
 }
 
-let configLock: Promise<void> = Promise.resolve();
+const configLocks = new Map<string, Promise<void>>();
 
 /**
- * Serializes ownership of ~/.zcode/v2/provider_config.json: the caller writes the run's selection and keeps
- * the lock until ZCode has read it (its first provider/model report) or exits, so concurrent jobs never start
- * on each other's selection. Returns the release function.
+ * Serializes ownership of one ZCode home's .zcode/v2/provider_config.json: the caller writes the run's selection
+ * and keeps the lock until ZCode has read it (its first provider/model report) or exits, so two runs sharing a
+ * home never start on each other's selection. Each job has its own home, so jobs never wait on each other.
+ * Returns the release function.
  */
-export async function acquireZcodeConfigLock(): Promise<() => void> {
+export async function acquireZcodeConfigLock(home: string = os.homedir()): Promise<() => void> {
   let release!: () => void;
   const held = new Promise<void>((resolve) => { release = resolve; });
-  const previous = configLock;
-  configLock = previous.then(() => held);
+  const previous = configLocks.get(home) ?? Promise.resolve();
+  const chained = previous.then(() => held);
+  configLocks.set(home, chained);
+  void chained.then(() => { if (configLocks.get(home) === chained) configLocks.delete(home); });
   await previous;
   let released = false;
   return () => {
@@ -123,12 +126,16 @@ export async function acquireZcodeConfigLock(): Promise<() => void> {
   };
 }
 
-/** Writes the run's explicit selection as ZCode's default; headless `-p` reads it as its cli-default model. */
-export function writeZcodeSelection(providerId: string, modelId: string, reasoningLevel: string): void {
-  const file = configPath();
+/**
+ * Writes the run's explicit selection as ZCode's default in `home` (a job's ZCode home); headless `-p` reads it as
+ * its cli-default model. A home without its own config starts from the shared ~/.zcode/v2/provider_config.json.
+ */
+export function writeZcodeSelection(providerId: string, modelId: string, reasoningLevel: string, home: string = os.homedir()): void {
+  const file = configPath(home);
+  const seed = existsSync(file) ? file : configPath();
   let config: AnyRecord = {};
-  if (existsSync(file)) {
-    try { config = readObjectRecord(JSON.parse(readFileSync(file, 'utf8'))) ?? {}; } catch { config = {}; }
+  if (existsSync(seed)) {
+    try { config = readObjectRecord(JSON.parse(readFileSync(seed, 'utf8'))) ?? {}; } catch { config = {}; }
   }
   const inner = readObjectRecord(config.config) ?? {};
   const current = readObjectRecord(inner.defaultModelSelection) ?? {};

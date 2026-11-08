@@ -7,6 +7,7 @@ import { randomUUID } from 'node:crypto';
 import Database from 'better-sqlite3';
 
 import { ZcodeSessionSynchronizer } from '@/modules/providers/list/zcode/zcode-session-synchronizer.provider.js';
+import { prepareZcodeHome, zcodeEnv, zcodeHomeFor } from '@/modules/providers/list/zcode/zcode-home.js';
 import { recordZcodeSuccess } from '@/modules/providers/list/zcode/zcode-probe.js';
 import {
   acquireZcodeConfigLock, classifyPlanFailure, planCandidates, recordPlanUnavailable, recordSessionPlan, unavailableUntil, writeZcodeSelection,
@@ -32,7 +33,9 @@ function transcriptPath(sessionId: string): string {
 }
 
 function nativeZcodeHistory(targetProviderSessionId: string, sessionId: string): NormalizedMessage[] {
-  const dbPath = getZcodeDatabasePath();
+  // A CLI-run conversation lives in its app session's own ZCode home; desktop ones in the shared db.
+  const jobDb = path.join(zcodeHomeFor(sessionId), '.zcode', 'cli', 'db', 'db.sqlite');
+  const dbPath = existsSync(jobDb) ? jobDb : getZcodeDatabasePath();
   if (!existsSync(dbPath)) return [];
   let db: Database.Database | null = null;
   try {
@@ -296,6 +299,9 @@ export class ZcodeProvider extends AbstractProvider {
 
       const file = transcriptPath(sessionId);
       mkdirSync(path.dirname(file), { recursive: true });
+      // Each app session runs ZCode in its own home (private db/logs), reused on resume; prepared after
+      // ~/.cloudcli exists so the job's tjob finds it through the home's links.
+      const home = prepareZcodeHome(zcodeHomeFor(sessionId));
       const turnId = randomUUID();
       const record = (event: AnyRecord) => {
         const row = { ...event, turnId, id: randomUUID(), timestamp: new Date().toISOString() };
@@ -311,7 +317,7 @@ export class ZcodeProvider extends AbstractProvider {
       let exitCode = 1;
       for (const [index, plan] of candidates.entries()) {
         const outcome = await this.attempt({
-          plan, model, effort, args, cwd, sessionId, record, writer,
+          plan, model, effort, args, cwd, sessionId, home, record, writer,
           resumed: Boolean(conversation), last: index === candidates.length - 1, signal: options.abortController?.signal,
         });
         if (outcome.done || this.stopped.has(sessionId)) { exitCode = outcome.done ? outcome.exitCode : 1; break; }
@@ -351,15 +357,15 @@ export class ZcodeProvider extends AbstractProvider {
    * A reported provider/model other than the requested one stops the run at once: never silently full GLM-5.3.
    */
   private async attempt(input: {
-    plan: ZcodePlan; model: string; effort: string; args: string[]; cwd: string; sessionId: string;
+    plan: ZcodePlan; model: string; effort: string; args: string[]; cwd: string; sessionId: string; home: string;
     record: (event: AnyRecord) => void; writer: { setSessionId?: (id: string) => void };
     resumed: boolean; last: boolean; signal?: AbortSignal;
   }): Promise<{ done: true; exitCode: number } | { done: false; reason: string }> {
     const { plan, model, sessionId, record, writer } = input;
-    const release = await acquireZcodeConfigLock();
+    const release = await acquireZcodeConfigLock(input.home);
     if (input.signal?.aborted || this.stopped.has(sessionId)) { release(); return { done: true, exitCode: 1 }; }
     try {
-      writeZcodeSelection(plan.providerId, model, input.effort);
+      writeZcodeSelection(plan.providerId, model, input.effort, input.home);
     } catch (error) {
       release();
       record({ event: 'error', content: `Could not write the ZCode model selection: ${(error as Error).message}` });
@@ -368,7 +374,7 @@ export class ZcodeProvider extends AbstractProvider {
     const lockTimer = setTimeout(release, 60_000);
 
     return new Promise((resolve) => {
-      const child = spawn('zcode', input.args, { cwd: input.cwd, stdio: ['ignore', 'pipe', 'pipe'], detached: process.platform !== 'win32' });
+      const child = spawn('zcode', input.args, { cwd: input.cwd, env: zcodeEnv(input.home), stdio: ['ignore', 'pipe', 'pipe'], detached: process.platform !== 'win32' });
       this.processes.set(sessionId, child);
       let buffer = '';
       let pending: AnyRecord[] | null = [];

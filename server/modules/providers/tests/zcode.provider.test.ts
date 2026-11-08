@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, readFile, rm } from 'node:fs/promises';
+import { lstat, mkdtemp, mkdir, readlink, writeFile, readFile, rm } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -7,6 +8,7 @@ import test from 'node:test';
 import type { NormalizedMessage, ProviderRuntimeContext } from '@/shared/types.js';
 
 import { ZcodeProvider } from '../list/zcode/zcode.provider.js';
+import { zcodeHomeFor } from '../list/zcode/zcode-home.js';
 import {
   isZcodeProbeHealthy,
   probeZcodeLogin,
@@ -29,7 +31,9 @@ async function withCli(run: (root: string, provider: ZcodeProvider) => Promise<v
   await writeFile(path.join(root, 'bin', 'zcode'), `#!${process.execPath}
 const fs = require('node:fs');
 const args = process.argv.slice(2);
+const logDir = require('node:path').dirname(process.env.ZCODE_TEST_ARGS);
 fs.writeFileSync(process.env.ZCODE_TEST_ARGS, JSON.stringify(args));
+fs.appendFileSync(logDir + '/homes.log', JSON.stringify({ home: process.env.HOME, args, credentials: fs.existsSync(process.env.HOME + '/.zcode/v2/credentials.json') }) + '\\n');
 if (args[1] === 'hang') { setInterval(() => {}, 1000); }
 else if (args[0] === 'version') {
   process.stdout.write('ZCode 0.17.1\\n');
@@ -51,7 +55,9 @@ else {
 const home = process.env.HOME;
 const selection = JSON.parse(fs.readFileSync(home + '/.zcode/v2/provider_config.json', 'utf8')).config.defaultModelSelection;
 if (!['low', 'high', 'max'].includes(selection.options?.reasoningLevel)) throw new Error('Invalid ZCode reasoning level');
-fs.appendFileSync(home + '/runs.log', selection.providerId + '/' + selection.modelId + '\\n');
+fs.mkdirSync(home + '/.zcode/cli/db', { recursive: true });
+fs.appendFileSync(home + '/.zcode/cli/db/db.sqlite', 'x');
+fs.appendFileSync(logDir + '/runs.log', selection.providerId + '/' + selection.modelId + '\\n');
 const honored = (process.env.ZCODE_TEST_HONORED || 'account:zai-individual-coding-plan').split(',');
 let [providerId, modelId] = honored.includes(selection.providerId) && selection.options && selection.options.reasoningLevel
   ? [selection.providerId, selection.modelId] : ['account:zai-individual-coding-plan', 'GLM-5.3'];
@@ -148,7 +154,7 @@ test('zcode launches, streams split NDJSON, configures GLM-5.3-Flash, persists h
     assert.deepEqual(await runs(root), [
       'account:zai-offpeak-idle-plan/GLM-5.3-Flash', 'account:zai-start-plan/GLM-5.3-Flash', 'account:zai-individual-coding-plan/GLM-5.3-Flash',
     ]);
-    const configRaw = JSON.parse(await readFile(path.join(root, '.zcode', 'v2', 'provider_config.json'), 'utf8'));
+    const configRaw = JSON.parse(await readFile(path.join(zcodeHomeFor('app-1'), '.zcode', 'v2', 'provider_config.json'), 'utf8'));
     assert.deepEqual(configRaw.config.defaultModelSelection, { providerId: 'account:zai-individual-coding-plan', modelId: 'GLM-5.3-Flash', options: { reasoningLevel: 'high' } });
     const state = await planState(root);
     assert.match(state.plans['account:zai-start-plan'].reason, /reported account:zai-individual-coding-plan\/GLM-5\.3, not the requested account:zai-start-plan\/GLM-5\.3-Flash/);
@@ -182,7 +188,7 @@ test('zcode launches, streams split NDJSON, configures GLM-5.3-Flash, persists h
     assert.equal(resumeArgs[resumeArgs.indexOf('--resume') + 1], 'sess_native_zcode');
     assert.equal(resumeArgs[resumeArgs.indexOf('--mode') + 1], 'plan');
 
-    const configResume = JSON.parse(await readFile(path.join(root, '.zcode', 'v2', 'provider_config.json'), 'utf8'));
+    const configResume = JSON.parse(await readFile(path.join(zcodeHomeFor('app-1'), '.zcode', 'v2', 'provider_config.json'), 'utf8'));
     assert.equal(configResume.config.defaultModelSelection.options.reasoningLevel, 'low');
     // The resume asks for the plan its conversation runs on; the skipped plans stay in cooldown.
     assert.equal((await runs(root)).length, 4);
@@ -201,7 +207,7 @@ test('zcode maps every effort to a supported reasoning level', async () => {
   await withCli(async (root, provider) => {
     for (const [effort, expected] of [[undefined, 'high'], ['low', 'low'], ['medium', 'high'], ['high', 'high'], ['max', 'max'], ['unknown', 'high']] as const) {
       await provider.runtime.run('test', { sessionId: 'effort-test', cwd: root, effort }, { send: () => {} }, context(null));
-      const config = JSON.parse(await readFile(path.join(root, '.zcode', 'v2', 'provider_config.json'), 'utf8'));
+      const config = JSON.parse(await readFile(path.join(zcodeHomeFor('effort-test'), '.zcode', 'v2', 'provider_config.json'), 'utf8'));
       assert.equal(config.config.defaultModelSelection.options.reasoningLevel, expected);
     }
   }, { ZCODE_TEST_HONORED: 'account:zai-offpeak-idle-plan,account:zai-start-plan,account:zai-individual-coding-plan' });
@@ -404,4 +410,68 @@ test('zcode probe does not run when NODE_ENV=test unless explicit: true is passe
     else process.env.NODE_ENV = previousEnv;
     resetZcodeProbeCache();
   }
+});
+
+async function homes(root: string): Promise<Array<{ home: string; args: string[]; credentials: boolean }>> {
+  return (await readFile(path.join(root, 'homes.log'), 'utf8')).split('\n').filter(Boolean).map((line) => JSON.parse(line));
+}
+
+test('zcode runs each job in its own home: private db, shared login, reused on resume', async () => {
+  await withCli(async (root, provider) => {
+    await mkdir(path.join(root, '.zcode', 'v2'), { recursive: true });
+    await mkdir(path.join(root, '.zcode', 'cli', 'db'), { recursive: true });
+    await writeFile(path.join(root, '.zcode', 'v2', 'credentials.json'), '{"token":"secret"}');
+    await writeFile(path.join(root, '.zcode', 'v2', 'setting.json'), '{}');
+    await writeFile(path.join(root, '.zcode', 'v2', 'provider_config.json'), JSON.stringify({ schemaVersion: 1, config: { keep: true } }));
+    await writeFile(path.join(root, '.gitconfig'), '[user]\n\tname = t\n');
+    const writer = { send: () => {}, setSessionId: () => {} };
+
+    await Promise.all([
+      provider.runtime.run('one', { sessionId: 'job-a', cwd: root }, writer, context(null)),
+      provider.runtime.run('two', { sessionId: 'job-b', cwd: root }, writer, context(null)),
+    ]);
+    const first = await homes(root);
+    const homeA = zcodeHomeFor('job-a');
+    const homeB = zcodeHomeFor('job-b');
+    assert.notEqual(homeA, homeB);
+    assert.deepEqual(new Set(first.map((entry) => entry.home)), new Set([homeA, homeB]));
+    assert.ok(first.every((entry) => entry.credentials), 'credentials reachable from every job home');
+
+    for (const home of [homeA, homeB]) {
+      // Login files are links to the shared ones, never copies; the cli dir (db, logs) is the job's own.
+      assert.equal(await readlink(path.join(home, '.zcode', 'v2', 'credentials.json')), path.join(root, '.zcode', 'v2', 'credentials.json'));
+      assert.equal(await readlink(path.join(home, '.zcode', 'v2', 'setting.json')), path.join(root, '.zcode', 'v2', 'setting.json'));
+      assert.equal((await lstat(path.join(home, '.zcode', 'cli'))).isDirectory(), true);
+      assert.ok(existsSync(path.join(home, '.zcode', 'cli', 'db', 'db.sqlite')));
+      // The selection is the job's own file, seeded from the shared config.
+      const config = JSON.parse(await readFile(path.join(home, '.zcode', 'v2', 'provider_config.json'), 'utf8'));
+      assert.equal((await lstat(path.join(home, '.zcode', 'v2', 'provider_config.json'))).isSymbolicLink(), false);
+      assert.equal(config.config.keep, true);
+      // The rest of the real home stays reachable (git identity, ~/.cloudcli for tjob).
+      assert.equal(await readlink(path.join(home, '.gitconfig')), path.join(root, '.gitconfig'));
+      assert.equal(await readlink(path.join(home, '.cloudcli')), path.join(root, '.cloudcli'));
+    }
+    assert.equal(existsSync(path.join(root, '.zcode', 'cli', 'db', 'db.sqlite')), false, 'the shared db is never touched');
+    const shared = JSON.parse(await readFile(path.join(root, '.zcode', 'v2', 'provider_config.json'), 'utf8'));
+    assert.equal(shared.config.defaultModelSelection, undefined);
+
+    await provider.runtime.run('again', { sessionId: 'job-a', cwd: root }, writer, context('sess_native_zcode'));
+    const resumed = (await homes(root)).slice(first.length);
+    assert.ok(resumed.length > 0);
+    assert.ok(resumed.every((entry) => entry.home === homeA && entry.args.includes('--resume')));
+  });
+});
+
+test('zcode login probe runs in a throwaway home', async () => {
+  resetZcodeProbeCache();
+  await withCli(async (root) => {
+    await mkdir(path.join(root, '.zcode', 'v2'), { recursive: true });
+    await writeFile(path.join(root, '.zcode', 'v2', 'credentials.json'), '{}');
+    assert.equal((await probeZcodeLogin({ explicit: true })).ok, true);
+    const [entry] = await homes(root);
+    assert.ok(!entry.home.startsWith(root), entry.home);
+    assert.equal(entry.credentials, true);
+    assert.equal(existsSync(entry.home), false, 'the probe home is removed');
+  });
+  resetZcodeProbeCache();
 });

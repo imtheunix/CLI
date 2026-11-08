@@ -1,8 +1,9 @@
 import { execFile } from 'node:child_process';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
+import { prepareZcodeHome, zcodeEnv } from '@/modules/providers/list/zcode/zcode-home.js';
 import type { ZcodeProbeOptions, ZcodeProbeResult } from '@/shared/types.js';
 
 const PROBE_TTL_MS = 10 * 60_000;
@@ -43,7 +44,7 @@ export function resetZcodeProbeCache(): void {
  * project_token_login_failed is encountered.
  * Under NODE_ENV=test, never runs the real binary unless options.explicit is true.
  *
- * Never reads or prints ~/.zcode/v2/credentials.json.
+ * Runs in a throwaway ZCode home whose credentials are a symlink; never reads or prints them.
  * Used by Orchestrator jobs service to verify login before dispatching GLM/zcode turns.
  */
 export async function probeZcodeLogin(options: ZcodeProbeOptions = {}): Promise<ZcodeProbeResult> {
@@ -60,6 +61,10 @@ export async function probeZcodeLogin(options: ZcodeProbeOptions = {}): Promise<
   const timeoutMs = options.timeoutMs ?? 20_000;
   const tempDir = await mkdtemp(path.join(os.tmpdir(), 'zcode-probe-'));
   try {
+    // A throwaway home: the probe's session never touches a job's db or the shared one.
+    const home = prepareZcodeHome(path.join(tempDir, 'home'));
+    const cwd = path.join(tempDir, 'cwd');
+    await mkdir(cwd);
     const { stdout, stderr, error } = await new Promise<{
       stdout: string;
       stderr: string;
@@ -68,7 +73,7 @@ export async function probeZcodeLogin(options: ZcodeProbeOptions = {}): Promise<
       execFile(
         'zcode',
         ['-p', 'ok', '--output-format', 'stream-json', '--mode', 'plan'],
-        { cwd: tempDir, timeout: timeoutMs, maxBuffer: 10 * 1024 * 1024 },
+        { cwd, env: zcodeEnv(home), timeout: timeoutMs, maxBuffer: 10 * 1024 * 1024 },
         (err, out, errOut) => {
           resolve({ stdout: String(out ?? ''), stderr: String(errOut ?? ''), error: err ?? undefined });
         },
