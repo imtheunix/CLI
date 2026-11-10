@@ -28,6 +28,10 @@ type MessageComponentProps = {
   onGrantToolPermission?: (suggestion: ClaudePermissionSuggestion) => PermissionGrantResult | null | undefined;
   showRawParameters?: boolean;
   showThinking?: boolean;
+  /** Opens a reasoning row on first render; the "Show reasoning expanded" setting. */
+  showReasoningExpanded?: boolean;
+  /** True while this row is the turn's newest reasoning and the turn is still running. */
+  isReasoningStreaming?: boolean;
   selectedProject?: Project | null;
   provider: LLMProvider | string;
   /**
@@ -45,11 +49,17 @@ type MessageComponentProps = {
 
 const COPY_HIDDEN_TOOL_NAMES = new Set(['Bash', 'Edit', 'Write', 'ApplyPatch']);
 
+/** Counts whitespace-separated words for the collapsed reasoning row. */
+const countWords = (text: string | undefined): number => {
+  const trimmed = (text || '').trim();
+  return trimmed ? trimmed.split(/\s+/).length : 0;
+};
+
 /**
  * Rendered by chat's ChatMessagesPane and ToolGroupContainer to draw one
  * transcript entry — user turn, assistant turn, or a tool call and its result.
  */
-const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, showRawParameters, showThinking, selectedProject, provider, onEditMessage, onForkFromMessage }: MessageComponentProps) => {
+const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, showRawParameters, showThinking, showReasoningExpanded, isReasoningStreaming, selectedProject, provider, onEditMessage, onForkFromMessage }: MessageComponentProps) => {
   const { t } = useTranslation('chat');
   const isGrouped = prevMessage && prevMessage.type === message.type &&
     ((prevMessage.type === 'assistant') ||
@@ -345,8 +355,14 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
                 )}
               </>
             ) : message.isThinking ? (
-              /* Thinking messages — Reasoning component (ai-elements pattern) */
-              <Reasoning defaultOpen={isExporting}>
+              /* One collapsed row per reasoning run; the text stays folded away
+                 unless the reader opens it or the setting asks for it. */
+              <Reasoning
+                defaultOpen={isExporting || Boolean(showReasoningExpanded)}
+                isStreaming={Boolean(isReasoningStreaming)}
+                duration={isReasoningStreaming ? undefined : message.reasoningDurationSeconds}
+                wordCount={countWords(message.content)}
+              >
                 <ReasoningTrigger />
                 <ReasoningContent>
                   <Markdown className="prose prose-base prose-gray max-w-none font-sans dark:prose-invert">
@@ -363,7 +379,11 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
               <div dir="auto" className="text-base leading-6 text-foreground">
                 {/* Reasoning accordion */}
                 {showThinking && message.reasoning && (
-                  <Reasoning className="mb-3" defaultOpen={false}>
+                  <Reasoning
+                    className="mb-3"
+                    defaultOpen={isExporting || Boolean(showReasoningExpanded)}
+                    wordCount={countWords(message.reasoning)}
+                  >
                     <ReasoningTrigger />
                     <ReasoningContent>
                       <div className="whitespace-pre-wrap">

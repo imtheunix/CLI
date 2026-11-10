@@ -271,3 +271,36 @@ test('an updated event finds a call launched before this page loaded through its
   const [row] = normalizedToChatMessages([workflowCall, launchAck, killed]);
   assert.equal(row?.taskStatus?.status, 'stopped');
 });
+
+test('consecutive reasoning parts fold into one thinking row', () => {
+  const first = message('reasoning-1', {
+    kind: 'thinking',
+    content: 'First thought.',
+    timestamp: '2026-11-10T12:00:00.000Z',
+  });
+  const second = message('reasoning-2', {
+    kind: 'thinking',
+    content: 'Second thought.',
+    timestamp: '2026-11-10T12:00:04.000Z',
+  });
+
+  const rows = normalizedToChatMessages([first, second]);
+
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0]?.isThinking, true);
+  assert.equal(rows[0]?.content, 'First thought.\n\nSecond thought.');
+  assert.equal(rows[0]?.reasoningDurationSeconds, 4);
+});
+
+test('reasoning separated by a reply stays in its own row', () => {
+  const first = message('reasoning-1', { kind: 'thinking', content: 'Before.' });
+  const reply = message('reply', { kind: 'text', content: 'Answer.' });
+  const second = message('reasoning-2', { kind: 'thinking', content: 'After.' });
+
+  const rows = normalizedToChatMessages([first, reply, second]);
+
+  assert.equal(rows.length, 3);
+  assert.equal(rows[0]?.content, 'Before.');
+  assert.equal(rows[1]?.content, 'Answer.');
+  assert.equal(rows[2]?.content, 'After.');
+});

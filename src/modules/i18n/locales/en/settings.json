@@ -2,6 +2,7 @@
   "chatDisplay": {
     "showRawParameters": "Show raw parameters",
     "showThinking": "Show thinking",
+    "showReasoningExpanded": "Show reasoning expanded",
     "sendByCtrlEnter": "Send by Ctrl+Enter",
     "title": "Chat display and input"
   },

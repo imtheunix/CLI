@@ -74,6 +74,8 @@ type ChatMessagesPaneProps = {
   onGrantToolPermission: (suggestion: { entry: string; toolName: string }) => { success: boolean };
   showRawParameters?: boolean;
   showThinking?: boolean;
+  /** Opens reasoning rows on first render; the "Show reasoning expanded" setting. */
+  showReasoningExpanded?: boolean;
   selectedProject: Project;
   /** Loads an already-sent message back into the composer; absent when the provider cannot re-run from a point. */
   onEditMessage?: (message: ChatMessage) => void;
@@ -144,6 +146,7 @@ function ChatMessagesPane({
   onGrantToolPermission,
   showRawParameters,
   showThinking,
+  showReasoningExpanded,
   selectedProject,
 }: ChatMessagesPaneProps) {
   const { t } = useTranslation('chat');
@@ -350,6 +353,8 @@ function ChatMessagesPane({
                     onGrantToolPermission={onGrantToolPermission}
                     showRawParameters={showRawParameters}
                     showThinking={showThinking}
+                    showReasoningExpanded={showReasoningExpanded}
+                    isReasoningStreaming={isProcessing && index === rowCount - 1 && Boolean(item.isThinking)}
                     selectedProject={selectedProject}
                     provider={provider}
                     onEditMessage={onEditMessage}
