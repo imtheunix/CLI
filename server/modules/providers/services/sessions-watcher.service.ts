@@ -476,6 +476,12 @@ export async function initializeSessionsWatcher(
     await watcherClosePromise;
   }
 
+  // Re-initializing without an explicit close must not stack a second watcher
+  // set on the same roots; close the previous set first.
+  if (watchers.length > 0) {
+    await closeSessionsWatcher();
+  }
+
   watcherClosed = false;
   watcherGeneration += 1;
   const generation = watcherGeneration;

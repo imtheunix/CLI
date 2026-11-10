@@ -1,5 +1,9 @@
 # Native session watcher events (7f38062e)
 
+> Follow-up (c9681157): a second `initializeSessionsWatcher` without an explicit close now
+> closes the previous watcher set first, so repeated startup cannot stack duplicate native
+> watchers. The rest of this report describes the original native-event change.
+
 ## Root cause
 
 `server/modules/providers/services/sessions-watcher.service.ts` watched every provider
@@ -34,6 +38,9 @@ A transcript change therefore waited for the next six-second poll before it reac
   `ready` waiters are cancelled so no startup timer survives shutdown. The existing
   generation guard still prevents a sync that resolves after close from queueing or
   broadcasting.
+- A second `initializeSessionsWatcher` without an explicit close now closes the previous
+  watcher set first, so a repeated startup cannot stack duplicate `fs.watch` instances on
+  the same roots.
 - `onUpdate` now checks the lifecycle guard before starting a per-file sync as well as after
   it.
 
@@ -50,7 +57,7 @@ npx tsx --tsconfig server/tsconfig.json --test \
   server/modules/providers/tests/sessions-watcher-debounce.test.ts
 ```
 
-Result: **13 tests, 13 passed, 0 failed, 0 skipped** (8 new native-filesystem tests, 5
+Result: **14 tests, 14 passed, 0 failed, 0 skipped** (9 new native-filesystem tests, 5
 existing debounce/lifecycle tests). The new tests use real temporary directories and the
 real chokidar watcher; only the provider synchronizer and websocket client set are stubbed.
 No production session directory or external model is touched.
@@ -76,6 +83,8 @@ Real checks covered:
 7. A file deletion is not treated as a session update; offline deletion remains the
    synchronizer's prune path.
 8. A symlinked provider root is watched through its real directory.
+9. A second initialize without close replaces the watcher set instead of stacking a second
+   set of native watchers.
 
 Also run:
 

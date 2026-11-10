@@ -480,3 +480,40 @@ test('a symlinked provider root is watched through its real directory', async ()
     });
   });
 });
+
+test('a second initialize without close replaces the watcher set instead of stacking it', async () => {
+  await withIsolatedDatabase(async () => {
+    await withTempRoot(async (root) => {
+      const watchRoot = path.join(root, 'claude-projects');
+      await mkdir(watchRoot, { recursive: true });
+      sessionsDb.createSession('double-1', 'claude', '/repo/demo', 'Double one');
+
+      const state = stubSynchronizer();
+      const { frames, client, waitForFrame } = addFakeClient();
+      const watchPaths: SessionsWatcherPath[] = [{ provider: 'claude', rootPath: watchRoot }];
+
+      try {
+        await initializeSessionsWatcher(watchPaths);
+        await waitForInitialScan(state);
+        await initializeSessionsWatcher(watchPaths);
+        await waitForInitialScan(state, 2);
+
+        await writeFile(path.join(watchRoot, 'double-1.jsonl'), '{"type":"user"}\n');
+        const frame = await waitForFrame(5_000);
+        assert.equal(frame.sessionId, 'double-1');
+
+        await delay(1_500);
+        assert.equal(frames.length, 1, 'the replaced watcher set emits one broadcast');
+        assert.equal(
+          state.providerFileCalls.length,
+          1,
+          'only one watcher set remains after a second initialize'
+        );
+      } finally {
+        await closeSessionsWatcher();
+        connectedClients.delete(client);
+        mock.restoreAll();
+      }
+    });
+  });
+});
