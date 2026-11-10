@@ -78,6 +78,7 @@ Automatic review is configured under `review` (the legacy boolean still maps to 
   "review": {
     "enabled": true,
     "refuteCap": 2,
+    "refuteTimeoutMs": 1200000,
     "maxLines": 400,
     "protectedRepos": [],
     "riskyPaths": ["infra", "auth", "secrets", "ci", "migrations", "k8s", ".forgejo", ".github"],
@@ -90,7 +91,7 @@ Automatic review is configured under `review` (the legacy boolean still maps to 
 
 Optional local symbol/dependency maps for Claude, Codex, GLM and agy jobs are documented in [Graphify project maps](graphify.md). They are disabled by default and use one bounded shell interface without changing model selection or job completion rules.
 
-With review enabled, `tjob done` first persists `review_step=gate`. The gate resolves the same repository checks as the merge queue, keeps typechecking project-aware, scopes lint to changed files, and runs changed tests plus tests that import changed sources. Next, one read-only refutation runs in the existing worktree on the other model family, with its own `refuteCap` and no job, branch or producer-pool slot. Its strict JSON verdict counts only defects with a reproduced probe and output. Gate red or reproduced defects return to the producer for one fix round; a second failure goes to the hub. Persisted steps resume after restart and a re-attached refutation is awaited rather than duplicated. `tjob ls` shows `rv:<step>` and `tjob show` includes the verdict and risk.
+With review enabled, `tjob done` first persists `review_step=gate`. The gate resolves the same repository checks as the merge queue, keeps typechecking project-aware, scopes lint to changed files, and runs changed tests plus tests that import changed sources. Next, one read-only refutation runs in the existing worktree on the other model family, with its own `refuteCap` and no job, branch or producer-pool slot. Its strict JSON verdict counts only defects with a reproduced probe and output. `refuteTimeoutMs` is at most 20 minutes by configuration as well as by default; timeout aborts and archives the reviewer session and parks the job at the hub with the exact timeout reason, never approving or retrying. Cancelling the job also aborts that reviewer and discards its late result. Gate red or reproduced defects return to the producer for one fix round; if that reopen is refused (busy or authentication hold), the job is restored to review and the hub receives the fix evidence instead. A second failure goes to the hub. Persisted steps resume after restart: a re-attached refutation is awaited, and a terminal refute session's persisted transcript is reused rather than prompted again. `tjob ls` shows `rv:<step>` and `tjob show` includes the verdict and risk.
 
 The policy auto-approves through the ordinary `tjob approve` path only when the gate and refutation pass, the diff stays inside paths named in the brief (skipped when none are named), has fewer than `maxLines` changed lines, touches no risky path and is not in a protected repository. Approval emits a batched FYI; all other outcomes emit a `review` decision with gate/verdict and `git diff --stat`, never the full patch. With review disabled, `tjob done` queues directly.
 

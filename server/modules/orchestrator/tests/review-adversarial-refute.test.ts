@@ -140,7 +140,7 @@ async function withReviewFixture(
             onSession(`refute-session-${refuteCalls}`);
             return refuteImpl(jobRow, backend, sessionId, onSession, options);
           },
-          ...(abortImpl ? { abort: abortImpl } : {}),
+          abort: abortImpl ?? (() => undefined),
         };
         const review = createReviewService({ jobs, config: () => config, refuteService, run: fakeRun, gate: async () => ({ ok: true, output: '', command: 'scoped', logPath: '/tmp/gate.log' }) });
         return { tick: () => review.tick(), get refuteCalls() { return refuteCalls; } };
@@ -259,20 +259,69 @@ test('probe: defects on the second completion open no second fix round', async (
   });
 });
 
-test('probe: a refutation that never settles parks the review with no timeout and no escalation (reproduced liveness finding)', async () => {
-  await withReviewFixture(async ({ job, service, hub, approvals }) => {
+test('probe: a busy producer refusing the fix reopen is restored to review and the hub receives the only fix evidence', async () => {
+  await withReviewFixture(async ({ job, service, hub, approvals, fixes, setReopenResult }) => {
+    setReopenResult(false, true); // reopenWithMessage activated the producer, then found it busy
+    const review = service(async () => defects);
+    await review.tick();
+    await review.tick();
+    const parked = orchestratorJobsDb.get(job.id)!;
+    assert.equal(parked.state, 'done');
+    assert.equal(parked.merge_step, 'review');
+    assert.equal(parked.review_step, 'hub');
+    assert.equal(parked.review_round, 1);
+    assert.equal(fixes.length, 1, 'the sole automatic fix round was attempted once');
+    assert.deepEqual(approvals, []);
+    assert.match(hub.events.at(-1)?.reason ?? '', /did not receive the only automatic fix message/);
+    assert.match(hub.events.at(-1)?.reason ?? '', /expected 2, got 1/);
+    await review.tick();
+    assert.equal(review.refuteCalls, 1);
+    assert.equal(hub.events.length, 1);
+  });
+});
+
+test('probe: an auth reopen refusal before activation cannot strand the job at fix or drop its defect evidence', async () => {
+  await withReviewFixture(async ({ job, service, hub, approvals, setReopenResult }) => {
+    setReopenResult(false, false); // refused before the producer state transition
+    const review = service(async () => defects);
+    await review.tick();
+    await review.tick();
+    const parked = orchestratorJobsDb.get(job.id)!;
+    assert.equal(parked.state, 'done');
+    assert.equal(parked.merge_step, 'review');
+    assert.equal(parked.review_step, 'hub');
+    assert.equal(parked.review_round, 1);
+    assert.deepEqual(approvals, []);
+    assert.match(hub.events.at(-1)?.reason ?? '', /session busy or authentication hold/);
+    assert.match(hub.events.at(-1)?.reason ?? '', /bad return/);
+  });
+});
+
+test('probe: a never-settling refutation is aborted, parked at the hub with its exact reason, and never retried', async () => {
+  await withReviewFixture(async ({ job, config, service, hub, approvals }) => {
     orchestratorJobsDb.update(job.id, { review_step: 'refute' });
+    config.review.refuteTimeoutMs = 25;
     const never = new Promise<RefuteVerdict>(() => undefined);
-    const review = service(() => never);
-    const ticking = review.tick(); // parks inside the refutation and never comes back on its own
-    void ticking.catch(() => undefined);
-    const settled = await Promise.race([
-      ticking.then(() => true, () => true),
-      new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 300)),
-    ]);
-    assert.equal(settled, false, 'the tick stays parked on a never-settling refutation: no bound, no hub wake');
-    assert.equal(orchestratorJobsDb.get(job.id)?.review_step, 'refute');
-    assert.equal(hub.events.length, 0, 'while parked the hub hears nothing (finding, fail-safe but silent)');
+    const aborted: Array<{ jobId: string; sessionId: string | null | undefined }> = [];
+    const review = service(() => never, (current, sessionId) => {
+      aborted.push({ jobId: current.id, sessionId });
+    });
+    await review.tick();
+    const parked = orchestratorJobsDb.get(job.id)!;
+    assert.equal(parked.review_step, 'hub');
+    assert.equal(parked.review_risk, 'high');
+    assert.deepEqual(aborted, [{ jobId: job.id, sessionId: 'refute-session-1' }]);
+    assert.deepEqual(approvals, []);
+    assert.equal(hub.events.length, 1);
+    assert.equal(
+      hub.events[0].reason,
+      'review needed: automatic refutation timed out after 25 ms; reviewer aborted and its session was archived; gate green',
+    );
+    // The timeout released inFlight, and hub is terminal rather than a retry loop.
+    await review.tick();
+    await review.tick();
+    assert.equal(review.refuteCalls, 1);
+    assert.equal(hub.events.length, 1);
     assert.deepEqual(approvals, []);
   });
 });
@@ -286,6 +335,46 @@ test('probe: parseRefuteVerdict treats a failed provider run as a crash, not a v
   assert.equal(selectRefuteBackend({ backend: 'agy', requested_backend: 'agy' } as OrchestratorJobRow, { review: { refuteBackendFor: {} } } as OrchestratorConfig), 'glm');
 });
 
+test('probe: restart with an empty run registry reuses a completed refute session transcript without a second turn', async () => {
+  await withReviewFixture(async ({ job, config }) => {
+    const sessionId = 'terminal-refute-session';
+    sessionsDb.createAppSession(sessionId, 'opencode', job.worktree_path, `Refute ${job.id}`);
+    const current = orchestratorJobsDb.update(job.id, {
+      review_step: 'refute', review_session_id: sessionId,
+    }) as OrchestratorJobRow;
+    let turnLaunches = 0;
+    let historyReads = 0;
+    const reviewer = createRefuteService({
+      runtime: {
+        hasRuntime: () => true, hasBackgroundWork: () => false, stopBackgroundTask: async () => false,
+        resolveToolApproval: () => undefined, getPendingApprovalsForSession: () => [], abort: async () => true, run: async () => undefined,
+      },
+      config: () => config,
+      readHistory: async (id) => {
+        assert.equal(id, sessionId);
+        historyReads += 1;
+        return [
+          { kind: 'text', role: 'user', content: 'read-only refutation prompt' },
+          { kind: 'text', role: 'assistant', content: '{"verdict":"pass","defects":[]}' },
+        ];
+      },
+      runTurn: async () => {
+        turnLaunches += 1;
+        return { started: true, error: null };
+      },
+    });
+    // Simulate a process restart: no chatRunRegistry entry, only the durable provider transcript.
+    assert.equal(chatRunRegistry.getRun(sessionId), undefined);
+    const verdict = await reviewer.refute(current, 'glm', sessionId, (id) => {
+      orchestratorJobsDb.update(job.id, { review_session_id: id });
+    });
+    assert.deepEqual(verdict, pass);
+    assert.equal(historyReads, 1);
+    assert.equal(turnLaunches, 0, 'a completed refute session is never prompted again after restart');
+    assert.equal(orchestratorJobsDb.list().length, 1, 'recovery creates no producer job');
+  });
+});
+
 // --- Real jobs service probes: duplicate done, cancel and approve guards on the review state ---
 
 async function withJobsFixture(runTest: (ctx: {
@@ -293,7 +382,7 @@ async function withJobsFixture(runTest: (ctx: {
   repo: string;
   config: OrchestratorConfig;
   newJob: (id: string) => Promise<OrchestratorJobRow>;
-}) => Promise<void>): Promise<void> {
+}) => Promise<void>, extraDeps: Partial<Parameters<typeof createJobsService>[0]> = {}): Promise<void> {
   const previous = process.env.DATABASE_PATH;
   const root = await mkdtemp(path.join(tmpdir(), 'review-jobs-'));
   closeConnection();
@@ -319,6 +408,7 @@ async function withJobsFixture(runTest: (ctx: {
     config: () => config,
     outbox: createEffectOutbox({}),
     probeZcode: async () => ({ ok: true }),
+    ...extraDeps,
   });
   const newJob = async (id: string): Promise<OrchestratorJobRow> => {
     git(repo, 'checkout', '-q', '-B', `feature/${id.toLowerCase()}`);
@@ -388,6 +478,50 @@ test('probe: cancel and approve guard the review state both ways', async () => {
   });
 });
 
+test('probe: cancel aborts the real reviewer run and archives its session; a late terminal event stays cancelled', async () => {
+  chatRunRegistry.clearAll();
+  const providerAborts: string[] = [];
+  const runtime = {
+    hasRuntime: () => true, hasBackgroundWork: () => false, stopBackgroundTask: async () => false,
+    resolveToolApproval: () => undefined, getPendingApprovalsForSession: () => [],
+    abort: async (_provider: string, sessionId: string) => { providerAborts.push(sessionId); return true; },
+    run: async () => undefined,
+  };
+  let reviewer: RefuteService | null = null;
+  try {
+    await withJobsFixture(async ({ jobs, newJob, repo, config }) => {
+      reviewer = createRefuteService({ runtime, config: () => config });
+      const job = await newJob('cxref');
+      await jobs.markDone(job.id);
+      const sessionId = 'cancel-refute-session';
+      sessionsDb.createAppSession(sessionId, 'claude', repo, `Refute ${job.id}`);
+      orchestratorJobsDb.update(job.id, { review_step: 'refute', review_session_id: sessionId });
+      const run = chatRunRegistry.startRun({
+        appSessionId: sessionId, provider: 'claude', providerSessionId: null, connection: null, userId: null,
+      });
+      assert.ok(run);
+      const cancelled = await jobs.cancel(job.id);
+      assert.equal(cancelled.state, 'cancelled');
+      assert.equal(cancelled.merge_step, 'none');
+      assert.equal(run.abortController.signal.aborted, true);
+      assert.equal(run.status, 'completed');
+      assert.equal(run.events.at(-1)?.kind, 'complete');
+      assert.equal(run.events.at(-1)?.aborted, true);
+      assert.deepEqual(providerAborts, [sessionId]);
+      assert.equal(sessionsDb.getSessionById(sessionId)?.isArchived, 1);
+      // A duplicate provider completion cannot reopen or approve the discarded review.
+      chatRunRegistry.completeRunIfCurrent(run, { exitCode: 0 });
+      assert.equal(orchestratorJobsDb.get(job.id)?.state, 'cancelled');
+      assert.equal(orchestratorJobsDb.get(job.id)?.merge_step, 'none');
+    }, {
+      runtime,
+      abortRefutation: (job) => reviewer?.abort(job),
+    });
+  } finally {
+    chatRunRegistry.clearAll();
+  }
+});
+
 // --- Migration idempotence and legacy rows ---
 
 test('probe: review migrations are idempotent and legacy rows default to no review', async () => {
@@ -439,12 +573,14 @@ test('probe: malformed review config falls back to defaults and drops hostile va
     const stringSection = loadOrchestratorConfig(await write('{"review": "yes"}'));
     assert.equal(stringSection.review.enabled, true);
     assert.equal(stringSection.review.refuteCap, 2);
+    assert.equal(stringSection.review.refuteTimeoutMs, 20 * 60_000);
     assert.equal(stringSection.review.maxLines, 400);
     // Hostile values: negatives, zero, wrong types, identity or unknown refuter mappings.
     const hostile = loadOrchestratorConfig(await write(JSON.stringify({
       review: {
         enabled: true,
         refuteCap: -3,
+        refuteTimeoutMs: 31 * 60_000,
         maxLines: 0,
         riskyPaths: 'infra',
         protectedRepos: [42, null, 'demo', '  '],
@@ -452,6 +588,7 @@ test('probe: malformed review config falls back to defaults and drops hostile va
       },
     })));
     assert.equal(hostile.review.refuteCap, 2, 'a cap below 1 is dropped');
+    assert.equal(hostile.review.refuteTimeoutMs, 20 * 60_000, 'a timeout above 20 minutes is dropped, so no run can approach 30 minutes');
     assert.equal(hostile.review.maxLines, 400, 'a maxLines below 1 is dropped');
     assert.deepEqual(hostile.review.riskyPaths, ['infra', 'auth', 'secrets', 'ci', 'migrations', 'k8s', '.forgejo', '.github'], 'a non-array riskyPaths is dropped');
     assert.deepEqual(hostile.review.protectedRepos, ['demo'], 'non-string entries are filtered');
@@ -461,6 +598,8 @@ test('probe: malformed review config falls back to defaults and drops hostile va
       zcode: 'morph', // kept: a valid mapping
       glm: 'glm', // stored, but an identity mapping is bypassed at selection below
     }, 'unknown and non-backend refuters are dropped onto the defaults');
+    const boundedOverride = loadOrchestratorConfig(await write('{"review":{"refuteTimeoutMs":25}}'));
+    assert.equal(boundedOverride.review.refuteTimeoutMs, 25);
     // The legacy boolean still maps, both ways.
     assert.equal(loadOrchestratorConfig(await write('{"review": false}')).review.enabled, false);
     assert.equal(loadOrchestratorConfig(await write('{"review": true}')).review.enabled, true);
