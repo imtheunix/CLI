@@ -134,7 +134,9 @@ export class ZcodeSessionSynchronizer implements IProviderSessionSynchronizer {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.warn('[ZcodeSessionSynchronizer] Failed to synchronize sessions:', message);
-      return { processed: 0, firstSessionId: null };
+      // Rethrow so the orchestrator records a failed scan and does not advance
+      // the persisted cursor past sessions this scan never indexed.
+      throw error;
     } finally {
       db?.close();
     }

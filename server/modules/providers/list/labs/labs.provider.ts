@@ -59,6 +59,15 @@ const DEFAULT_BASE_URL = 'http://localhost:18190';
 const DEFAULT_POLL_INTERVAL_MS = 60_000;
 const HISTORY_CAP_SECONDS = 30 * 24 * 60 * 60; // 30 days
 const FIXED_VIRTUAL_PROJECT = 'LABS agents';
+/**
+ * The control room's `since` is inclusive and in whole seconds, while the
+ * persisted cursor is a millisecond Date truncated to seconds. Re-reading a
+ * short tail absorbs that truncation and any clock skew between the two
+ * machines; unchanged records are deduplicated below, so the overlap costs a
+ * few rows rather than a re-upsert of every session.
+ */
+const CURSOR_OVERLAP_SECONDS = 60;
+const CURSOR_FILE_NAME = '.labs-sync-cursor';
 
 function readTokenFromFile(filePath: string): string | null {
   try {
@@ -82,8 +91,6 @@ export class LabsProvider extends AbstractProvider {
   private readonly fetchFn: typeof fetch;
 
   private lastPollTime = 0;
-  private newestAt: number | null = null;
-  private newestId: number | null = null;
   private authErrorReported = false;
 
   readonly runtime: IProviderRuntime = {
@@ -294,6 +301,64 @@ export class LabsProvider extends AbstractProvider {
     return path.join(this.storageDir, `${encodeURIComponent(sessionId)}.jsonl`);
   }
 
+  private getCursorPath(): string {
+    return path.join(this.storageDir, CURSOR_FILE_NAME);
+  }
+
+  /**
+   * LABS keeps its own cursor as well as the global `scan_state` one. The
+   * global cursor only advances when every provider succeeds, and it keeps
+   * moving while LABS is unconfigured; the provider cursor lets LABS backfill
+   * the gap when it is configured again instead of trusting a cursor that
+   * already passed the records it never fetched.
+   */
+  private readCursor(): Date | null {
+    try {
+      const raw = fs.readFileSync(this.getCursorPath(), 'utf8').trim();
+      if (!raw) {
+        return null;
+      }
+      const parsed = new Date(raw);
+      return Number.isNaN(parsed.getTime()) ? null : parsed;
+    } catch {
+      return null;
+    }
+  }
+
+  private writeCursor(cursor: Date): void {
+    try {
+      fs.mkdirSync(this.storageDir, { recursive: true });
+      fs.writeFileSync(this.getCursorPath(), cursor.toISOString(), { mode: 0o600 });
+    } catch {
+      // A missing cursor only costs a wider next scan; never fail the sync.
+    }
+  }
+
+  private resolveSinceSeconds(sinceBoundary: Date | undefined, now: number): number {
+    const bootstrapSince = Math.floor(now / 1000) - HISTORY_CAP_SECONDS;
+    const providerCursor = this.readCursor();
+
+    // No provider cursor means LABS has never completed a scan here (first
+    // run, an upgrade from a version without the marker, or a reset storage
+    // directory). Bootstrap the full window once rather than trusting a global
+    // cursor that may already have passed records LABS never fetched.
+    if (!providerCursor) {
+      return bootstrapSince;
+    }
+
+    // A missing global cursor with no indexed LABS rows means the database was
+    // reset even though the storage directory survived; bootstrap again.
+    if (!sinceBoundary && !sessionsDb.hasSessionsForProvider('labs')) {
+      return bootstrapSince;
+    }
+
+    const candidates = [sinceBoundary, providerCursor].filter(
+      (value): value is Date => value instanceof Date && !Number.isNaN(value.getTime()),
+    );
+    const earliest = Math.min(...candidates.map((value) => value.getTime()));
+    return Math.floor(earliest / 1000) - CURSOR_OVERLAP_SECONDS;
+  }
+
   /**
    * Synchronizes proxy records from the control room into local sessions.
    */
@@ -312,8 +377,7 @@ export class LabsProvider extends AbstractProvider {
       headers.Authorization = `Bearer ${token}`;
     }
 
-    const thirtyDaysAgoSec = Math.floor(now / 1000) - HISTORY_CAP_SECONDS;
-    const sinceSec = this.newestAt !== null ? this.newestAt : thirtyDaysAgoSec;
+    const sinceSec = this.resolveSinceSeconds(sinceBoundary, now);
 
     const fetchedRows: LabsRequestRecord[] = [];
     let beforeCursor: number | null = null;
@@ -337,18 +401,28 @@ export class LabsProvider extends AbstractProvider {
             console.warn('[Labs] LABS not authorised');
             this.authErrorReported = true;
           }
-          return 0;
+          if (!token) {
+            // LABS is not configured on this machine. Treat it as an empty
+            // provider rather than a failed scan that would freeze every other
+            // provider's cursor; the provider cursor stays put so a later
+            // configuration still backfills.
+            return 0;
+          }
+          throw new Error('LABS not authorised');
         }
 
         if (!res.ok) {
-          return 0;
+          throw new Error(`LABS request failed with status ${res.status}`);
         }
 
         // Successfully authenticated
         this.authErrorReported = false;
 
         const data = (await res.json()) as LabsRequestRecord[];
-        if (!Array.isArray(data) || data.length === 0) {
+        if (!Array.isArray(data)) {
+          throw new Error('LABS response was not an array');
+        }
+        if (data.length === 0) {
           break;
         }
 
@@ -366,14 +440,23 @@ export class LabsProvider extends AbstractProvider {
         }
         beforeCursor = oldestInBatch.id;
       }
-    } catch {
-      // Network or parsing errors do not crash synchronizer
-      return 0;
+    } catch (error) {
+      if (!token) {
+        // LABS is not configured on this machine. A missing control room must
+        // not freeze every other provider's cursor; the provider cursor stays
+        // put so a later configuration still backfills.
+        return 0;
+      }
+      const message = error instanceof Error ? error.message : String(error);
+      // Rethrow so the orchestrator records a failed scan and does not advance
+      // the persisted cursor past records this scan never fetched.
+      throw new Error(`LABS request failed: ${message}`);
     }
 
     this.lastPollTime = now;
 
     if (fetchedRows.length === 0) {
+      this.writeCursor(new Date(now));
       return 0;
     }
 
@@ -409,14 +492,6 @@ export class LabsProvider extends AbstractProvider {
         sessionsMap.set(sessionId, entry);
       }
       entry.records.push(row);
-
-      // Track newest cursor
-      if (this.newestAt === null || at > this.newestAt) {
-        this.newestAt = at;
-      }
-      if (this.newestId === null || row.id > this.newestId) {
-        this.newestId = row.id;
-      }
     }
 
     fs.mkdirSync(this.storageDir, { recursive: true });
@@ -443,16 +518,30 @@ export class LabsProvider extends AbstractProvider {
         }
       }
 
+      let changed = false;
       for (const rec of records) {
-        existingRecordsById.set(rec.id, rec);
+        const existing = existingRecordsById.get(rec.id);
+        if (!existing || JSON.stringify(existing) !== JSON.stringify(rec)) {
+          existingRecordsById.set(rec.id, rec);
+          changed = true;
+        }
+      }
+
+      // The overlap re-reads the cursor tail on every scan. Skip sessions whose
+      // transcript is byte-for-byte unchanged, unless the database row is
+      // missing (a reset or upgraded database still needs the row).
+      if (!changed && sessionsDb.getSessionByProviderSessionId(sessionId)) {
+        continue;
       }
 
       const allRecords = Array.from(existingRecordsById.values()).sort(
         (a, b) => (a.at === b.at ? a.id - b.id : a.at - b.at),
       );
 
-      const fileContent = allRecords.map((r) => JSON.stringify(r)).join('\n') + '\n';
-      fs.writeFileSync(filePath, fileContent, { mode: 0o600 });
+      if (changed) {
+        const fileContent = allRecords.map((r) => JSON.stringify(r)).join('\n') + '\n';
+        fs.writeFileSync(filePath, fileContent, { mode: 0o600 });
+      }
 
       const minAt = allRecords[0].at;
       const maxAt = allRecords[allRecords.length - 1].at;
@@ -472,6 +561,7 @@ export class LabsProvider extends AbstractProvider {
       updatedSessionCount += 1;
     }
 
+    this.writeCursor(new Date(now));
     return updatedSessionCount;
   }
 }

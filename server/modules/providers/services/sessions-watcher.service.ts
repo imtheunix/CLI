@@ -428,17 +428,6 @@ export async function initializeSessionsWatcher(): Promise<void> {
 
   console.log('Setting up session watchers');
 
-  const initialSync = await sessionSynchronizerService.synchronizeSessions();
-  if (!isWatcherActive(generation)) {
-    return;
-  }
-
-  console.log('Initial session synchronization complete', {
-    processedByProvider: initialSync.processedByProvider,
-    prunedOrphans: initialSync.prunedOrphans,
-    failures: initialSync.failures,
-  });
-
   for (const { provider, rootPath } of PROVIDER_WATCH_PATHS) {
     if (!isWatcherActive(generation)) {
       return;
@@ -479,6 +468,27 @@ export async function initializeSessionsWatcher(): Promise<void> {
       });
     }
   }
+
+  // Watchers are installed before the first scan so a transcript written
+  // during a long bootstrap is still seen. The scan itself is incremental and
+  // runs in the background: startup must not wait for a provider that is slow
+  // or unreachable, and the projects routes serve the existing index meanwhile.
+  void sessionSynchronizerService
+    .synchronizeSessions()
+    .then((initialSync) => {
+      if (!isWatcherActive(generation)) {
+        return;
+      }
+      console.log('Initial session synchronization complete', {
+        processedByProvider: initialSync.processedByProvider,
+        prunedOrphans: initialSync.prunedOrphans,
+        failures: initialSync.failures,
+      });
+    })
+    .catch((error) => {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error('Initial session synchronization failed', { error: message });
+    });
 }
 
 /**

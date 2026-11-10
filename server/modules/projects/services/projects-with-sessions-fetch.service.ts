@@ -3,7 +3,7 @@ import path from 'node:path';
 
 import { projectsDb, sessionsDb } from '@/modules/database/index.js';
 import { sessionSynchronizerService } from '@/modules/providers/index.js';
-import { WS_OPEN_STATE, connectedClients } from '@/modules/websocket/index.js';
+import { WS_OPEN_STATE, broadcastProjectsRefresh, connectedClients } from '@/modules/websocket/index.js';
 import type { RealtimeClientConnection } from '@/shared/types.js';
 import { AppError } from '@/shared/utils.js';
 
@@ -54,6 +54,12 @@ type ProgressUpdate = {
 
 type GetProjectsWithSessionsOptions = {
   skipSynchronization?: boolean;
+  /**
+   * Wait for the provider scan before reading the DB. The HTTP routes leave
+   * this off so the sidebar renders the existing index immediately; tests and
+   * callers that need a settled index can opt in.
+   */
+  awaitSynchronization?: boolean;
   sessionsLimit?: number;
   sessionsOffset?: number;
 };
@@ -204,13 +210,58 @@ function broadcastProgress(progress: ProgressUpdate) {
 }
 
 /**
+ * The background scan started by a projects read. Coalesced so the two
+ * sidebar requests (`/api/projects` and `/api/projects/archived`) share one
+ * scan, and cleared when it settles so a later read can start a fresh one.
+ */
+let backgroundSynchronization: Promise<void> | null = null;
+
+/**
+ * Starts a provider scan without making the caller wait for it. The scan is
+ * incremental (it starts from the persisted cursor), so it normally touches
+ * only sessions written since the last run. When it actually indexed
+ * something, clients are told to re-read the DB; an unchanged scan stays
+ * silent, which also stops a refresh from triggering another refresh.
+ */
+function startBackgroundSynchronization(): void {
+  if (backgroundSynchronization) {
+    return;
+  }
+
+  backgroundSynchronization = sessionSynchronizerService
+    .synchronizeSessions()
+    .then((result) => {
+      const indexedSomething =
+        result.prunedOrphans > 0 ||
+        Object.values(result.processedByProvider).some((processed) => processed > 0);
+      // A partial scan leaves the cursor behind, so the next scan re-reads the
+      // same window. Broadcasting then would make the client refresh trigger
+      // another partial scan in a loop; wait for a clean scan instead.
+      if (indexedSomething && result.failures.length === 0) {
+        broadcastProjectsRefresh();
+      }
+    })
+    .catch((error) => {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error('[Projects] Background session synchronization failed:', message);
+    })
+    .finally(() => {
+      backgroundSynchronization = null;
+    });
+}
+
+/**
  * Reads all projects from DB and returns normalized session summaries.
  */
 export async function getProjectsWithSessions(
   options: GetProjectsWithSessionsOptions = {}
 ): Promise<ProjectListItem[]> {
   if (!options.skipSynchronization) {
-    await sessionSynchronizerService.synchronizeSessions();
+    if (options.awaitSynchronization) {
+      await sessionSynchronizerService.synchronizeSessions();
+    } else {
+      startBackgroundSynchronization();
+    }
   }
 
   const projectRows = projectsDb.getProjectPaths() as Array<{
@@ -275,10 +326,14 @@ export async function getProjectsWithSessions(
  * conversation history in the archive view regardless of each session's flag.
  */
 export async function getArchivedProjectsWithSessions(
-  options: Pick<GetProjectsWithSessionsOptions, 'skipSynchronization'> = {},
+  options: Pick<GetProjectsWithSessionsOptions, 'skipSynchronization' | 'awaitSynchronization'> = {},
 ): Promise<ArchivedProjectListItem[]> {
   if (!options.skipSynchronization) {
-    await sessionSynchronizerService.synchronizeSessions();
+    if (options.awaitSynchronization) {
+      await sessionSynchronizerService.synchronizeSessions();
+    } else {
+      startBackgroundSynchronization();
+    }
   }
 
   const projectRows = projectsDb.getArchivedProjectPaths() as Array<{

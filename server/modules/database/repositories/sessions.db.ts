@@ -597,6 +597,22 @@ export const sessionsDb = {
   },
 
   /**
+   * Reports whether the index holds any row for one provider.
+   *
+   * Provider synchronizers use this to tell a fresh/reset database (where a
+   * full bootstrap is required) from a database that already has that
+   * provider's history and can safely resume from a cursor.
+   */
+  hasSessionsForProvider(provider: string): boolean {
+    const db = getConnection();
+    const row = db
+      .prepare('SELECT 1 AS present FROM sessions WHERE provider = ? LIMIT 1')
+      .get(provider) as { present: number } | undefined;
+
+    return Boolean(row);
+  },
+
+  /**
    * Returns one globally ordered page of visible conversations.
    *
    * Pagination happens after archived sessions and sessions belonging to an

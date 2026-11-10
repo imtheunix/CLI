@@ -226,7 +226,7 @@ test('LabsProvider groups records by (source, caller, instance) or (source, call
   });
 });
 
-test('LabsProvider incremental sync polls with cursor and avoids refetching older rows', async () => {
+test('LabsProvider incremental sync processes 0 unchanged rows and indexes a new row once', async () => {
   await withIsolatedDatabase(async () => {
     const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'labs-incremental-'));
     const baseSec = Math.floor(Date.now() / 1000) - 1800; // 30 min ago
@@ -253,21 +253,23 @@ test('LabsProvider incremental sync polls with cursor and avoids refetching olde
         pollIntervalMs: 0,
       });
 
-      // Initial sync
+      // Initial sync bootstraps the 30-day window.
       const firstCount = await provider.sessionSynchronizer.synchronize();
       assert.equal(firstCount, 1);
       assert.equal(fakeServer.queriesReceived.length, 1);
 
-      // Second sync immediately with no new rows -> uses cursor `since=${baseSec}`
+      // A repeat sync re-reads only the cursor tail and re-upserts nothing.
       const secondCount = await provider.sessionSynchronizer.synchronize();
-      assert.equal(secondCount, 1);
+      assert.equal(secondCount, 0);
       assert.equal(fakeServer.queriesReceived.length, 2);
-      assert.ok(fakeServer.queriesReceived[1].url.includes(`since=${baseSec}`));
+      const secondSince = Number(new URL(fakeServer.queriesReceived[1].url, 'http://x').searchParams.get('since'));
+      assert.ok(secondSince > baseSec, 'the second scan starts from the persisted cursor, not the 30-day window');
 
-      // Add a new row to control room
+      // A genuinely new row (current time) is indexed exactly once.
+      const newRowAt = Math.floor(Date.now() / 1000);
       fakeServer.addRow({
         id: 11,
-        at: baseSec + 100,
+        at: newRowAt,
         source: '3beira-workers',
         caller: 'workflow',
         instance: 'inst-beta',
@@ -281,12 +283,80 @@ test('LabsProvider incremental sync polls with cursor and avoids refetching olde
 
       const session = sessionsDb.getSessionByProviderSessionId('labs:3beira-workers:workflow:inst-beta');
       assert.ok(session);
-      assert.equal(new Date(session.updated_at).getTime(), (baseSec + 100) * 1000);
+      assert.equal(new Date(session.updated_at).getTime(), newRowAt * 1000);
+
+      const fourthCount = await provider.sessionSynchronizer.synchronize();
+      assert.equal(fourthCount, 0, 'the same row is not re-upserted on the next scan');
 
       // Verify transcript holds both calls
       const history = await provider.sessions.fetchHistory('labs:3beira-workers:workflow:inst-beta');
       // 1 totals message + 2 call messages = 3 messages
       assert.equal(history.total, 3);
+    } finally {
+      await fakeServer.close();
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+});
+
+test('LabsProvider cursor survives a provider restart and does not refetch the bootstrap window', async () => {
+  await withIsolatedDatabase(async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'labs-restart-'));
+    const baseSec = Math.floor(Date.now() / 1000) - 1800;
+    const fakeServer = createFakeControlRoom({
+      requests: [
+        {
+          id: 20,
+          at: baseSec,
+          source: '3beira-workers',
+          caller: 'workflow',
+          instance: 'inst-restart',
+          model: 'deepseek-ai/DeepSeek-V4.1-Flash',
+          status: 200,
+          seconds: 1.0,
+        },
+      ],
+    });
+
+    try {
+      const baseUrl = await fakeServer.listen();
+      const firstProvider = new LabsProvider({ baseUrl, storageDir: tempDir, pollIntervalMs: 0 });
+      assert.equal(await firstProvider.sessionSynchronizer.synchronize(), 1);
+
+      // A fresh instance stands in for a process restart: the in-memory state
+      // is gone, but the persisted cursor and transcripts are not.
+      const restartedProvider = new LabsProvider({ baseUrl, storageDir: tempDir, pollIntervalMs: 0 });
+      assert.equal(await restartedProvider.sessionSynchronizer.synchronize(), 0);
+
+      const restartSince = Number(
+        new URL(fakeServer.queriesReceived[1].url, 'http://x').searchParams.get('since'),
+      );
+      assert.ok(restartSince > baseSec, 'the restarted provider resumes from the persisted cursor');
+    } finally {
+      await fakeServer.close();
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+});
+
+test('LabsProvider failed scans reject instead of silently advancing the cursor', async () => {
+  await withIsolatedDatabase(async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'labs-failure-'));
+    const fakeServer = createFakeControlRoom({ status: 500 });
+
+    try {
+      const baseUrl = await fakeServer.listen();
+      const provider = new LabsProvider({ baseUrl, storageDir: tempDir, pollIntervalMs: 0 });
+
+      await assert.rejects(
+        () => provider.sessionSynchronizer.synchronize(),
+        /LABS request failed with status 500/,
+      );
+      assert.equal(
+        await fsp.readdir(tempDir).then((names) => names.includes('.labs-sync-cursor')),
+        false,
+        'a failed scan must not persist a cursor',
+      );
     } finally {
       await fakeServer.close();
       await fsp.rm(tempDir, { recursive: true, force: true });
@@ -421,6 +491,9 @@ test('LabsProvider 401 handling reports "LABS not authorised" once and does not 
       baseUrl,
       storageDir: tempDir,
       pollIntervalMs: 0,
+      // No token: an unconfigured LABS is an empty provider, not a failed scan.
+      token: '',
+      tokenPath: path.join(tempDir, 'missing.token'),
     });
 
     // First call -> 401 -> logs warning once
