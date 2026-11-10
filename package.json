@@ -48,14 +48,15 @@
     "postbuild:server": "node scripts/promote-dist-server.mjs",
     "preview": "vite preview",
     "check": "npm run typecheck && npm run lint && npm run build",
-    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p server/tsconfig.json && tsc --noEmit -p evals/tsconfig.json",
-    "test": "tsx --tsconfig server/tsconfig.json --test \"server/**/*.test.ts\" \"server/**/*.test.js\"",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p server/tsconfig.json && tsc --noEmit -p evals/tsconfig.json && tsc --noEmit -p morph-pacer/tsconfig.json",
+    "test": "tsx --tsconfig server/tsconfig.json --test \"server/**/*.test.ts\" \"server/**/*.test.js\" \"morph-pacer/tests/**/*.test.ts\"",
+    "test:morph-pacer": "tsx --test \"morph-pacer/tests/**/*.test.ts\"",
     "test:client": "cross-env NODE_ENV=development vitest run",
     "evals:harness": "vitest run -c evals/vitest.config.ts",
     "graphify:setup": "python3 -I scripts/graphify/setup.py",
     "test:graphify": "python3 -I -m unittest discover -s scripts/graphify/tests -v",
     "graphify:benchmark": "python3 -I scripts/graphify/benchmark.py",
-    "lint": "oxlint src/ server/",
+    "lint": "oxlint src/ server/ morph-pacer/src/ morph-pacer/tests/",
     "lint:server": "oxlint server/",
     "lint:client": "oxlint src/",
     "lint:fix": "oxlint src/ server/ --fix",
@@ -256,7 +257,8 @@
   },
   "lint-staged": {
     "src/**/*.{ts,tsx,js,jsx}": "oxlint",
-    "server/**/*.{js,ts}": "oxlint"
+    "server/**/*.{js,ts}": "oxlint",
+    "morph-pacer/**/*.ts": "oxlint"
   },
   "optionalDependencies": {
     "@nut-tree-fork/nut-js": "^4.2.6",
