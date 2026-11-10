@@ -1,4 +1,6 @@
 import fsSync from 'node:fs';
+import { createRequire } from 'node:module';
+import { fileURLToPath } from 'node:url';
 
 import crossSpawn from 'cross-spawn';
 import Database from 'better-sqlite3';
@@ -17,6 +19,27 @@ import { createCompleteMessage, createNormalizedMessage, flattenPromptForWindows
 const spawnFunction = crossSpawn;
 
 const activeOpenCodeProcesses = new Map();
+const require = createRequire(import.meta.url);
+
+/**
+ * Resolves the bridge entry point for the detached turn.
+ *
+ * Production runs the compiled sibling `.js` under plain Node. Source tests
+ * have no compiled sibling, so they run the `.ts` through the locally
+ * installed tsx loader (resolved from this module, never a global install).
+ */
+function resolveOpenCodeBridge() {
+  const compiledPath = fileURLToPath(new URL('./opencode-bridge.js', import.meta.url));
+  if (fsSync.existsSync(compiledPath)) {
+    return { args: [compiledPath], env: {} };
+  }
+  const sourcePath = fileURLToPath(new URL('./opencode-bridge.ts', import.meta.url));
+  const tsconfigPath = fileURLToPath(new URL('../../../../tsconfig.json', import.meta.url));
+  return {
+    args: ['--import', require.resolve('tsx'), sourcePath],
+    env: { TSX_TSCONFIG_PATH: tsconfigPath },
+  };
+}
 
 /**
  * Maps the UI permission mode onto OpenCode's non-interactive controls.
@@ -124,6 +147,204 @@ function readOpenCodeTokenUsage(sessionId) {
   }
 }
 
+/**
+ * Per-turn line parser for `opencode run --format json` output.
+ *
+ * Used by the live runtime and by detached-turn reattachment (registered in
+ * opencode.provider.ts) so both paths normalize identically. It tracks the
+ * text already delivered for each part as `stream_delta` events: OpenCode can
+ * follow those deltas with the same part completed, and emitting that
+ * completed text again would duplicate the assistant message. A completed
+ * part that only extends the streamed prefix emits just the remainder; an
+ * equal completion is suppressed; a part that never streamed falls back to
+ * its completed text. A `stream_reset` marks the live stream as broken so
+ * late deltas are ignored while stdout remains authoritative.
+ *
+ * @param {(raw: unknown, sessionId: string | null) => Array<object>} normalizeMessage
+ */
+export function createOpenCodeTurnLineParser(normalizeMessage) {
+  let capturedSessionId = null;
+  // Part id -> text already delivered incrementally.
+  const streamedTextByPart = new Map();
+  // A broken live stream must not accept more deltas; stdout is authoritative.
+  let streamBroken = false;
+
+  const parse = (line) => {
+    try {
+      const event = JSON.parse(line);
+      return event && typeof event === 'object' ? event : null;
+    } catch {
+      return null;
+    }
+  };
+
+  const readPart = (event) => (event.part && typeof event.part === 'object' ? event.part : null);
+
+  const readDeltaText = (event) => {
+    if (typeof event.delta === 'string') {
+      return event.delta;
+    }
+    if (typeof event.text === 'string') {
+      return event.text;
+    }
+    return '';
+  };
+
+  const captureSession = (event, writer) => {
+    const nextSessionId = event.sessionID || event.sessionId;
+    if (typeof nextSessionId !== 'string' || !nextSessionId || capturedSessionId) {
+      return;
+    }
+
+    capturedSessionId = nextSessionId;
+    // A brand-new session has no provider id on its writer yet. Writers that
+    // cannot report their id (legacy callers) are left to the live runtime.
+    const isNewSession = typeof writer?.getSessionId === 'function' && !writer.getSessionId();
+    writer?.setSessionId?.(nextSessionId);
+    if (isNewSession) {
+      writer?.send(createNormalizedMessage({
+        kind: 'session_created',
+        newSessionId: nextSessionId,
+        sessionId: nextSessionId,
+        provider: 'opencode',
+      }));
+    }
+  };
+
+  // The completed part extends the streamed prefix: send only the remainder as
+  // a delta so the client's live buffer reaches the authoritative text without
+  // a second assistant bubble.
+  const emitCompletedRemainder = (event, part, remainder, sid, writer) => {
+    const deltaEvent = {
+      type: 'text',
+      sessionID: event.sessionID,
+      sessionId: event.sessionId,
+      time: event.time,
+      timestamp: event.timestamp,
+      part: {
+        id: part.id,
+        messageID: part.messageID,
+        sessionID: part.sessionID,
+        type: part.type,
+      },
+      delta: remainder,
+    };
+    for (const message of normalizeMessage(deltaEvent, sid)) {
+      writer?.send(message);
+    }
+  };
+
+  const handleLine = (line, writer, sessionId) => {
+    const event = parse(line);
+    if (!event) {
+      return;
+    }
+
+    captureSession(event, writer);
+    const sid = capturedSessionId || writer?.getSessionId?.() || sessionId || null;
+    const type = event.type || event.event;
+    const part = readPart(event);
+    const partId = typeof part?.id === 'string' ? part.id : null;
+
+    // The bridge emits this when its live stream breaks. Keep the streamed
+    // prefix so a partial completion can still send only its remainder, but
+    // ignore any further deltas from the dead stream.
+    if (type === 'stream_reset') {
+      streamBroken = true;
+      return;
+    }
+
+    if (type === 'text') {
+      // A nested `part.text` is the completed part; flat `delta`/`text` is a
+      // live increment.
+      const isCompletedPart = typeof part?.text === 'string';
+      if (isCompletedPart) {
+        if (!partId) {
+          for (const message of normalizeMessage(event, sid)) {
+            writer?.send(message);
+          }
+          return;
+        }
+
+        const streamed = streamedTextByPart.get(partId) || '';
+        if (!streamed) {
+          for (const message of normalizeMessage(event, sid)) {
+            writer?.send(message);
+          }
+          return;
+        }
+
+        streamedTextByPart.delete(partId);
+        if (part.text === streamed) {
+          return;
+        }
+        if (part.text.startsWith(streamed)) {
+          const remainder = part.text.slice(streamed.length);
+          if (remainder) {
+            emitCompletedRemainder(event, part, remainder, sid, writer);
+          }
+          return;
+        }
+        // Diverged from the streamed prefix: emit the authoritative text
+        // rather than lose it.
+        for (const message of normalizeMessage(event, sid)) {
+          writer?.send(message);
+        }
+        return;
+      }
+
+      if (streamBroken) {
+        return;
+      }
+
+      for (const message of normalizeMessage(event, sid)) {
+        if (message.kind === 'stream_delta' && partId) {
+          streamedTextByPart.set(partId, (streamedTextByPart.get(partId) || '') + readDeltaText(event));
+        }
+        writer?.send(message);
+      }
+      return;
+    }
+
+    for (const message of normalizeMessage(event, sid)) {
+      writer?.send(message);
+    }
+  };
+
+  // The part of the log delivered before a restart: re-establish the session
+  // id and the text already delivered, without sending any of it again.
+  handleLine.prime = (lines, writer, sessionId) => {
+    for (const line of lines) {
+      const event = parse(line);
+      if (!event) {
+        continue;
+      }
+      captureSession(event, writer);
+      const type = event.type || event.event;
+      const part = readPart(event);
+      const partId = typeof part?.id === 'string' ? part.id : null;
+      if (type === 'stream_reset') {
+        streamBroken = true;
+        continue;
+      }
+      if (type === 'text' && partId) {
+        if (typeof part.text === 'string') {
+          streamedTextByPart.set(partId, part.text);
+        } else {
+          streamedTextByPart.set(partId, (streamedTextByPart.get(partId) || '') + readDeltaText(event));
+        }
+      }
+    }
+  };
+
+  handleLine.finish = () => {
+    streamedTextByPart.clear();
+    streamBroken = false;
+  };
+
+  return handleLine;
+}
+
 async function spawnOpenCode(command, options = {}, ws, context) {
   return new Promise((resolve, reject) => {
     const {
@@ -153,6 +374,8 @@ async function spawnOpenCode(command, options = {}, ws, context) {
     // Unified lifecycle contract: exactly one terminal `complete` per run
     // (close and error handlers can both fire for spawn failures).
     let completeSent = false;
+    // One parser per turn: it remembers which text parts already streamed.
+    const lineParser = createOpenCodeTurnLineParser(context.normalizeMessage);
 
     const notifyTerminalState = ({ code = null, error = null } = {}) => {
       if (terminalNotificationSent) {
@@ -233,10 +456,7 @@ async function spawnOpenCode(command, options = {}, ws, context) {
 
       try {
         registerSession(readOpenCodeSessionId(response));
-        const normalized = context.normalizeMessage(response, capturedSessionId || sessionId || null);
-        for (const msg of normalized) {
-          ws.send(msg);
-        }
+        lineParser(line, ws, capturedSessionId || sessionId || null);
       } catch (error) {
         const errorContent = error instanceof Error ? error.message : String(error);
         console.error('[OpenCode] Failed to process JSON output:', errorContent);
@@ -298,16 +518,17 @@ async function spawnOpenCode(command, options = {}, ws, context) {
 
       if (options.abortController?.signal.aborted) { resolve(); return; }
 
+      const bridge = resolveOpenCodeBridge();
       const turnExecution = await spawnDetachedTurn({
-        command: 'opencode',
-        args,
+        command: process.execPath,
+        args: [...bridge.args, '--', ...args],
         cwd: workingDir,
         sessionId: processKey,
         // The real provider id: after a restart the turn reattaches through it
         // (provider lookup, abort), so a foreign label here would break both.
         backend: 'opencode',
         jobId: typeof options.jobId === 'string' ? options.jobId : null,
-        env: permissionOptions.env,
+        env: { ...permissionOptions.env, ...bridge.env },
         onLine: (line) => {
           const trimmed = line.trim();
           if (trimmed.startsWith('{')) {
