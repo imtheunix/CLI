@@ -159,6 +159,8 @@ CREATE TABLE IF NOT EXISTS orchestrator_jobs (
     review_step TEXT NOT NULL DEFAULT 'none',
     review_verdict TEXT,
     review_risk TEXT,
+    -- gate | refute | deep: how much review the diff gets (NULL: not decided yet).
+    review_tier TEXT,
     review_round INTEGER NOT NULL DEFAULT 0,
     review_head_sha TEXT,
     review_session_id TEXT,

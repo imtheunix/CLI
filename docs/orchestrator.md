@@ -78,22 +78,36 @@ Automatic review is configured under `review` (the legacy boolean still maps to 
   "review": {
     "enabled": true,
     "refuteCap": 2,
-    "refuteTimeoutMs": 1200000,
+    "refuteTimeoutMin": 10,
     "maxLines": 400,
     "protectedRepos": [],
     "riskyPaths": ["infra", "auth", "secrets", "ci", "migrations", "k8s", ".forgejo", ".github"],
+    "deepPaths": ["crates/kernel/"],
+    "tiers": {
+      "gateMaxLines": 50,
+      "docsGlobs": ["**/*.md", "docs/**", "reports/**"],
+      "testGlobs": ["**/*.test.ts", "**/*.test.tsx", "**/*.spec.ts", "**/*.spec.tsx", "**/tests/**", "**/__tests__/**"]
+    },
     "refuteBackendFor": { "morph": "glm", "glm": "morph", "zcode": "morph", "claude": "glm", "codex": "glm", "agy": "glm" }
   }
 }
 ```
 
+`refuteTimeoutMs` remains accepted as the low-level millisecond override; `refuteTimeoutMin` is the human-facing time box for the `refute` tier. `deepPaths` is empty by default so a repository's kernel crates are named in the config, not in code.
+
 ## Automatic review and CI/CD queue
 
 Optional local symbol/dependency maps for Claude, Codex, GLM and agy jobs are documented in [Graphify project maps](graphify.md). They are disabled by default and use one bounded shell interface without changing model selection or job completion rules.
 
-With review enabled, `tjob done` first persists `review_step=gate`. The gate resolves the same repository checks as the merge queue, keeps typechecking project-aware, scopes lint to changed files, and runs changed tests plus tests that import changed sources. Next, one read-only refutation runs in the existing worktree on the other model family, with its own `refuteCap` and no job, branch or producer-pool slot. Its strict JSON verdict counts only defects with a reproduced probe and output. `refuteTimeoutMs` is at most 20 minutes by configuration as well as by default; timeout aborts and archives the reviewer session and parks the job at the hub with the exact timeout reason, never approving or retrying. Cancelling the job also aborts that reviewer and discards its late result. Gate red or reproduced defects return to the producer for one fix round; if that reopen is refused (busy or authentication hold), the job is restored to review and the hub receives the fix evidence instead. A second failure goes to the hub. Persisted steps resume after restart: a re-attached refutation is awaited, and a terminal refute session's persisted transcript is reused rather than prompted again. `tjob ls` shows `rv:<step>` and `tjob show` includes the verdict and risk.
+With review enabled, `tjob done` first persists `review_step=gate`. The gate resolves the same repository checks as the merge queue, keeps typechecking project-aware, scopes lint to changed files, and runs changed tests plus tests that import changed sources. After a green gate the diff picks a risk tier, persisted as `review_tier`:
 
-The policy auto-approves through the ordinary `tjob approve` path only when the gate and refutation pass, the diff stays inside paths named in the brief (skipped when none are named), has fewer than `maxLines` changed lines, touches no risky path and is not in a protected repository. Approval emits a batched FYI; all other outcomes emit a `review` decision with gate/verdict and `git diff --stat`, never the full patch. With review disabled, `tjob done` queues directly.
+- **gate**: docs/reports only (`docsGlobs`), test files only (`testGlobs`), or fewer than `tiers.gateMaxLines` changed lines with no risky path. No refutation runs; the ordinary policy decides.
+- **refute**: everything else. One read-only refutation runs in the existing worktree on the other model family, with its own `refuteCap` and no job, branch or producer-pool slot, bounded by `refuteTimeoutMin` (default 10 minutes).
+- **deep**: any risky path, a protected repository, a path under `deepPaths`, or code that writes a config file under `~/.config` (`writeFile`/`writeFileSync` with a path containing `config` or `.json`). The refutation gets the full 20-minute box and the job always waits for a hub decision, even when the policy would call it low risk.
+
+The refutation's strict JSON verdict counts only defects with a reproduced probe and output. A timeout aborts and archives the reviewer session, records `review_verdict=timeout`, and parks the job at the hub with the gate result and `git diff --stat`, never approving or retrying. Cancelling the job also aborts that reviewer and discards its late result. Gate red or reproduced defects return to the producer for one fix round; if that reopen is refused (busy or authentication hold), the job is restored to review and the hub receives the fix evidence instead. A second failure goes to the hub. Persisted steps resume after restart: a re-attached refutation is awaited, and a terminal refute session's persisted transcript is reused rather than prompted again. `tjob ls` shows `rv:<step>`, `tjob show` includes the verdict, risk and tier, and the status page shows the tier and counts merged jobs per tier.
+
+The policy auto-approves through the ordinary `tjob approve` path only when the gate and refutation pass, the diff stays inside paths named in the brief (skipped when none are named), has fewer than `maxLines` changed lines, touches no risky path and is not in a protected repository. A `deep` tier never auto-approves. Approval emits a batched FYI; all other outcomes emit a `review` decision with gate/verdict and `git diff --stat`, never the full patch. With review disabled, `tjob done` queues directly.
 
 After approval, a stacked job, one whose `<base>` is another job's branch, lands where that job lands. Merging it into the parent's branch would not count as merged: it waits in `queued` while the parent is on its way, moves to the parent's base once the parent is merged, and is blocked when the parent was cancelled or failed. Job 88328da6 was marked merged into the branch of cancelled job f8a49612 and never reached main. `tjob ls` marks the wait as `! waiting for base <id> (<state>)`; when the base sits at review for more than 30 minutes, the hub is woken once for the stacked job (two queue deadlocks on 2026-11-07). Per repository, one job at a time goes through:
 

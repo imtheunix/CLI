@@ -22,6 +22,7 @@ type StatusJob = {
   model: string | null;
   state: string;
   mergeStep: string;
+  tier: string | null;
   ageMs: number | null;
   waitingMs: number | null;
   step: string | null;
@@ -44,6 +45,7 @@ type StatusEfficiencyWindow = {
     reviewWaitMedianMs: number | null;
     reviewWaitMaxMs: number | null;
     fixRoundRate: number;
+    reviewTiers: { gate: number; refute: number; deep: number };
     mergedPerHour: number;
     tokensPerMergedJob: number;
   };
@@ -106,6 +108,7 @@ function JobRow({ job }: { job: StatusJob }) {
     <li className="flex flex-wrap items-baseline gap-x-2 gap-y-1 border-b border-border/40 py-1.5 text-sm last:border-0">
       <span className="font-mono text-xs text-muted-foreground">{job.id}</span>
       <Badge variant="secondary" className="text-[10px]">{job.backend ?? '-'}</Badge>
+      {job.tier && <Badge variant="outline" className="text-[10px]">tier:{job.tier}</Badge>}
       <span className="text-xs text-muted-foreground">{jobWhere(job)}</span>
       {extra && <span className="text-xs text-muted-foreground">{extra}</span>}
       <span className="min-w-0 flex-1 truncate">{job.title}</span>
@@ -134,7 +137,7 @@ function EfficiencyCard({ label, window }: { label: string; window: StatusEffici
         <p>DeepSeek cap use: avg {formatPercent(window.deepseek.capUseAvg)}, p90 {formatPercent(window.deepseek.capUseP90)} over {window.deepseek.activeMinutes} active min; slots {formatPercent(window.deepseek.slotOccupancy)}</p>
         <p>Kimi output: hub {formatTokens(roles.hub)}, planner {formatTokens(roles.planner)}, jobs {formatTokens(roles.jobs)}, compaction {formatTokens(roles.compaction)}</p>
         <p>Kimi reasoning {formatPercent(window.kimi.reasoningShare)}, cache hit {formatPercent(window.kimi.cacheHit)}, uncached/hub call {formatTokens(window.kimi.uncachedInputPerHubCall)}</p>
-        <p>Flow: lead {formatDuration(window.flow.leadTimeMedianMs)}, review wait {formatDuration(window.flow.reviewWaitMedianMs)} (max {formatDuration(window.flow.reviewWaitMaxMs)}), fix rounds {formatPercent(window.flow.fixRoundRate)}, merged/h {window.flow.mergedPerHour.toFixed(2)}, tokens/merged {formatTokens(window.flow.tokensPerMergedJob)}</p>
+        <p>Flow: lead {formatDuration(window.flow.leadTimeMedianMs)}, review wait {formatDuration(window.flow.reviewWaitMedianMs)} (max {formatDuration(window.flow.reviewWaitMaxMs)}), fix rounds {formatPercent(window.flow.fixRoundRate)}, tiers gate {window.flow.reviewTiers.gate} refute {window.flow.reviewTiers.refute} deep {window.flow.reviewTiers.deep}, merged/h {window.flow.mergedPerHour.toFixed(2)}, tokens/merged {formatTokens(window.flow.tokensPerMergedJob)}</p>
         <p>Waste: compaction {formatTokens(window.waste.compactionTokens)}, cancelled {window.waste.cancelledJobs}, pacer wait {formatDuration(window.waste.pacerWaitMs)}, 429 retries {window.waste.retries429}</p>
       </CardContent>
     </Card>

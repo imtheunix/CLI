@@ -1,7 +1,7 @@
 import path from 'node:path';
 
 import { orchestratorJobsDb } from '@/modules/database/index.js';
-import type { OrchestratorJobRow, OrchestratorReviewDefect, OrchestratorReviewRisk } from '@/modules/database/index.js';
+import type { OrchestratorJobRow, OrchestratorReviewDefect, OrchestratorReviewRisk, OrchestratorReviewTier } from '@/modules/database/index.js';
 
 import { appendHubEvent } from './hub-events.service.js';
 import { MAX_REFUTE_TIMEOUT_MS } from './orchestrator-config.service.js';
@@ -11,8 +11,8 @@ import type { RefuteService } from './refute.service.js';
 import { runReviewGate } from './review-gate.service.js';
 import { isDirty, revParse, runCommand, tail } from './workspace.service.js';
 
-/** The branch measurements used by risk policy and hub notifications, never the patch itself. */
-export type ReviewDiff = { files: string[]; lines: number; stat: string; hasBinary: boolean };
+/** The branch measurements used by risk policy and hub notifications, plus the patch for the config-writer heuristic. */
+export type ReviewDiff = { files: string[]; lines: number; stat: string; hasBinary: boolean; patch: string };
 
 type ReviewJobs = {
   approve(id: string): Promise<unknown>;
@@ -68,6 +68,65 @@ export function evaluateReviewRisk(
   return { risk: reasons.length === 0 ? 'low' : 'high', reasons };
 }
 
+/** Review service/tests: the risky path segments, normalized for case-insensitive segment matching. */
+function riskySegments(config: ReviewConfig): string[] {
+  return config.riskyPaths.map((entry) => entry.replace(/^\/+|\/+$/g, '').toLowerCase()).filter(Boolean);
+}
+
+/** Review service/tests: files whose path contains a risky segment. */
+function riskyFiles(diff: ReviewDiff, config: ReviewConfig): string[] {
+  const risky = riskySegments(config);
+  return diff.files.filter((file) => file.split('/').some((segment) => risky.includes(segment.toLowerCase())));
+}
+
+/** Review service/tests: files under one of the configured deep path prefixes. */
+function deepFiles(diff: ReviewDiff, config: ReviewConfig): string[] {
+  const prefixes = config.deepPaths.map((entry) => entry.replace(/^\.?\//, '').replace(/\/+$/, '')).filter(Boolean);
+  return diff.files.filter((file) => prefixes.some((prefix) => file === prefix || file.startsWith(`${prefix}/`)));
+}
+
+/**
+ * Review service/tests: true when an added line writes a config file under `~/.config`
+ * (`writeFile`/`writeFileSync` with a path containing `config` or `.json`).
+ */
+function writesConfigFile(patch: string): boolean {
+  for (const line of patch.split('\n')) {
+    if (!line.startsWith('+') || line.startsWith('+++')) continue;
+    if (!/\bwriteFile(Sync)?\s*\(/.test(line)) continue;
+    if (!/\.config/.test(line)) continue;
+    if (!/(?:config|\.json)/i.test(line)) continue;
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Review service/tests: decides how much review a diff gets before refutation.
+ * `deep` wins over everything (risky path, protected repo, deep path, config writer);
+ * then docs-only, tests-only and small low-risk diffs get `gate`; the rest get `refute`.
+ */
+export function selectReviewTier(
+  job: OrchestratorJobRow,
+  diff: ReviewDiff,
+  config: ReviewConfig,
+): { tier: OrchestratorReviewTier; reasons: string[] } {
+  const reasons: string[] = [];
+  const risky = riskyFiles(diff, config);
+  if (risky.length > 0) reasons.push(`risky paths: ${risky.join(', ')}`);
+  const repoName = path.basename(job.repo_path);
+  if (config.protectedRepos.includes(repoName) || config.protectedRepos.includes(job.repo_path)) reasons.push('protected production-deploy repository');
+  const deep = deepFiles(diff, config);
+  if (deep.length > 0) reasons.push(`deep paths: ${deep.join(', ')}`);
+  if (writesConfigFile(diff.patch)) reasons.push('writes a config file under ~/.config');
+  if (reasons.length > 0) return { tier: 'deep', reasons };
+
+  const matches = (globs: string[]) => diff.files.length > 0 && diff.files.every((file) => globs.some((glob) => path.matchesGlob(file, glob)));
+  if (matches(config.tiers.docsGlobs)) return { tier: 'gate', reasons: ['docs/reports only'] };
+  if (matches(config.tiers.testGlobs)) return { tier: 'gate', reasons: ['test files only'] };
+  if (diff.lines < config.tiers.gateMaxLines) return { tier: 'gate', reasons: [`${diff.lines} changed lines (< ${config.tiers.gateMaxLines})`] };
+  return { tier: 'refute', reasons: [`${diff.lines} changed lines`] };
+}
+
 function formatDefects(defects: OrchestratorReviewDefect[]): string {
   return defects.map((defect, index) => [
     `${index + 1}. ${defect.what}`,
@@ -101,10 +160,11 @@ export function createReviewService(deps: {
 
   async function diff(job: OrchestratorJobRow): Promise<ReviewDiff> {
     const range = `origin/${job.base_branch}...HEAD`;
-    const [names, numstat, stat] = await Promise.all([
+    const [names, numstat, stat, patch] = await Promise.all([
       git(job.worktree_path, ['diff', '--name-only', range]),
       git(job.worktree_path, ['diff', '--numstat', range]),
       git(job.worktree_path, ['diff', '--stat', range]),
+      git(job.worktree_path, ['diff', '--unified=0', range]),
     ]);
     let lines = 0;
     let hasBinary = false;
@@ -113,7 +173,7 @@ export function createReviewService(deps: {
       if (added === '-' || deleted === '-') hasBinary = true;
       else lines += Number(added) + Number(deleted);
     }
-    return { files: names.split('\n').filter(Boolean), lines, stat, hasBinary };
+    return { files: names.split('\n').filter(Boolean), lines, stat, hasBinary, patch };
   }
 
   function current(job: OrchestratorJobRow, head?: string): OrchestratorJobRow | null {
@@ -163,7 +223,7 @@ export function createReviewService(deps: {
     const head = await revParse(job.worktree_path, 'HEAD');
     if (!head) throw new Error('Cannot resolve HEAD for the review gate');
     if (job.review_head_sha !== head) {
-      job = orchestratorJobsDb.update(job.id, { review_head_sha: head, review_session_id: null, review_verdict: null, review_risk: null }) as OrchestratorJobRow;
+      job = orchestratorJobsDb.update(job.id, { review_head_sha: head, review_session_id: null, review_verdict: null, review_risk: null, review_tier: null }) as OrchestratorJobRow;
     }
     const branchDiff = await diff(job);
     const result = await gate(job, branchDiff.files, deps.config().checks, run);
@@ -181,7 +241,12 @@ export function createReviewService(deps: {
       await fixOrEscalate(latest, { kind: 'gate', message: 'The gate left the worktree dirty.', stat: branchDiff.stat });
       return;
     }
-    orchestratorJobsDb.update(job.id, { review_step: 'refute', last_error: null });
+    const tier = selectReviewTier(latest, branchDiff, deps.config().review);
+    orchestratorJobsDb.update(job.id, {
+      review_tier: tier.tier,
+      review_step: tier.tier === 'gate' ? 'policy' : 'refute',
+      last_error: null,
+    });
   }
 
   async function stepRefute(job: OrchestratorJobRow): Promise<void> {
@@ -189,7 +254,10 @@ export function createReviewService(deps: {
     const cap = Math.max(1, reviewConfig.refuteCap);
     if (runningRefutes.size >= cap) return;
     runningRefutes.add(job.id);
-    const timeoutMs = Math.min(MAX_REFUTE_TIMEOUT_MS, Math.max(1, reviewConfig.refuteTimeoutMs ?? MAX_REFUTE_TIMEOUT_MS));
+    // `deep` always gets the full 20-minute box; `refute` uses the configured (default 10-minute) box.
+    const timeoutMs = job.review_tier === 'deep'
+      ? MAX_REFUTE_TIMEOUT_MS
+      : Math.min(MAX_REFUTE_TIMEOUT_MS, Math.max(1, reviewConfig.refuteTimeoutMs ?? MAX_REFUTE_TIMEOUT_MS));
     const abortController = new AbortController();
     let reviewSessionId = job.review_session_id;
     let timedOut = false;
@@ -230,7 +298,9 @@ export function createReviewService(deps: {
       if (!timedOut) throw error;
       const latest = current(job, job.review_head_sha ?? undefined);
       if (latest) {
-        await needsHub(latest, `automatic refutation timed out after ${timeoutMs} ms; reviewer aborted and its session was archived; gate green`);
+        const branchDiff = await diff(latest).catch(() => null);
+        orchestratorJobsDb.update(job.id, { review_verdict: 'timeout' });
+        await needsHub(latest, `automatic refutation timed out after ${timeoutMs} ms; reviewer aborted and its session was archived; gate green${branchDiff ? `\n${branchDiff.stat}` : ''}`);
       }
     } finally {
       if (timer) clearTimeout(timer);
@@ -243,6 +313,11 @@ export function createReviewService(deps: {
     const decision = evaluateReviewRisk(job, branchDiff, deps.config().review);
     const latest = current(job, job.review_head_sha ?? undefined);
     if (!latest) return;
+    if (job.review_tier === 'deep') {
+      const reasons = selectReviewTier(job, branchDiff, deps.config().review).reasons;
+      await needsHub(latest, `gate green; refute pass; deep tier${reasons.length > 0 ? `: ${reasons.join('; ')}` : ''}\n${branchDiff.stat}`);
+      return;
+    }
     if (decision.risk === 'high') {
       await needsHub(latest, `gate green; refute pass; ${decision.reasons.join('; ')}\n${branchDiff.stat}`);
       return;

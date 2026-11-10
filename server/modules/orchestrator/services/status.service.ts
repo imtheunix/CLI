@@ -33,6 +33,8 @@ export type StatusJob = {
   model: string | null;
   state: string;
   mergeStep: string;
+  /** The automatic review's risk tier (gate | refute | deep), or null before it is decided. */
+  tier: string | null;
   /** Running/preparing: how long since the job was created. */
   ageMs: number | null;
   /** At review: how long since `tjob done` parked it. */
@@ -90,6 +92,8 @@ export type StatusEfficiencyWindow = {
     reviewWaitMaxMs: number | null;
     /** Share of merged jobs that needed a fix round (merge_attempts > 0). */
     fixRoundRate: number;
+    /** Merged jobs in the window by the automatic review's risk tier. */
+    reviewTiers: { gate: number; refute: number; deep: number };
     mergedPerHour: number;
     tokensPerMergedJob: number;
   };
@@ -260,6 +264,7 @@ function toStatusJob(job: OrchestratorJobRow, nowMs: number, reason: string | nu
     model: job.model,
     state: job.state,
     mergeStep: job.merge_step,
+    tier: job.review_tier,
     ageMs: job.state === 'preparing' || job.state === 'active' ? (created === null ? null : Math.max(0, nowMs - created)) : null,
     waitingMs: job.state === 'done' && job.merge_step === 'review' ? (updated === null ? null : Math.max(0, nowMs - updated)) : null,
     step: QUEUE_STEPS.has(job.merge_step) ? job.merge_step : null,
@@ -453,6 +458,7 @@ export function computeEfficiencyWindow(input: {
   const merged = jobs.filter((job) => job.merge_step === 'merged' && (mergedAt(job) ?? 0) >= since);
   const leadTimes: number[] = [];
   const reviewWaits: number[] = [];
+  const reviewTiers = { gate: 0, refute: 0, deep: 0 };
   let fixRounds = 0;
   let tokens = 0;
   for (const job of merged) {
@@ -466,6 +472,7 @@ export function computeEfficiencyWindow(input: {
     const queuedAt = queued ? parseTimestamp(queued.at) : null;
     if (reviewAt !== null && queuedAt !== null) reviewWaits.push(Math.max(0, queuedAt - reviewAt));
     if (job.merge_attempts > 0) fixRounds += 1;
+    if (job.review_tier === 'gate' || job.review_tier === 'refute' || job.review_tier === 'deep') reviewTiers[job.review_tier] += 1;
     // The jobs service's view already carries the session's usage; only a raw row needs the lookup.
     const viewUsage = (job as OrchestratorJobRow & { usage?: { totalTokens?: number } | null }).usage;
     if (typeof viewUsage?.totalTokens === 'number') tokens += viewUsage.totalTokens;
@@ -496,6 +503,7 @@ export function computeEfficiencyWindow(input: {
       reviewWaitMedianMs: median(reviewWaits),
       reviewWaitMaxMs: reviewWaits.length === 0 ? null : Math.max(...reviewWaits),
       fixRoundRate: merged.length === 0 ? 0 : fixRounds / merged.length,
+      reviewTiers,
       mergedPerHour: merged.length / (windowMs / HOUR_MS),
       tokensPerMergedJob: merged.length === 0 ? 0 : tokens / merged.length,
     },
@@ -555,8 +563,9 @@ export function formatStatusMarkdown(snapshot: StatusSnapshot): string {
     const backend = job.backend ?? '-';
     const model = (job.model ?? '-').split('/').at(-1) ?? '-';
     const where = job.step ? `ci:${job.step}` : job.mergeStep !== 'none' ? `ci:${job.mergeStep}` : job.state;
+    const tier = job.tier ? ` tier:${job.tier}` : '';
     const extra = job.ageMs !== null ? ` (${formatDuration(job.ageMs)})` : job.waitingMs !== null ? ` (waiting ${formatDuration(job.waitingMs)})` : job.at ? ` (${job.at.slice(0, 16).replace('T', ' ')})` : '';
-    return `${job.id}  ${backend}  ${model}  ${where}${extra}  ${job.title}`;
+    return `${job.id}  ${backend}  ${model}  ${where}${tier}${extra}  ${job.title}`;
   };
 
   lines.push('## Jobs now', '```');
@@ -599,7 +608,8 @@ export function formatStatusMarkdown(snapshot: StatusSnapshot): string {
     lines.push(`kimi: out hub ${formatTokens(roles.hub)} planner ${formatTokens(roles.planner)} jobs ${formatTokens(roles.jobs)} compaction ${formatTokens(roles.compaction)}`
       + ` | reasoning ${formatPercent(window.kimi.reasoningShare)} | cache hit ${formatPercent(window.kimi.cacheHit)} | uncached/hub call ${formatTokens(window.kimi.uncachedInputPerHubCall)}`);
     lines.push(`flow: lead ${formatDuration(window.flow.leadTimeMedianMs)} | review wait ${formatDuration(window.flow.reviewWaitMedianMs)} (max ${formatDuration(window.flow.reviewWaitMaxMs)})`
-      + ` | fix rounds ${formatPercent(window.flow.fixRoundRate)} | merged/h ${window.flow.mergedPerHour.toFixed(2)} | tokens/merged ${formatTokens(window.flow.tokensPerMergedJob)}`);
+      + ` | fix rounds ${formatPercent(window.flow.fixRoundRate)} | tiers gate ${window.flow.reviewTiers.gate} refute ${window.flow.reviewTiers.refute} deep ${window.flow.reviewTiers.deep}`
+      + ` | merged/h ${window.flow.mergedPerHour.toFixed(2)} | tokens/merged ${formatTokens(window.flow.tokensPerMergedJob)}`);
     lines.push(`waste: compaction ${formatTokens(window.waste.compactionTokens)} | cancelled ${window.waste.cancelledJobs}`
       + ` | pacer wait ${formatDuration(window.waste.pacerWaitMs)} | 429 retries ${window.waste.retries429}`);
     lines.push('```', '');

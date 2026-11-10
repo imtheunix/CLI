@@ -102,7 +102,12 @@ test('orchestrator job view attaches usage from transcript with notional USD', a
         forgejo: { apiUrl: '', tokenFile: '' },
         glmPeakHours: { avoid: false, utcOffsetHours: 0, fromHour: 0, toHour: 0 },
         morph: { caps: { kimi: { uncachedIn: 1, out: 1 }, deepseek: { uncachedIn: 1, out: 1 } }, admitBelow: 0.7 },
-        review: { enabled: true, refuteCap: 2, refuteTimeoutMs: 20 * 60_000, maxLines: 400, protectedRepos: [], riskyPaths: [], refuteBackendFor: {} },
+        review: {
+          enabled: true, refuteCap: 2, refuteTimeoutMs: 20 * 60_000, refuteTimeoutMin: 20, maxLines: 400,
+          protectedRepos: [], riskyPaths: [], deepPaths: [],
+          tiers: { gateMaxLines: 50, docsGlobs: ['**/*.md'], testGlobs: ['**/*.test.ts'] },
+          refuteBackendFor: {},
+        },
       }),
     });
 

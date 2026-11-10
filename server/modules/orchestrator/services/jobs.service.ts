@@ -870,6 +870,7 @@ export function createJobsService(deps: {
         review_step: reviewEnabled ? 'gate' : 'none',
         review_verdict: null,
         review_risk: null,
+        review_tier: null,
         review_round: again ? 0 : job.review_round,
         review_head_sha: null,
         review_session_id: null,

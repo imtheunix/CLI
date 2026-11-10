@@ -40,6 +40,7 @@ function job(overrides: Partial<OrchestratorJobRow> & Pick<OrchestratorJobRow, '
     review_step: 'none',
     review_verdict: null,
     review_risk: null,
+    review_tier: null,
     review_round: 0,
     review_head_sha: null,
     review_session_id: null,
@@ -163,10 +164,10 @@ test('status JSON from fixtures: needsYou, 24 h filtering, capacity, hub and eff
   await withFixtures(async ({ goalsPath, databasePath, ledgerPath, hubEventsLogPath, statusFilePath }) => {
     const rows: OrchestratorJobRow[] = [
       job({ id: 'j1', title: 'Running job', state: 'active', created_at: sqliteAgo(2 * HOUR) }),
-      job({ id: 'j2', title: 'At review', state: 'done', merge_step: 'review', backend: 'glm', updated_at: sqliteAgo(10 * MINUTE) }),
+      job({ id: 'j2', title: 'At review', state: 'done', merge_step: 'review', backend: 'glm', review_tier: 'deep', updated_at: sqliteAgo(10 * MINUTE) }),
       job({ id: 'j3', title: 'In queue', state: 'done', merge_step: 'check', backend: 'glm', updated_at: sqliteAgo(5 * MINUTE) }),
       job({
-        id: 'j4', title: 'Merged job', state: 'done', merge_step: 'merged', session_id: 'sess-merged',
+        id: 'j4', title: 'Merged job', state: 'done', merge_step: 'merged', session_id: 'sess-merged', review_tier: 'refute',
         created_at: sqliteAgo(3 * HOUR), updated_at: sqliteAgo(HOUR), merge_attempts: 1,
         merge_step_history: JSON.stringify([
           { step: 'review', at: ago(2 * HOUR) },
@@ -217,6 +218,7 @@ test('status JSON from fixtures: needsYou, 24 h filtering, capacity, hub and eff
     assert.equal(status.jobs.running[0].ageMs, 2 * HOUR);
     assert.deepEqual(status.jobs.review.map((entry) => entry.id), ['j2']);
     assert.equal(status.jobs.review[0].waitingMs, 10 * MINUTE);
+    assert.equal(status.jobs.review[0].tier, 'deep');
     assert.deepEqual(status.jobs.queue.map((entry) => entry.id), ['j3']);
     assert.equal(status.jobs.queue[0].step, 'check');
     // j5 merged 25 h ago is outside the 24 h window.
@@ -241,6 +243,7 @@ test('status JSON from fixtures: needsYou, 24 h filtering, capacity, hub and eff
     assert.equal(hour.flow.reviewWaitMedianMs, 10 * MINUTE);
     assert.equal(hour.flow.reviewWaitMaxMs, 10 * MINUTE);
     assert.equal(hour.flow.fixRoundRate, 1);
+    assert.deepEqual(hour.flow.reviewTiers, { gate: 0, refute: 1, deep: 0 });
     assert.equal(hour.flow.mergedPerHour, 1);
     assert.equal(hour.flow.tokensPerMergedJob, 5_000);
     assert.equal(hour.waste.compactionTokens, 500);

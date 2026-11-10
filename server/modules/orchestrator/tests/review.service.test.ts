@@ -14,7 +14,7 @@ import { parseHubEventLine } from '../services/hub-wake.service.js';
 import { loadOrchestratorConfig } from '../services/orchestrator-config.service.js';
 import type { OrchestratorConfig } from '../services/orchestrator-config.service.js';
 import type { RefuteService, RefuteVerdict } from '../services/refute.service.js';
-import { briefPaths, createReviewService, evaluateReviewRisk } from '../services/review.service.js';
+import { briefPaths, createReviewService, evaluateReviewRisk, selectReviewTier } from '../services/review.service.js';
 import { revParse } from '../services/workspace.service.js';
 import type { CommandResult } from '../services/workspace.service.js';
 
@@ -57,6 +57,7 @@ type Fixture = {
   fixes: string[];
   setBusy: (busy: boolean) => void;
   setDiff: (files: string[], lines?: number, stat?: string) => void;
+  setPatch: (patch: string) => void;
   service: (verdicts: RefuteVerdict[], gateResults?: Array<{ ok: boolean; output?: string }>) => {
     tick: () => Promise<void>;
     refuteCalls: Array<{ backend: string; sessionId: string | null }>;
@@ -98,8 +99,9 @@ async function withFixture(runTest: (fixture: Fixture) => Promise<void>): Promis
     },
   };
   let files = ['src/allowed.ts'];
-  let lines = 10;
-  let stat = ' 1 file changed, 5 insertions(+), 5 deletions(-)';
+  let lines = 60;
+  let stat = ' 1 file changed, 30 insertions(+), 30 deletions(-)';
+  let patch = '';
   const fakeRun = async (command: string, args: string[]) => {
     assert.equal(command, 'git');
     assert.equal(args[0], 'diff');
@@ -107,6 +109,7 @@ async function withFixture(runTest: (fixture: Fixture) => Promise<void>): Promis
     if (args[1] === '--name-only') result.stdout = `${files.join('\n')}\n`;
     else if (args[1] === '--numstat') result.stdout = files.map((file) => `${Math.floor(lines / 2)}\t${lines - Math.floor(lines / 2)}\t${file}`).join('\n');
     else if (args[1] === '--stat') result.stdout = stat;
+    else if (args[1] === '--unified=0') result.stdout = patch;
     else assert.fail(`unexpected diff args ${args.join(' ')}`);
     return result;
   };
@@ -118,11 +121,12 @@ async function withFixture(runTest: (fixture: Fixture) => Promise<void>): Promis
       approvals,
       fixes,
       setBusy: (nextBusy) => { busy = nextBusy; },
-      setDiff: (nextFiles, nextLines = 10, nextStat = ' 1 file changed, 5 insertions(+), 5 deletions(-)') => {
+      setDiff: (nextFiles, nextLines = 60, nextStat = ' 1 file changed, 30 insertions(+), 30 deletions(-)') => {
         files = nextFiles;
         lines = nextLines;
         stat = nextStat;
       },
+      setPatch: (nextPatch) => { patch = nextPatch; },
       service: (verdicts, gateResults = [{ ok: true }]) => {
         const refuteCalls: Array<{ backend: string; sessionId: string | null }> = [];
         let refuteIndex = 0;
@@ -214,6 +218,7 @@ test('risky diff needs the hub with verdict, gate and diff stat only', async () 
     assert.equal(finished.merge_step, 'review');
     assert.equal(finished.review_step, 'hub');
     assert.equal(finished.review_risk, 'high');
+    assert.equal(finished.review_tier, 'deep');
     assert.deepEqual(approvals, []);
     const event = events.at(-1)!;
     assert.equal(event.state, 'review');
@@ -304,14 +309,66 @@ test('policy path extraction and limits fail closed', async () => {
     assert.deepEqual(briefPaths('Touch `src/a.ts` and server/modules/orchestrator; never ../secret.'), ['src/a.ts', 'server/modules/orchestrator']);
     assert.deepEqual(briefPaths('Work in src/ only.'), ['src/'], 'a directory keeps its trailing slash');
     const directoryJob = { ...job, prompt: 'Work in src/ only.' };
-    assert.equal(evaluateReviewRisk(directoryJob, { files: ['src/nested/allowed.ts'], lines: 1, stat: '', hasBinary: false }, config.review).risk, 'low');
-    assert.equal(evaluateReviewRisk(directoryJob, { files: ['other/allowed.ts'], lines: 1, stat: '', hasBinary: false }, config.review).risk, 'high');
-    assert.match(evaluateReviewRisk({ ...job, prompt: 'Touch ../secret only.' }, { files: ['src/allowed.ts'], lines: 1, stat: '', hasBinary: false }, config.review).reasons.join(' '), /unsafe or ambiguous/);
-    assert.match(evaluateReviewRisk({ ...job, prompt: 'Touch /etc/passwd only.' }, { files: ['src/allowed.ts'], lines: 1, stat: '', hasBinary: false }, config.review).reasons.join(' '), /unsafe or ambiguous/);
-    assert.equal(evaluateReviewRisk(job, { files: ['src/allowed.ts'], lines: 399, stat: '', hasBinary: false }, config.review).risk, 'low');
-    assert.equal(evaluateReviewRisk(job, { files: ['src/allowed.ts'], lines: 400, stat: '', hasBinary: false }, config.review).risk, 'high');
-    assert.equal(evaluateReviewRisk(job, { files: ['src/other.ts'], lines: 1, stat: '', hasBinary: false }, config.review).risk, 'high');
+    assert.equal(evaluateReviewRisk(directoryJob, { files: ['src/nested/allowed.ts'], lines: 1, stat: '', hasBinary: false, patch: '' }, config.review).risk, 'low');
+    assert.equal(evaluateReviewRisk(directoryJob, { files: ['other/allowed.ts'], lines: 1, stat: '', hasBinary: false, patch: '' }, config.review).risk, 'high');
+    assert.match(evaluateReviewRisk({ ...job, prompt: 'Touch ../secret only.' }, { files: ['src/allowed.ts'], lines: 1, stat: '', hasBinary: false, patch: '' }, config.review).reasons.join(' '), /unsafe or ambiguous/);
+    assert.match(evaluateReviewRisk({ ...job, prompt: 'Touch /etc/passwd only.' }, { files: ['src/allowed.ts'], lines: 1, stat: '', hasBinary: false, patch: '' }, config.review).reasons.join(' '), /unsafe or ambiguous/);
+    assert.equal(evaluateReviewRisk(job, { files: ['src/allowed.ts'], lines: 399, stat: '', hasBinary: false, patch: '' }, config.review).risk, 'low');
+    assert.equal(evaluateReviewRisk(job, { files: ['src/allowed.ts'], lines: 400, stat: '', hasBinary: false, patch: '' }, config.review).risk, 'high');
+    assert.equal(evaluateReviewRisk(job, { files: ['src/other.ts'], lines: 1, stat: '', hasBinary: false, patch: '' }, config.review).risk, 'high');
     config.review.protectedRepos = ['demo'];
-    assert.equal(evaluateReviewRisk(job, { files: ['src/allowed.ts'], lines: 1, stat: '', hasBinary: false }, config.review).risk, 'high');
+    assert.equal(evaluateReviewRisk(job, { files: ['src/allowed.ts'], lines: 1, stat: '', hasBinary: false, patch: '' }, config.review).risk, 'high');
+  });
+});
+
+test('tier selection: docs-only, tests-only, small diff, risky path, protected repo, deep path and config writer', async () => {
+  await withFixture(async ({ job, config }) => {
+    const diff = (files: string[], lines = 10, patch = '') => ({ files, lines, stat: '', hasBinary: false, patch });
+    assert.equal(selectReviewTier(job, diff(['docs/guide.md']), config.review).tier, 'gate');
+    assert.equal(selectReviewTier(job, diff(['README.md']), config.review).tier, 'gate');
+    assert.equal(selectReviewTier(job, diff(['server/modules/x/tests/a.test.ts']), config.review).tier, 'gate');
+    assert.equal(selectReviewTier(job, diff(['src/a.ts'], 49), config.review).tier, 'gate');
+    assert.equal(selectReviewTier(job, diff(['src/a.ts'], 50), config.review).tier, 'refute');
+    assert.equal(selectReviewTier(job, diff(['infra/deploy.sh'], 1), config.review).tier, 'deep');
+    config.review.protectedRepos = ['demo'];
+    assert.equal(selectReviewTier(job, diff(['src/a.ts'], 1), config.review).tier, 'deep');
+    config.review.protectedRepos = [];
+    config.review.deepPaths = ['crates/kernel/'];
+    assert.equal(selectReviewTier(job, diff(['crates/kernel/src/lib.rs'], 1), config.review).tier, 'deep');
+    config.review.deepPaths = [];
+    const writer = '+  writeFileSync(path.join(os.homedir(), ".config/cli/settings.json"), data);';
+    assert.equal(selectReviewTier(job, diff(['src/a.ts'], 1, writer), config.review).tier, 'deep');
+    const joined = "+  writeFileSync(path.join(os.homedir(), '.config', 'cli', 'settings.json'), data);";
+    assert.equal(selectReviewTier(job, diff(['src/a.ts'], 1, joined), config.review).tier, 'deep');
+    assert.equal(selectReviewTier(job, diff(['src/a.ts'], 1, '+  writeFileSync("out.txt", data);'), config.review).tier, 'gate');
+  });
+});
+
+test('gate tier runs the gate and policy without a refutation', async () => {
+  await withFixture(async ({ job, service, approvals, setDiff }) => {
+    setDiff(['src/allowed.ts'], 5);
+    const review = service([pass]);
+    await review.tick();
+    assert.equal(orchestratorJobsDb.get(job.id)?.review_tier, 'gate');
+    assert.equal(orchestratorJobsDb.get(job.id)?.review_step, 'policy');
+    await review.tick();
+    assert.equal(review.refuteCalls.length, 0);
+    assert.deepEqual(approvals, [job.id]);
+    assert.equal(orchestratorJobsDb.get(job.id)?.review_step, 'approved');
+  });
+});
+
+test('deep tier always goes to the hub after a passing refutation', async () => {
+  await withFixture(async ({ job, service, approvals, events, setDiff }) => {
+    setDiff(['infra/deploy.sh'], 5);
+    const review = service([pass]);
+    await review.tick();
+    assert.equal(orchestratorJobsDb.get(job.id)?.review_tier, 'deep');
+    assert.equal(orchestratorJobsDb.get(job.id)?.review_step, 'refute');
+    await review.tick();
+    await review.tick();
+    assert.equal(orchestratorJobsDb.get(job.id)?.review_step, 'hub');
+    assert.deepEqual(approvals, []);
+    assert.match(events.at(-1)?.reason ?? '', /deep tier/);
   });
 });

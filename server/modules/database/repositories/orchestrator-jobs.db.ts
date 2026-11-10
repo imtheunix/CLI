@@ -14,11 +14,18 @@ export type OrchestratorMergeStepEvent = { step: OrchestratorMergeStep | 'check:
 /** Automatic-review stages persisted on a job so the orchestrator can resume after a restart. */
 export type OrchestratorReviewStep = 'none' | 'gate' | 'refute' | 'policy' | 'fix' | 'hub' | 'approved';
 
-/** The automatic review's overall result. */
-export type OrchestratorReviewVerdict = 'pass' | 'defects';
+/** The automatic review's overall result; `timeout` means the refutation was aborted by its time box. */
+export type OrchestratorReviewVerdict = 'pass' | 'defects' | 'timeout';
 
 /** Whether the automatic review found the change to be low or high risk. */
 export type OrchestratorReviewRisk = 'low' | 'high';
+
+/**
+ * How much review a diff gets, decided from the diff before refutation:
+ * `gate` runs only the touched-file gate, `refute` adds one time-boxed refutation,
+ * and `deep` adds a refutation plus an unconditional hub decision.
+ */
+export type OrchestratorReviewTier = 'gate' | 'refute' | 'deep';
 
 /** One evidence-backed defect found by an automatic reviewer. */
 export type OrchestratorReviewDefect = { what: string; probe: string; output: string };
@@ -73,6 +80,7 @@ export type OrchestratorJobRow = {
   review_step: OrchestratorReviewStep;
   review_verdict: OrchestratorReviewVerdict | null;
   review_risk: OrchestratorReviewRisk | null;
+  review_tier: OrchestratorReviewTier | null;
   review_round: number;
   review_head_sha: string | null;
   review_session_id: string | null;
@@ -92,13 +100,13 @@ export type OrchestratorJobRow = {
 type JobPatch = Partial<Pick<OrchestratorJobRow,
   'backend' | 'model' | 'session_id' | 'state' | 'in_turn' | 'merge_step' | 'merge_attempts'
   | 'pushed_sha' | 'deploy_waiting_since' | 'last_error' | 'base_branch'
-  | 'review_step' | 'review_verdict' | 'review_risk' | 'review_round' | 'review_head_sha' | 'review_session_id'
+  | 'review_step' | 'review_verdict' | 'review_risk' | 'review_tier' | 'review_round' | 'review_head_sha' | 'review_session_id'
   | 'failure_class' | 'resume_at' | 'limit_recovery' | 'backend_history'>>;
 
 const PATCHABLE_COLUMNS: Array<keyof JobPatch> = [
   'backend', 'model', 'session_id', 'state', 'in_turn', 'merge_step', 'merge_attempts',
   'pushed_sha', 'deploy_waiting_since', 'last_error', 'base_branch',
-  'review_step', 'review_verdict', 'review_risk', 'review_round', 'review_head_sha', 'review_session_id',
+  'review_step', 'review_verdict', 'review_risk', 'review_tier', 'review_round', 'review_head_sha', 'review_session_id',
   'failure_class', 'resume_at', 'limit_recovery', 'backend_history',
 ];
 
