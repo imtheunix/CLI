@@ -55,6 +55,7 @@ export function assembleLivePrompt(setup: HarnessCaseSetup): AssembledCasePrompt
     setup.projectMapGuidance ?? '',
     setup.continuation ?? false,
     setup.repoGuidance ?? '',
+    setup.modelGuidance ?? '',
   );
 
   const hash = calculatePromptHash(text);

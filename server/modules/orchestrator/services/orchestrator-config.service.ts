@@ -81,6 +81,12 @@ export type OrchestratorConfig = {
    * job's initial prompt).
    */
   jobGuidance: Record<string, string>;
+  /**
+   * Per-model lines added to every job prompt (keyed by the model id stored on the job, e.g.
+   * "morph/morph-kimik31"), after the repository guidance. Lets a model's delegation contract
+   * travel with every job on it.
+   */
+  modelGuidance: Record<string, string>;
   /** At most this many merge checks run at once on the workstation; the others wait in `check` for a slot. */
   maxConcurrentChecks: number;
   /** Per-repository deploy waiting, keyed by folder name; absent entries default to true. */
@@ -177,6 +183,7 @@ function defaults(): OrchestratorConfig {
     },
     cleanup: { buildDirs: {} },
     jobGuidance: {},
+    modelGuidance: {},
     maxConcurrentChecks: 1,
     waitForDeploy: {},
     baseBranches: { tribeira: 'develop' },
@@ -251,6 +258,11 @@ export function loadOrchestratorConfig(file = path.join(os.homedir(), '.config/c
   if (override.jobGuidance && typeof override.jobGuidance === 'object') {
     for (const [repo, text] of Object.entries(override.jobGuidance as Record<string, unknown>)) {
       if (typeof text === 'string' && text.trim()) config.jobGuidance[repo] = text.trim();
+    }
+  }
+  if (override.modelGuidance && typeof override.modelGuidance === 'object') {
+    for (const [model, text] of Object.entries(override.modelGuidance as Record<string, unknown>)) {
+      if (typeof text === 'string' && text.trim()) config.modelGuidance[model] = text.trim();
     }
   }
   if (typeof override.maxConcurrentChecks === 'number' && override.maxConcurrentChecks >= 1) {

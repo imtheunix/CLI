@@ -179,6 +179,7 @@ export function buildJobPrompt(
   projectMapGuidance: string,
   continuation = false,
   repoGuidance = '',
+  modelGuidance = '',
   handoverNote = '',
 ): string {
   return [
@@ -199,6 +200,7 @@ export function buildJobPrompt(
     `- When the code is complete and committed, and the tests of what you changed pass, run: tjob done ${job.id}`,
     `  Automatic review then runs its gate, refutation and risk policy; low-risk work is approved automatically and anything else goes to the hub. Once approved it enters the CI/CD queue (rebase onto ${job.base_branch}, checks, push, deploy). If anything fails there, you get a message here.`,
     ...(repoGuidance ? ['', `For this repository (${path.basename(job.repo_path)}):`, ...repoGuidance.split('\n').map((line) => `- ${line}`)] : []),
+    ...(modelGuidance ? ['', `For this model (${job.model}):`, ...modelGuidance.split('\n').map((line) => `- ${line}`)] : []),
   ].join('\n');
 }
 
@@ -685,7 +687,8 @@ export function createJobsService(deps: {
       if (orchestratorJobsDb.get(job.id)?.state !== 'preparing') return;
       const ready = orchestratorJobsDb.update(job.id, { session_id: sessionId, state: 'active' }) as OrchestratorJobRow;
       const repoGuidance = deps.config().jobGuidance[path.basename(ready.repo_path)] ?? '';
-      const prompt = buildJobPrompt(ready, label, projectMapGuidance, continuation, repoGuidance, handoverNote);
+      const modelGuidance = ready.model ? deps.config().modelGuidance[ready.model] ?? '' : '';
+      const prompt = buildJobPrompt(ready, label, projectMapGuidance, continuation, repoGuidance, modelGuidance, handoverNote);
       // Saved before the turn: a failed start (login, restart) resumes with this prompt, not a bare continue line.
       if (handoverNote) savePendingHandoverPrompt(job.id, prompt);
       await sendTurn(orchestratorJobsDb.get(job.id) as OrchestratorJobRow, prompt, null, options);

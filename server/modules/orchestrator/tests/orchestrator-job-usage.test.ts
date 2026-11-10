@@ -95,6 +95,7 @@ test('orchestrator job view attaches usage from transcript with notional USD', a
         checks: {},
         cleanup: { buildDirs: {} },
         jobGuidance: {},
+        modelGuidance: {},
         maxConcurrentChecks: 1,
         waitForDeploy: {},
         baseBranches: {},

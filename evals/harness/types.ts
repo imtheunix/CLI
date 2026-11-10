@@ -19,6 +19,7 @@ export type HarnessCaseSetup = {
   projectMapGuidance?: string;
   continuation?: boolean;
   repoGuidance?: string;
+  modelGuidance?: string;
   priorTurns?: SyntheticTurn[];
   world?: {
     files?: Record<string, string>;

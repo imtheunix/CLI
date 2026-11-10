@@ -329,6 +329,43 @@ test('job guidance per repository from orchestrator.json is added to that reposi
   }, (config) => { config.jobGuidance = { demo: guidance }; });
 });
 
+test('model guidance from orchestrator.json is added to jobs on that model, after the repository guidance', async () => {
+  const repoGuidance = 'Heavy work: run it with `tsge-compute run` from your worktree.';
+  const modelGuidance = 'Delegate: scouts read, DeepSeek workers write and test.\nKeep your own output small.';
+  await withWorkspace(async ({ repo, runtime, jobs, job }) => {
+    const claude = await jobs.create({ title: 'claude job', prompt: 'do claude', repoPath: repo, backend: 'claude', baseBranch: null });
+    await eventually(() => job(claude.id).state === 'active', 'claude job to start');
+    const claudeTurn = runtime.turns.find((t) => t.sessionId === job(claude.id).session_id)!;
+    assert.match(claudeTurn.command, /For this model \(claude-opus-5-5\):/);
+    assert.match(claudeTurn.command, /- Delegate: scouts read, DeepSeek workers write and test\./);
+    assert.match(claudeTurn.command, /- Keep your own output small\./);
+    assert.match(claudeTurn.command, /For this repository \(demo\):/);
+    assert.ok(claudeTurn.command.indexOf('For this repository (demo):') < claudeTurn.command.indexOf('For this model (claude-opus-5-5):'));
+
+    const codex = await jobs.create({ title: 'codex job', prompt: 'do codex', repoPath: repo, backend: 'codex', baseBranch: null });
+    await eventually(() => job(codex.id).state === 'active', 'codex job to start');
+    const codexTurn = runtime.turns.find((t) => t.sessionId === job(codex.id).session_id)!;
+    assert.doesNotMatch(codexTurn.command, /For this model/);
+    assert.doesNotMatch(codexTurn.command, /Delegate: scouts read/);
+    assert.match(codexTurn.command, /For this repository \(demo\):/);
+  }, (config) => {
+    config.jobGuidance = { demo: repoGuidance };
+    config.modelGuidance = { 'claude-opus-5-5': modelGuidance };
+  });
+});
+
+test('model guidance is read per model from orchestrator.json, blank or non-text entries ignored', async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'orchestrator-config-'));
+  try {
+    const file = path.join(dir, 'orchestrator.json');
+    assert.deepEqual(loadOrchestratorConfig(file).modelGuidance, {});
+    writeFileSync(file, JSON.stringify({ modelGuidance: { 'morph/morph-kimik31': '  Delegate the work.  ', blank: '   ', wrong: 3 } }));
+    assert.deepEqual(loadOrchestratorConfig(file).modelGuidance, { 'morph/morph-kimik31': 'Delegate the work.' });
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test('job guidance is read per repository from orchestrator.json, blank or non-text entries ignored', async () => {
   const dir = await mkdtemp(path.join(tmpdir(), 'orchestrator-config-'));
   try {
