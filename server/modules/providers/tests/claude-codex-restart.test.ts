@@ -560,6 +560,9 @@ test('the Codex wrapper runs the CLI in a unit that outlives the wrapper', { ski
     await eventually(() => readRelayExit(logPath) !== null, 'the CLI to finish without its wrapper');
     assert.match(readFileSync(logPath, 'utf8'), /echo second/);
     assert.deepEqual(readRelayExit(logPath), { code: 0, signal: null });
+    // The CLI has exited, but its unit can linger for a moment; wait for it to
+    // be gone so complete() finalizes the row instead of leaving it running.
+    await eventually(async () => !(await isTurnAlive(exec2.unitName)), 'the second unit to be gone');
     await exec2.complete();
 
     // Superseded while this server still drives it: the new turn stops the old unit.
