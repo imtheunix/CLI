@@ -1,0 +1,19 @@
+[Unit]
+Description=Morph pacing proxy for OpenCode
+Documentation=file://%h/Tribeira/tribeiracli/docs/morph-pacer.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/Tribeira/tribeiracli
+ExecStart=%h/Tribeira/tribeiracli/node_modules/.bin/tsx %h/Tribeira/tribeiracli/morph-pacer/src/index.ts
+Environment=NODE_ENV=production
+Restart=on-failure
+RestartSec=2
+
+# Reads ~/.config/morph/api_key and writes ~/.local/state/morph-pacer/.
+# Binds 127.0.0.1:8197 only; it is not reachable from the network.
+
+[Install]
+WantedBy=default.target
