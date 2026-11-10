@@ -22,7 +22,8 @@
     "shell": "Терминал",
     "tasks": "Задачи",
     "browser": "Browser",
-    "computer": "Компьютер"
+    "computer": "Компьютер",
+    "status": "Status"
   },
   "status": {
     "loading": "Загрузка...",

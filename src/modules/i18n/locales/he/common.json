@@ -23,7 +23,8 @@
     "tasks": "משימות",
     "browser": "דפדפן",
     "computer": "מחשב",
-    "views": "תצוגות סביבת העבודה"
+    "views": "תצוגות סביבת העבודה",
+    "status": "Status"
   },
   "status": {
     "loading": "טוען…",
@@ -233,7 +234,8 @@
     "browseAllSessions_one": "עיון בכל הסשנים ({{count}})",
     "browseAllSessions_two": "עיון בכל הסשנים ({{count}})",
     "browseAllSessions_other": "עיון בכל הסשנים ({{count}})",
-    "switchTo": "מעבר אל: {{name}}"
+    "switchTo": "מעבר אל: {{name}}",
+    "navStatus": "Go to Status"
   },
   "folderBrowser": {
     "title": "בחירת תיקייה",

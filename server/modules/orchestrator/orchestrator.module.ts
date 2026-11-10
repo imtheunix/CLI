@@ -14,6 +14,8 @@ import { createHubService } from './services/hub.service.js';
 import { createJobsService } from './services/jobs.service.js';
 import { createMergeQueueService } from './services/merge-queue.service.js';
 import { createMorphUsageService } from './services/morph-usage.service.js';
+import { createStatusService } from './services/status.service.js';
+import { isTestEnvironment } from './services/hub-events.service.js';
 import { createHubWakeService } from './services/hub-wake.service.js';
 import { loadOrchestratorConfig } from './services/orchestrator-config.service.js';
 import { getOrchestratorToken } from './services/orchestrator-token.service.js';
@@ -34,7 +36,9 @@ export function createOrchestratorModule(input: { runtime: ProviderRuntimeGatewa
   const mergeQueue = createMergeQueueService({ jobs, config });
   const hubWake = createHubWakeService({ runtime: input.runtime, config });
   const hub = createHubService({ config });
+  const status = createStatusService({ config, jobs, morphUsage, hub });
   let timer: ReturnType<typeof setInterval> | null = null;
+  let statusTimer: ReturnType<typeof setInterval> | null = null;
   let unsubscribe: (() => void) | null = null;
   let ticking = false;
 
@@ -59,6 +63,7 @@ export function createOrchestratorModule(input: { runtime: ProviderRuntimeGatewa
       hubWake,
       hub,
       morphUsage,
+      status,
       authenticate: input.authenticate,
       caps: () => {
         const { backends } = config();
@@ -111,11 +116,27 @@ export function createOrchestratorModule(input: { runtime: ProviderRuntimeGatewa
       await jobs.recover().catch((error) => console.error('[Orchestrator] Recovery failed', error));
       timer = setInterval(() => void tick(), TICK_INTERVAL_MS);
       timer.unref?.();
+      // Replace the interim hub-status timer: the server keeps ~/.cache/tsge-hub/STATUS.md current,
+      // at most once a minute. Tests never start the module, and the guard keeps a stray start harmless.
+      if (!isTestEnvironment()) {
+        const writeStatus = () => {
+          try {
+            status.writeMarkdown();
+          } catch (error) {
+            console.error('[Orchestrator] Could not write STATUS.md', error);
+          }
+        };
+        writeStatus();
+        statusTimer = setInterval(writeStatus, 60_000);
+        statusTimer.unref?.();
+      }
     },
 
     stop(): void {
       if (timer) clearInterval(timer);
       timer = null;
+      if (statusTimer) clearInterval(statusTimer);
+      statusTimer = null;
       hubWake.stop();
       unsubscribe?.();
       unsubscribe = null;

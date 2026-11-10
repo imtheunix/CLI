@@ -212,6 +212,8 @@ export const api = {
     // What the button needs when the session's folder is not a git repository:
     // whether it is in one at all, and the repositories the picker offers.
     fromSessionContext: (sessionId: string) => get(`/api/orchestrator/from-session/context${query({ sessionId })}`),
+    // The Status view: goals, jobs, capacity, hub and efficiency, computed at most once per 30 s.
+    status: () => get('/api/orchestrator/status'),
   },
   // Auth endpoints (no token required)
   auth: {

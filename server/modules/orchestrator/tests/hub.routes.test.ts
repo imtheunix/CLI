@@ -14,6 +14,7 @@ import { AppError } from '@/shared/utils.js';
 import { createOrchestratorRouter } from '@/modules/orchestrator/orchestrator.routes.js';
 import { createHubService } from '@/modules/orchestrator/services/hub.service.js';
 import { createMorphUsageService } from '@/modules/orchestrator/services/morph-usage.service.js';
+import type { StatusService } from '@/modules/orchestrator/services/status.service.js';
 import { loadOrchestratorConfig } from '@/modules/orchestrator/services/orchestrator-config.service.js';
 import type { OrchestratorConfig } from '@/modules/orchestrator/services/orchestrator-config.service.js';
 
@@ -74,6 +75,7 @@ async function withHubServer(
       ledgerPath: path.join(root, 'no-ledger.jsonl'),
       databasePath: path.join(root, 'no-opencode.db'),
     }),
+    status: { snapshot: unexpected, markdown: unexpected, writeMarkdown: unexpected } as unknown as StatusService,
     caps: () => Object.fromEntries(Object.entries(config().backends).map(([name, backend]) => [name, backend.cap])) as Record<OrchestratorBackend, number>,
     authenticate: passAuth,
     rollbackJobCheckpoint: unexpected,

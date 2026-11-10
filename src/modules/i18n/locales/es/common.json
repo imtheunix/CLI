@@ -22,7 +22,8 @@
     "shell": "Shell",
     "tasks": "Tareas",
     "browser": "Navegador",
-    "computer": "Equipo"
+    "computer": "Equipo",
+    "status": "Status"
   },
   "status": {
     "loading": "Cargando...",

@@ -40,6 +40,7 @@ const NAV_TABS: Array<{ id: AppTab; labelKey: string; keywords: string }> = [
   { id: 'chat', labelKey: 'commandPalette.navChat', keywords: 'chat messages conversation' },
   { id: 'shell', labelKey: 'commandPalette.navShell', keywords: 'shell terminal console' },
   { id: 'tasks', labelKey: 'commandPalette.navTasks', keywords: 'tasks taskmaster' },
+  { id: 'status', labelKey: 'commandPalette.navStatus', keywords: 'status goals jobs capacity efficiency' },
 ];
 
 /** Rendered by the project-workspace module to search sessions and run workspace and settings actions. */

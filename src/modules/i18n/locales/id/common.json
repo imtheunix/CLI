@@ -22,7 +22,8 @@
     "shell": "Shell",
     "tasks": "Tugas",
     "browser": "Browser",
-    "computer": "Komputer"
+    "computer": "Komputer",
+    "status": "Status"
   },
   "status": {
     "loading": "Memuat...",
@@ -219,7 +220,8 @@
     "navTasks": "Buka Tugas",
     "settingsItem": "Pengaturan: {{label}}",
     "browseAllSessions": "Telusuri semua sesi ({{count}})",
-    "switchTo": "Beralih ke: {{name}}"
+    "switchTo": "Beralih ke: {{name}}",
+    "navStatus": "Go to Status"
   },
   "folderBrowser": {
     "title": "Pilih Folder",

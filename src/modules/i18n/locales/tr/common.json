@@ -22,7 +22,8 @@
     "shell": "Shell",
     "tasks": "Görevler",
     "browser": "Browser",
-    "computer": "Bilgisayar"
+    "computer": "Bilgisayar",
+    "status": "Status"
   },
   "status": {
     "loading": "Yükleniyor...",
