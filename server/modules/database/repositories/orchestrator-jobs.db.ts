@@ -11,6 +11,18 @@ export type OrchestratorMergeStep = 'none' | 'review' | 'queued' | 'rebase' | 'c
 /** One entry of a job's CI/CD queue history: a step (or `check:run`, its check starting) and when it began. */
 export type OrchestratorMergeStepEvent = { step: OrchestratorMergeStep | 'check:run'; at: string };
 
+/** Automatic-review stages persisted on a job so the orchestrator can resume after a restart. */
+export type OrchestratorReviewStep = 'none' | 'gate' | 'refute' | 'policy' | 'fix' | 'hub' | 'approved';
+
+/** The automatic review's overall result. */
+export type OrchestratorReviewVerdict = 'pass' | 'defects';
+
+/** Whether the automatic review found the change to be low or high risk. */
+export type OrchestratorReviewRisk = 'low' | 'high';
+
+/** One evidence-backed defect found by an automatic reviewer. */
+export type OrchestratorReviewDefect = { what: string; probe: string; output: string };
+
 /**
  * One backend handover (e.g. Codex out of quota, continued on GLM Flash): the job kept its id, worktree and
  * branch; the previous backend's session stays for its transcript and usage.
@@ -58,6 +70,12 @@ export type OrchestratorJobRow = {
   deploy_waiting_since: string | null;
   /** JSON array of OrchestratorMergeStepEvent; read it with `readMergeStepHistory`. */
   merge_step_history: string | null;
+  review_step: OrchestratorReviewStep;
+  review_verdict: OrchestratorReviewVerdict | null;
+  review_risk: OrchestratorReviewRisk | null;
+  review_round: number;
+  review_head_sha: string | null;
+  review_session_id: string | null;
   last_error: string | null;
   /** usage_limit | auth_required | transient while the job waits on its provider; NULL otherwise. */
   failure_class: 'usage_limit' | 'auth_required' | 'transient' | null;
@@ -74,11 +92,13 @@ export type OrchestratorJobRow = {
 type JobPatch = Partial<Pick<OrchestratorJobRow,
   'backend' | 'model' | 'session_id' | 'state' | 'in_turn' | 'merge_step' | 'merge_attempts'
   | 'pushed_sha' | 'deploy_waiting_since' | 'last_error' | 'base_branch'
+  | 'review_step' | 'review_verdict' | 'review_risk' | 'review_round' | 'review_head_sha' | 'review_session_id'
   | 'failure_class' | 'resume_at' | 'limit_recovery' | 'backend_history'>>;
 
 const PATCHABLE_COLUMNS: Array<keyof JobPatch> = [
   'backend', 'model', 'session_id', 'state', 'in_turn', 'merge_step', 'merge_attempts',
   'pushed_sha', 'deploy_waiting_since', 'last_error', 'base_branch',
+  'review_step', 'review_verdict', 'review_risk', 'review_round', 'review_head_sha', 'review_session_id',
   'failure_class', 'resume_at', 'limit_recovery', 'backend_history',
 ];
 
