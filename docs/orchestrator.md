@@ -71,11 +71,31 @@ Caps, models and the rest can be overridden in `~/.config/cli/orchestrator.json`
 
 A backend's `models` maps the models a job may ask for to the label of its session (`GLM Flash`); setting it replaces the whole list. The default `model` is always allowed.
 
-## CI/CD queue
+Automatic review is configured under `review` (the legacy boolean still maps to `review.enabled`):
+
+```json
+{
+  "review": {
+    "enabled": true,
+    "refuteCap": 2,
+    "refuteTimeoutMs": 1200000,
+    "maxLines": 400,
+    "protectedRepos": [],
+    "riskyPaths": ["infra", "auth", "secrets", "ci", "migrations", "k8s", ".forgejo", ".github"],
+    "refuteBackendFor": { "morph": "glm", "glm": "morph", "zcode": "morph", "claude": "glm", "codex": "glm", "agy": "glm" }
+  }
+}
+```
+
+## Automatic review and CI/CD queue
 
 Optional local symbol/dependency maps for Claude, Codex, GLM and agy jobs are documented in [Graphify project maps](graphify.md). They are disabled by default and use one bounded shell interface without changing model selection or job completion rules.
 
-`tjob done` puts the branch in the queue. A stacked job, one whose `<base>` is another job's branch, lands where that job lands. Merging it into the parent's branch would not count as merged: it waits in `queued` while the parent is on its way, moves to the parent's base once the parent is merged, and is blocked when the parent was cancelled or failed. Job 88328da6 was marked merged into the branch of cancelled job f8a49612 and never reached main. `tjob ls` marks the wait as `! waiting for base <id> (<state>)`; when the base sits at review for more than 30 minutes, the hub is woken once for the stacked job (two queue deadlocks on 2026-11-07). Per repository, one job at a time goes through:
+With review enabled, `tjob done` first persists `review_step=gate`. The gate resolves the same repository checks as the merge queue, keeps typechecking project-aware, scopes lint to changed files, and runs changed tests plus tests that import changed sources. Next, one read-only refutation runs in the existing worktree on the other model family, with its own `refuteCap` and no job, branch or producer-pool slot. Its strict JSON verdict counts only defects with a reproduced probe and output. `refuteTimeoutMs` is at most 20 minutes by configuration as well as by default; timeout aborts and archives the reviewer session and parks the job at the hub with the exact timeout reason, never approving or retrying. Cancelling the job also aborts that reviewer and discards its late result. Gate red or reproduced defects return to the producer for one fix round; if that reopen is refused (busy or authentication hold), the job is restored to review and the hub receives the fix evidence instead. A second failure goes to the hub. Persisted steps resume after restart: a re-attached refutation is awaited, and a terminal refute session's persisted transcript is reused rather than prompted again. `tjob ls` shows `rv:<step>` and `tjob show` includes the verdict and risk.
+
+The policy auto-approves through the ordinary `tjob approve` path only when the gate and refutation pass, the diff stays inside paths named in the brief (skipped when none are named), has fewer than `maxLines` changed lines, touches no risky path and is not in a protected repository. Approval emits a batched FYI; all other outcomes emit a `review` decision with gate/verdict and `git diff --stat`, never the full patch. With review disabled, `tjob done` queues directly.
+
+After approval, a stacked job, one whose `<base>` is another job's branch, lands where that job lands. Merging it into the parent's branch would not count as merged: it waits in `queued` while the parent is on its way, moves to the parent's base once the parent is merged, and is blocked when the parent was cancelled or failed. Job 88328da6 was marked merged into the branch of cancelled job f8a49612 and never reached main. `tjob ls` marks the wait as `! waiting for base <id> (<state>)`; when the base sits at review for more than 30 minutes, the hub is woken once for the stacked job (two queue deadlocks on 2026-11-07). Per repository, one job at a time goes through:
 
 1. **rebase** onto the latest `origin/<base>`. Conflicts are resolved by Gemini 3.8 Flash (`agy`); what it cannot settle goes back to the job's agent.
 2. **check**: a light gate, never the full suite (the user, 2026-11-03: Forgejo CI is the only full gate; a red main is fixed afterwards). In order: the configured command (`checks` in the config), the repository's `scripts/merge-gate.sh`, then per stack `npm run typecheck && npm run lint` (whichever exist, never `test`/`check`), `mvn -q -o test-compile` (online if offline fails), `cargo check --all-targets --quiet`, `python -m pytest --collect-only -q` (through `scripts/hermes-env.sh` when present, plus `ruff check` when ruff is configured), and `scripts/check.sh` only when nothing lighter applies. At most `maxConcurrentChecks` (default 1) checks run at once on the workstation, under `nice -n 10`; the others wait in `check`.
@@ -129,7 +149,7 @@ When a job's turn ends, the orchestrator snapshots its whole worktree (committed
 
 ## Hub events log
 
-When a job changes state (`review`, `blocked`, `merge_failed`, `turn_ended`, `merged`), the orchestrator appends one tab-separated line to `~/.cache/cli/hub-events.log` (mode `0600`):
+When a job changes state (`review`, `review_fyi`, `blocked`, `merge_failed`, `turn_ended`, `merged`, `stalled`, `waiting`), the orchestrator appends one tab-separated line to `~/.cache/cli/hub-events.log` (mode `0600`):
 
 ```text
 <iso-timestamp>\t<job-id>\t<state>\t<title>\t<reason>

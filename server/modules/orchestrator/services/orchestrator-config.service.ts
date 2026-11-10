@@ -30,7 +30,27 @@ export type MorphModelGroup = 'kimi' | 'deepseek';
 /** Morph Ultra's per-rolling-minute caps, uncached input and output (reasoning counts as output). */
 export type MorphCaps = Record<MorphModelGroup, { uncachedIn: number; out: number }>;
 
-/** Configuration consumed by the orchestrator jobs, balancer, and merge queue services. */
+/** Configuration and review services: the hard upper bound for one automatic refutation (20 minutes). */
+export const MAX_REFUTE_TIMEOUT_MS = 20 * 60_000;
+
+/** Automatic post-`tjob done` review: a touched-file gate, one slotless refutation, then the risk policy. */
+export type ReviewConfig = {
+  enabled: boolean;
+  /** Refutations have their own cap; they never consume producer job slots. */
+  refuteCap: number;
+  /** Abort and park a refutation after this many ms; values above 20 minutes are rejected. */
+  refuteTimeoutMs: number;
+  /** A diff at or above this many added + deleted lines needs the hub. */
+  maxLines: number;
+  /** Repository folder names (or absolute paths) whose main branch deploys to production. */
+  protectedRepos: string[];
+  /** Path segments that always need the hub, matched case-insensitively. */
+  riskyPaths: string[];
+  /** Which model family refutes each producer backend. */
+  refuteBackendFor: Partial<Record<OrchestratorBackend, OrchestratorBackend>>;
+};
+
+/** Configuration consumed by the orchestrator jobs, balancer, review, and merge queue services. */
 export type OrchestratorConfig = {
   backends: Record<OrchestratorBackend, BackendConfig>;
   /** Where a backend whose cap is reached sends the job instead. */
@@ -82,11 +102,10 @@ export type OrchestratorConfig = {
    */
   morph: { caps: MorphCaps; admitBelow: number };
   /**
-   * Hub-and-spoke (the user, 2026-10-27: sub-agents never reach each other or production on their own): a job's
-   * `tjob done` parks it at `review`; the orchestrating session (the hub) reads the branch and runs `tjob approve`
-   * to hand it to the CI/CD queue. Off, `tjob done` queues it at once.
+   * Automatic review after `tjob done`: gate, one read-only refutation on another model family, then risk policy.
+   * Low-risk diffs take the ordinary `tjob approve` path; everything else waits for the hub.
    */
-  review: boolean;
+  review: ReviewConfig;
   /**
    * Hub session notification configuration. When present and wake is true,
    * the orchestrator wakes the hub session on job events (reviews, waiting turns,
@@ -174,7 +193,15 @@ function defaults(): OrchestratorConfig {
       },
       admitBelow: 0.7,
     },
-    review: true,
+    review: {
+      enabled: true,
+      refuteCap: 2,
+      refuteTimeoutMs: MAX_REFUTE_TIMEOUT_MS,
+      maxLines: 400,
+      protectedRepos: [],
+      riskyPaths: ['infra', 'auth', 'secrets', 'ci', 'migrations', 'k8s', '.forgejo', '.github'],
+      refuteBackendFor: { morph: 'glm', glm: 'morph', zcode: 'morph', claude: 'glm', codex: 'glm', agy: 'glm' },
+    },
   };
 }
 
@@ -249,7 +276,35 @@ export function loadOrchestratorConfig(file = path.join(os.homedir(), '.config/c
       config.morph.admitBelow = morph.admitBelow;
     }
   }
-  if (typeof override.review === 'boolean') config.review = override.review;
+  // The old boolean switch remains valid in existing orchestrator.json files.
+  if (typeof override.review === 'boolean') config.review.enabled = override.review;
+  if (override.review && typeof override.review === 'object' && !Array.isArray(override.review)) {
+    const review = override.review as Record<string, unknown>;
+    if (typeof review.enabled === 'boolean') config.review.enabled = review.enabled;
+    if (typeof review.refuteCap === 'number' && Number.isFinite(review.refuteCap) && review.refuteCap >= 1) {
+      config.review.refuteCap = Math.floor(review.refuteCap);
+    }
+    if (typeof review.refuteTimeoutMs === 'number' && Number.isFinite(review.refuteTimeoutMs)
+      && review.refuteTimeoutMs >= 1 && review.refuteTimeoutMs <= MAX_REFUTE_TIMEOUT_MS) {
+      config.review.refuteTimeoutMs = Math.floor(review.refuteTimeoutMs);
+    }
+    if (typeof review.maxLines === 'number' && Number.isFinite(review.maxLines) && review.maxLines >= 1) {
+      config.review.maxLines = Math.floor(review.maxLines);
+    }
+    if (Array.isArray(review.protectedRepos)) {
+      config.review.protectedRepos = review.protectedRepos.filter((repo): repo is string => typeof repo === 'string' && Boolean(repo.trim()));
+    }
+    if (Array.isArray(review.riskyPaths)) {
+      config.review.riskyPaths = review.riskyPaths.filter((entry): entry is string => typeof entry === 'string' && Boolean(entry.trim()));
+    }
+    if (review.refuteBackendFor && typeof review.refuteBackendFor === 'object' && !Array.isArray(review.refuteBackendFor)) {
+      for (const [producer, refuter] of Object.entries(review.refuteBackendFor as Record<string, unknown>)) {
+        if (producer in config.backends && typeof refuter === 'string' && refuter in config.backends) {
+          config.review.refuteBackendFor[producer as OrchestratorBackend] = refuter as OrchestratorBackend;
+        }
+      }
+    }
+  }
   if (override.hub && typeof override.hub === 'object') {
     const hub = override.hub as Record<string, unknown>;
     if (typeof hub.sessionId === 'string' && hub.sessionId.trim()) {

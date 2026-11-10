@@ -35,6 +35,10 @@ export type {
   OrchestratorJobState,
   OrchestratorMergeStep,
   OrchestratorMergeStepEvent,
+  OrchestratorReviewDefect,
+  OrchestratorReviewRisk,
+  OrchestratorReviewStep,
+  OrchestratorReviewVerdict,
 } from './repositories/orchestrator-jobs.db.js';
 // orchestratorEffectsDb: the orchestrator's durable effect outbox (restart-safe action record).
 export { orchestratorEffectsDb } from './repositories/orchestrator-effects.db.js';

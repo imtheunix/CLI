@@ -197,7 +197,7 @@ export function buildJobPrompt(
     // The person, 2026-11-04: "a tjob should never run tests on things he didnt touched".
     "- Test only what you changed: the tests of the files, modules, crates or packages your diff touches, plus their direct dependents only when you changed a public interface. Never run the whole test suite or the project's merge gate yourself: the CI/CD queue runs the gate once after tjob done, and CI runs everything after the merge.",
     `- When the code is complete and committed, and the tests of what you changed pass, run: tjob done ${job.id}`,
-    `  That hands the branch to the orchestrating session for review; once approved it goes to the CI/CD queue (rebase onto ${job.base_branch}, checks, push, deploy). If anything fails there, you get a message here.`,
+    `  Automatic review then runs its gate, refutation and risk policy; low-risk work is approved automatically and anything else goes to the hub. Once approved it enters the CI/CD queue (rebase onto ${job.base_branch}, checks, push, deploy). If anything fails there, you get a message here.`,
     ...(repoGuidance ? ['', `For this repository (${path.basename(job.repo_path)}):`, ...repoGuidance.split('\n').map((line) => `- ${line}`)] : []),
   ].join('\n');
 }
@@ -224,6 +224,8 @@ export function createJobsService(deps: {
   captureCheckpoint?: (job: { jobId: string; worktreePath: string }) => Promise<unknown>;
   /** Morph's usage meter: a new morph job starts only while the DeepSeek output window has headroom. */
   morphUsage?: MorphUsageService;
+  /** Cancellation also stops this job's slotless automatic reviewer, when one is running. */
+  abortRefutation?: (job: OrchestratorJobRow) => void;
 }) {
   const now = deps.now ?? (() => new Date());
   const morphUsage = deps.morphUsage ?? createMorphUsageService({ config: deps.config, now });
@@ -854,12 +856,22 @@ export function createJobsService(deps: {
       if (orchestratorJobsDb.get(id)?.state !== job.state) {
         throw new AppError(`Job ${id} is no longer active`, { code: 'JOB_NOT_ACTIVE', statusCode: 409 });
       }
-      const mergeStep = deps.config().review ? 'review' : 'queued';
-      orchestratorJobsDb.update(id, { state: 'done', merge_step: mergeStep, merge_attempts: 0,
-                                       pushed_sha: null, last_error: null });
-      if (mergeStep === 'review') {
-        appendHubEvent({ jobId: job.id, state: 'review', title: job.title, reason: 'waiting for review' });
-      }
+      const reviewEnabled = deps.config().review.enabled;
+      const mergeStep = reviewEnabled ? 'review' : 'queued';
+      orchestratorJobsDb.update(id, {
+        state: 'done',
+        merge_step: mergeStep,
+        merge_attempts: 0,
+        pushed_sha: null,
+        last_error: null,
+        review_step: reviewEnabled ? 'gate' : 'none',
+        review_verdict: null,
+        review_risk: null,
+        review_round: again ? 0 : job.review_round,
+        review_head_sha: null,
+        review_session_id: null,
+      });
+      // The review service owns the next hub event: an automatic FYI, or a decision with gate/verdict/stat.
       return view(orchestratorJobsDb.get(id) as OrchestratorJobRow);
     },
 
@@ -873,7 +885,7 @@ export function createJobsService(deps: {
       if (job.state !== 'done' || job.merge_step !== 'review') {
         throw new AppError(`Job ${id} is ${job.state} (${job.merge_step}), not waiting for review`, { code: 'JOB_NOT_IN_REVIEW', statusCode: 409 });
       }
-      orchestratorJobsDb.update(id, { merge_step: 'queued' });
+      orchestratorJobsDb.update(id, { merge_step: 'queued', review_step: job.review_step === 'none' ? 'none' : 'approved' });
       return view(orchestratorJobsDb.get(id) as OrchestratorJobRow);
     },
 
@@ -890,6 +902,12 @@ export function createJobsService(deps: {
         throw new AppError(`Job ${id} is already in the CI/CD queue (${job.merge_step})`, { code: 'JOB_MERGING', statusCode: 409 });
       }
       orchestratorJobsDb.update(id, { state: 'cancelled', merge_step: 'none', in_turn: 0 });
+      // Persist cancellation first: a late verdict is superseded even while the provider interrupt is in flight.
+      try {
+        deps.abortRefutation?.(job);
+      } catch (error) {
+        console.warn(`[Orchestrator] Abort of refutation for job ${id} failed`, error);
+      }
       if (job.session_id) {
         const sessionId = job.session_id;
         const provider = (sessionsDb.getSessionById(sessionId)?.provider as LLMProvider | undefined) ?? null;

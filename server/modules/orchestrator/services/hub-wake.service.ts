@@ -111,6 +111,8 @@ export function formatHubEventStateDescription(event: LoggedHubEvent): string {
   switch (event.state) {
     case 'review':
       return event.reason === 'waiting for review' ? 'done, waiting for review' : `done, ${event.reason}`;
+    case 'review_fyi':
+      return `review passed, ${event.reason}`;
     case 'turn_ended':
       if (event.reason.includes('without tjob done')) {
         return `waiting, ${event.reason}`;
@@ -144,14 +146,29 @@ type PendingHubEvent = LoggedHubEvent & { endOffset: number };
 /** Outcome of handing a wake message to the hub session. */
 type DeliveryOutcome = 'started' | 'refused' | 'pending';
 
-/** Builds the consolidated wake turn text from a list of logged events (newest last). */
+function isReviewFyi(event: LoggedHubEvent): boolean {
+  return event.state === 'review_fyi' || event.state === 'merged';
+}
+
+/** Builds one debounced wake: decisions first, then grouped events that need no action. */
 export function buildHubWakeMessage(events: LoggedHubEvent[]): string {
-  const displayEvents = events.slice(0, MAX_WAKE_LINES);
-  const lines = displayEvents.map(formatHubEventLine);
-  if (events.length > MAX_WAKE_LINES) {
-    lines.push(`+${events.length - MAX_WAKE_LINES} more`);
+  const decisions = events.filter((event) => !isReviewFyi(event));
+  const fyis = events.filter(isReviewFyi);
+  // Keep the legacy decisions-only text unchanged. Headings are needed only to distinguish the groups.
+  if (fyis.length === 0) {
+    const lines = decisions.slice(0, MAX_WAKE_LINES).map(formatHubEventLine);
+    if (decisions.length > MAX_WAKE_LINES) lines.push(`+${decisions.length - MAX_WAKE_LINES} more`);
+    return lines.join('\n');
   }
-  return lines.join('\n');
+  const sections: string[] = [];
+  const decisionLines = decisions.slice(0, MAX_WAKE_LINES).map(formatHubEventLine);
+  if (decisions.length > MAX_WAKE_LINES) decisionLines.push(`+${decisions.length - MAX_WAKE_LINES} more decisions`);
+  if (decisionLines.length > 0) sections.push(['Decisions needed:', ...decisionLines].join('\n'));
+  const remaining = Math.max(0, MAX_WAKE_LINES - decisionLines.length);
+  const fyiLines = fyis.slice(0, remaining).map(formatHubEventLine);
+  if (fyis.length > remaining) fyiLines.push(`+${fyis.length - remaining} more FYI`);
+  sections.push([`FYI — ${fyis.length} event${fyis.length === 1 ? '' : 's'}; no action needed:`, ...fyiLines].join('\n'));
+  return sections.join('\n\n');
 }
 
 /** Dependencies injected into createHubWakeService. */
