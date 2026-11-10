@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tribeira-recall"
+version = "0.1.0"
+description = "One-call local hybrid recall and artifact references for coding agents"
+requires-python = ">=3.11"
+dependencies = [
+  "fastembed>=0.7.0,<1.0",
+  "mcp>=1.12.0,<2.0",
+  "sqlite-vec>=0.1.6,<1.0",
+  "tree-sitter>=0.25,<0.26",
+  "tree-sitter-python>=0.25,<0.26",
+  "tree-sitter-rust>=0.24,<0.25",
+  "tree-sitter-typescript>=0.23,<0.24",
+]
+
+[project.scripts]
+tribeira-recall = "tribeira_recall.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
