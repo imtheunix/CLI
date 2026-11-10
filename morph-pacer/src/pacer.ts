@@ -64,6 +64,8 @@ export class Pacer {
   private readonly groups = new Map<string, GroupState>();
   private readonly modelToGroup = new Map<string, string>();
   private readonly completions = new Map<string, number[]>();
+  /** Recent uncached share of each model's prompts (uncached / prompt tokens), to discount cached context. */
+  private readonly uncachedShares = new Map<string, number[]>();
   private nextReservationId = 1;
 
   constructor(
@@ -114,6 +116,20 @@ export class Pacer {
     return Math.max(MIN_ESTIMATE, sorted[index]);
   }
 
+  /**
+   * Uncached input a request will likely cost: its prompt size discounted by the model's recent
+   * uncached share (p75). Agent sessions resend a mostly cached context, so the raw body size
+   * overstates the input that counts toward the cap many times over.
+   */
+  estimateUncachedInput(model: string, bodyBytes: number): number {
+    const raw = estimateInput(bodyBytes);
+    const shares = this.uncachedShares.get(model) ?? [];
+    if (shares.length === 0) return raw;
+    const sorted = [...shares].sort((a, b) => a - b);
+    const share = sorted[Math.max(0, Math.ceil(sorted.length * 0.75) - 1)];
+    return Math.max(MIN_INPUT_ESTIMATE, Math.ceil(raw * share));
+  }
+
   async admit(model: string, bodyBytes = 0): Promise<Admission> {
     const state = this.groupFor(model);
     const previous = state.queueTail;
@@ -126,8 +142,14 @@ export class Pacer {
 
     const started = this.clock.now();
     try {
-      const estimatedOut = this.estimateOutput(model);
-      const estimatedIn = estimateInput(bodyBytes);
+      // A single request larger than a cap still runs at Morph (only the next one waits), so an
+      // estimate is clamped to the cap: an oversized request goes through on an empty window
+      // instead of waiting out maxWaitMs every time.
+      const estimatedOut = Math.min(this.estimateOutput(model), state.caps.out * this.config.headroom);
+      const estimatedIn = Math.min(
+        this.estimateUncachedInput(model, bodyBytes),
+        state.caps.uncachedIn * this.config.headroom,
+      );
       const deadline = started + this.config.maxWaitMs;
 
       for (;;) {
@@ -237,6 +259,13 @@ export class Pacer {
     if (usage) {
       const uncachedIn = Math.max(0, usage.promptTokens - usage.cachedTokens);
       state.window.add({ t: this.clock.now(), uncachedIn, out: usage.completionTokens });
+
+      if (usage.promptTokens > 0) {
+        const shares = this.uncachedShares.get(admission.model) ?? [];
+        shares.push(uncachedIn / usage.promptTokens);
+        if (shares.length > COMPLETION_HISTORY) shares.shift();
+        this.uncachedShares.set(admission.model, shares);
+      }
 
       const history = this.completions.get(admission.model) ?? [];
       history.push(usage.completionTokens);
