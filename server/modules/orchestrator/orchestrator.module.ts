@@ -13,6 +13,7 @@ import { getEffectOutbox } from './services/effect-outbox.service.js';
 import { createHubService } from './services/hub.service.js';
 import { createJobsService } from './services/jobs.service.js';
 import { createMergeQueueService } from './services/merge-queue.service.js';
+import { createMorphUsageService } from './services/morph-usage.service.js';
 import { createHubWakeService } from './services/hub-wake.service.js';
 import { loadOrchestratorConfig } from './services/orchestrator-config.service.js';
 import { getOrchestratorToken } from './services/orchestrator-token.service.js';
@@ -28,7 +29,8 @@ const TICK_INTERVAL_MS = 3_000;
  */
 export function createOrchestratorModule(input: { runtime: ProviderRuntimeGateway; authenticate: RequestHandler }) {
   const config = () => loadOrchestratorConfig();
-  const jobs = createJobsService({ runtime: input.runtime, config });
+  const morphUsage = createMorphUsageService({ config });
+  const jobs = createJobsService({ runtime: input.runtime, config, morphUsage });
   const mergeQueue = createMergeQueueService({ jobs, config });
   const hubWake = createHubWakeService({ runtime: input.runtime, config });
   const hub = createHubService({ config });
@@ -56,6 +58,7 @@ export function createOrchestratorModule(input: { runtime: ProviderRuntimeGatewa
       mergeQueue,
       hubWake,
       hub,
+      morphUsage,
       authenticate: input.authenticate,
       caps: () => {
         const { backends } = config();

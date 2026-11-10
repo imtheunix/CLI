@@ -69,7 +69,7 @@ test('morph: a quota wall is a usage limit without a stated reset (backoff)', ()
   }
 });
 
-test('morph: 429/at-capacity is transient — usage-limit backoff, Retry-After honored, never quota exhausted', () => {
+test('morph: 429/at-capacity is transient — short backoff, Retry-After honored, never a usage limit', () => {
   const now = new Date('2026-11-10T12:00:00Z');
   for (const text of [
     '429 Too Many Requests',
@@ -79,15 +79,31 @@ test('morph: 429/at-capacity is transient — usage-limit backoff, Retry-After h
     'overloaded',
   ]) {
     const failure = classifyTurnFailure('morph', text, now);
-    assert.equal(failure.failureClass, 'usage_limit', text);
+    assert.equal(failure.failureClass, 'transient', text);
     assert.equal(failure.resetAt, null, text);
   }
   // A stated Retry-After sets the resume time instead of the backoff ladder.
   const retryAfter = classifyTurnFailure('morph', '429 Too Many Requests (retry-after: 90 seconds)', now);
-  assert.equal(retryAfter.failureClass, 'usage_limit');
+  assert.equal(retryAfter.failureClass, 'transient');
   assert.equal(retryAfter.resetAt?.toISOString(), '2026-11-10T12:01:30.000Z');
   const retryMinutes = classifyTurnFailure('morph', 'Error: 429, retry-after 2 minutes', now);
   assert.equal(retryMinutes.resetAt?.toISOString(), '2026-11-10T12:02:00.000Z');
+});
+
+test('morph: a transient 429 backs off in seconds, not on the usage-limit ladder', () => {
+  const now = new Date('2026-11-10T12:00:00Z');
+  const failure = classifyTurnFailure('morph', '429 Too Many Requests', now);
+  assert.equal(failure.failureClass, 'transient');
+  const first = armLimitRecovery({ jobId: 'j', turnId: 't1', failure: { ...failure, failureClass: 'transient' }, previous: null, now });
+  assert.equal(first.status, 'armed');
+  assert.equal(first.recovery.kind, 'transient');
+  assert.equal(Date.parse(first.recovery.dueAt) - now.getTime(), 30_000);
+  const second = armLimitRecovery({ jobId: 'j', turnId: 't2', failure: { ...failure, failureClass: 'transient' }, previous: { ...first.recovery, delivered: true }, now });
+  assert.equal(Date.parse(second.recovery.dueAt) - now.getTime(), 60_000);
+  // A Retry-After is honored with only a small jitter.
+  const retry = classifyTurnFailure('morph', '429 Too Many Requests (retry-after: 90 seconds)', now);
+  const armed = armLimitRecovery({ jobId: 'j', turnId: 't3', failure: { ...retry, failureClass: 'transient' }, previous: null, now, random: () => 0 });
+  assert.equal(armed.recovery.dueAt, '2026-11-10T12:01:30.000Z');
 });
 
 test('morph: login failures are auth_required, ordinary errors stay other', () => {

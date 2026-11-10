@@ -3,7 +3,7 @@ import type { OrchestratorBackend } from '@/modules/database/index.js';
 
 import { detectGlmQuotaReset } from './glm-quota.service.js';
 
-export type TurnFailureClass = 'usage_limit' | 'auth_required' | 'other';
+export type TurnFailureClass = 'usage_limit' | 'auth_required' | 'transient' | 'other';
 
 /** Jobs service: what a failed turn tells about its provider, and when the provider said it resets. */
 export type TurnFailure = { failureClass: TurnFailureClass; resetAt: Date | null; reason: string };
@@ -16,7 +16,7 @@ export type TurnFailure = { failureClass: TurnFailureClass; resetAt: Date | null
  */
 export type LimitRecovery = {
   key: string;
-  kind: 'usage_limit' | 'auth_required';
+  kind: 'usage_limit' | 'auth_required' | 'transient';
   /** As the provider stated it; null when it gave no reset (backoff) or for a login wait. */
   resetAt: string | null;
   /** When to act: resume (usage limit) or probe the provider's login (auth). */
@@ -34,6 +34,10 @@ export type LimitRecovery = {
 
 const BACKOFF_MINUTES = [15, 30, 60];
 const MAX_ATTEMPTS = 3;
+/** A transient capacity error (Morph 429) retries quickly, not on the usage-limit ladder. */
+const TRANSIENT_BACKOFF_SECONDS = [30, 60, 120];
+const TRANSIENT_MAX_ATTEMPTS = 5;
+const TRANSIENT_JITTER_MS = 5_000;
 const AUTH_PROBE_MS = 10 * 60_000;
 const GIVE_UP_MS = 24 * 3_600_000;
 const MAX_JITTER_MS = 90_000;
@@ -138,13 +142,15 @@ const CODE_CLASS: Partial<Record<OrchestratorBackend, Record<string, 'usage_limi
 const MESSAGE_START = String.raw`(?:^|"message"\s*:\s*")`;
 const GO_WRAPPED = String.raw`^(?:[A-Za-z][\w .-]*: )*`; // agy: "failed to ...: error getting token source: <cause>"
 const ZAI_LIMIT = String.raw`${MESSAGE_START}(?:Usage limit reached for \d+\s+(?:hour|day|week|month)s?\b|Weekly\/Monthly Limit Exhausted)|"code"\s*:\s*"?13(?:08|10)\b`;
-// Morph (through OpenCode): a real quota wall ("Payment Required" is the 402
-// reason phrase) counts as a usage limit; 429/at-capacity/rate-limit reports
-// are transient capacity, so they back off (Retry-After parsed below) instead
-// of ever being recorded as quota exhausted. One short prose prefix ("Error:",
-// "Model is") is allowed ahead of the keyword, like agy's wrapped causes.
+// Morph (through OpenCode): only a real quota wall ("Payment Required" is the
+// 402 reason phrase, "Monthly quota exceeded") is a usage limit. 429, rate
+// limit, at capacity, too many requests and overloaded are transient capacity:
+// they retry on a short backoff (Retry-After parsed below) and never mark the
+// backend quota-exhausted. One short prose prefix ("Error:", "Model is") is
+// allowed ahead of the keyword, like agy's wrapped causes.
 const MORPH_PROSE = String.raw`(?:[A-Za-z][\w .,'!?-]{0,60}(?:: |[,.!?;] | ))?`;
-const MORPH_LIMIT = String.raw`${MESSAGE_START}${MORPH_PROSE}(?:Payment Required|Monthly quota exceeded|429\b[^"\n]*|rate limit[^"\n]*|too many requests[^"\n]*|at capacity[^"\n]*|overloaded[^"\n]*)`;
+const MORPH_LIMIT = String.raw`${MESSAGE_START}${MORPH_PROSE}(?:Payment Required|Monthly quota exceeded)`;
+const MORPH_TRANSIENT = String.raw`${MESSAGE_START}${MORPH_PROSE}(?:429\b[^"\n]*|rate limit[^"\n]*|too many requests[^"\n]*|at capacity[^"\n]*|overloaded[^"\n]*)`;
 
 const USAGE_LIMIT: Record<OrchestratorBackend, RegExp> = {
   claude: new RegExp(String.raw`${MESSAGE_START}You(?:'|’| ha)ve hit your (?:session |weekly |usage |opus )?limit|"type"\s*:\s*"rate_limit_error"`, 'i'),
@@ -153,6 +159,11 @@ const USAGE_LIMIT: Record<OrchestratorBackend, RegExp> = {
   zcode: new RegExp(ZAI_LIMIT, 'i'),
   agy: new RegExp(String.raw`${GO_WRAPPED}(?:RESOURCE_EXHAUSTED|You have exhausted your (?:capacity|quota))|"status"\s*:\s*"RESOURCE_EXHAUSTED"`, 'i'),
   morph: new RegExp(MORPH_LIMIT, 'i'),
+};
+
+/** Capacity errors that retry quickly instead of waiting for a quota reset. */
+const TRANSIENT: Partial<Record<OrchestratorBackend, RegExp>> = {
+  morph: new RegExp(MORPH_TRANSIENT, 'i'),
 };
 
 const AUTH_REQUIRED: Record<OrchestratorBackend, RegExp> = {
@@ -176,11 +187,14 @@ export function classifyTurnFailure(backend: OrchestratorBackend, signals: Provi
     if (byCode) return byCode;
     const lines = signal.message.split('\n').map((line) => line.trim());
     if (lines.some((line) => USAGE_LIMIT[backend].test(line))) return 'usage_limit';
+    if (lines.some((line) => TRANSIENT[backend]?.test(line))) return 'transient';
     if (lines.some((line) => AUTH_REQUIRED[backend].test(line))) return 'auth_required';
     return 'other';
   };
   const classified = list.map((signal) => ({ signal, failureClass: classOf(signal) }));
-  const hit = classified.find((entry) => entry.failureClass === 'usage_limit') ?? classified.find((entry) => entry.failureClass === 'auth_required');
+  const hit = classified.find((entry) => entry.failureClass === 'usage_limit')
+    ?? classified.find((entry) => entry.failureClass === 'transient')
+    ?? classified.find((entry) => entry.failureClass === 'auth_required');
   if (!hit) return { failureClass: 'other', resetAt: null, reason: '' };
   const text = hit.signal.message;
   const reason = text.split('\n').map((line) => line.trim()).find(Boolean)?.slice(0, 200) ?? '';
@@ -190,7 +204,7 @@ export function classifyTurnFailure(backend: OrchestratorBackend, signals: Provi
   else if (backend === 'codex') resetAt = codexReset(text, now);
   else if ((backend === 'glm' || backend === 'zcode') && /Your limit will reset at/i.test(text)) resetAt = detectGlmQuotaReset(text, now);
   else if (backend === 'morph') resetAt = morphReset(text, now);
-  return { failureClass: 'usage_limit', resetAt, reason };
+  return { failureClass: hit.failureClass, resetAt, reason };
 }
 
 /** Jobs service: reads a job's stored recovery (null when absent or unreadable). */
@@ -213,15 +227,15 @@ type ArmResult = {
 };
 
 /**
- * Jobs service: arms a recovery for a usage_limit or auth_required failure, idempotent by its key.
+ * Jobs service: arms a recovery for a usage_limit, transient or auth_required failure, idempotent by its key.
  * A stated reset already in the past is refused (no retry loop); a resume more than 24 h after the chain's first failure gives up;
- * without a reset the job backs off 15, 30, 60 min, then waits for the hub; a login wait probes every
- * 10 min and resumes at most three times.
+ * without a reset the job backs off 15, 30, 60 min, then waits for the hub; a transient capacity error
+ * backs off 30, 60, 120 s (up to five times); a login wait probes every 10 min and resumes at most three times.
  */
 export function armLimitRecovery(input: {
   jobId: string;
   turnId: string;
-  failure: TurnFailure & { failureClass: 'usage_limit' | 'auth_required' };
+  failure: TurnFailure & { failureClass: 'usage_limit' | 'auth_required' | 'transient' };
   previous: LimitRecovery | null;
   now: Date;
   random?: () => number;
@@ -230,10 +244,11 @@ export function armLimitRecovery(input: {
   const random = input.random ?? Math.random;
   const nowMs = now.getTime();
   const turnKey = `${jobId}:${turnId}`;
+  const transient = failure.failureClass === 'transient';
   let key: string;
   if (failure.failureClass === 'auth_required') key = `${turnKey}:auth`;
   else if (failure.resetAt) key = `${turnKey}:${failure.resetAt.toISOString()}`;
-  else key = `${turnKey}:backoff`;
+  else key = `${turnKey}:${transient ? 'transient' : 'backoff'}`;
   // The same failed turn handled again (a repeated completion, a restart): nothing advances.
   if (previous?.key === key) return { status: 'unchanged', recovery: previous };
 
@@ -246,7 +261,10 @@ export function armLimitRecovery(input: {
     dueMs = nowMs + AUTH_PROBE_MS;
   } else if (failure.resetAt) {
     attempt = 0;
-    dueMs = failure.resetAt.getTime() + Math.floor(random() * MAX_JITTER_MS);
+    dueMs = failure.resetAt.getTime() + Math.floor(random() * (transient ? TRANSIENT_JITTER_MS : MAX_JITTER_MS));
+  } else if (transient) {
+    attempt = (sameChain && sameChain.resetAt === null ? sameChain.attempt : 0) + 1;
+    dueMs = nowMs + (TRANSIENT_BACKOFF_SECONDS[attempt - 1] ?? 0) * 1_000;
   } else {
     attempt = (sameChain && sameChain.resetAt === null ? sameChain.attempt : 0) + 1;
     dueMs = nowMs + (BACKOFF_MINUTES[attempt - 1] ?? 0) * 60_000;
@@ -257,7 +275,8 @@ export function armLimitRecovery(input: {
     attempt, firstFailedAt, delivered: false, gaveUp: false, reason: failure.reason,
   };
   if (failure.resetAt && failure.resetAt.getTime() <= nowMs) return { status: 'refused', recovery: { ...recovery, gaveUp: true } };
-  if (attempt > MAX_ATTEMPTS || dueMs - Date.parse(firstFailedAt) > GIVE_UP_MS) return { status: 'gave_up', recovery: { ...recovery, gaveUp: true } };
+  const maxAttempts = transient ? TRANSIENT_MAX_ATTEMPTS : MAX_ATTEMPTS;
+  if (attempt > maxAttempts || dueMs - Date.parse(firstFailedAt) > GIVE_UP_MS) return { status: 'gave_up', recovery: { ...recovery, gaveUp: true } };
   return { status: 'armed', recovery };
 }
 

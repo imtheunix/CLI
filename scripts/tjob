@@ -4,6 +4,7 @@
 #                           --kind: the branch family, feature/<slug>-<id> (default) or bugfix/<slug>-<id>
 #                           --model: one the backend offers; GLM runs glm-5.3-flash unless asked for glm-5.3; with --backend auto, the model picks the backend
 #   tjob ls                 every job: backend, state, what its session is doing, where it is in the CI/CD queue
+#   tjob meter [--watch]    Morph Ultra's rolling 60 s usage against its caps (--watch: refresh every 5 s)
 #   tjob show <id>
 #   tjob done <id>          the agent's code is complete and committed: it waits at review for the orchestrating session
 #   tjob approve <id>       the orchestrating session (the hub) reviewed the branch: hand it to the CI/CD queue
@@ -50,7 +51,7 @@ def line(j):
     if j.get("handover"): fallback += "  " + j["handover"]
     wait = j.get("limitWait")
     if wait:
-        what = "usage limit" if wait["failureClass"] == "usage_limit" else "login needed"
+        what = {"usage_limit": "usage limit", "auth_required": "login needed", "transient": "rate limited"}.get(wait["failureClass"], "waiting")
         if wait.get("resumesAt"):
             import datetime
             at = datetime.datetime.fromisoformat(wait["resumesAt"].replace("Z", "+00:00")).astimezone()
@@ -67,9 +68,12 @@ def line(j):
 if mode == "ls":
     loads, caps = data["loads"], data["caps"]
     print("  ".join("%s: %s/%s" % (b, loads.get(b, 0), caps.get(b, 0)) for b in ("claude", "codex", "glm", "agy", "zcode", "morph")))
+    if data.get("morphLine"): print(data["morphLine"])
     for backend, status in data.get("backendStatus", {}).items():
         if status: print("%s: quota-exhausted until %s" % (backend, status))
     for j in data["jobs"]: print(line(j))
+elif mode == "meter":
+    print(data["table"])
 elif mode == "hub":
     h = data["hub"]
     if not h.get("sessionId"):
@@ -132,6 +136,19 @@ case "$cmd" in
     [ -n "$kind" ] && args+=(kind "$kind")
     api POST "" "$(json_body "${args[@]}")" | render new ;;
   ls) api GET "" | render ls ;;
+  meter)
+    watch=false
+    if [ "${1:-}" = "--watch" ]; then watch=true; shift; fi
+    [ $# -eq 0 ] || { echo "usage: tjob meter [--watch]" >&2; exit 2; }
+    if [ "$watch" = true ]; then
+      while true; do
+        [ -t 1 ] && clear
+        api GET "/meter" | render meter
+        sleep 5
+      done
+    else
+      api GET "/meter" | render meter
+    fi ;;
   show) api GET "/${1:?id}" | render show ;;
   done|approve|retry|resume|cancel) api POST "/${1:?id}/$cmd" '{}' | render "$cmd" ;;
   rollback)

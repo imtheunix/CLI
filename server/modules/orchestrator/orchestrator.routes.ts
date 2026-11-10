@@ -6,6 +6,8 @@ import type { JobCheckpointRollbackResult } from '@/shared/types.js';
 import { AppError, asyncHandler, createApiSuccessResponse } from '@/shared/utils.js';
 
 import { JOB_KINDS, type JobsService, type OrchestratorJobKind } from './services/jobs.service.js';
+import { formatMorphLine, formatMorphTable } from './services/morph-usage.service.js';
+import type { MorphUsageService } from './services/morph-usage.service.js';
 import type { createMergeQueueService } from './services/merge-queue.service.js';
 import type { HubWakeService } from './services/hub-wake.service.js';
 import type { HubService } from './services/hub.service.js';
@@ -61,6 +63,8 @@ export function createOrchestratorRouter(services: {
   hubWake: HubWakeService;
   /** `tjob hub` / `tjob hub use` / `tjob hub new`: the hub session's status and switching. */
   hub: HubService;
+  /** `tjob meter` and the `tjob ls` line: Morph Ultra's rolling usage against its caps. */
+  morphUsage: MorphUsageService;
   caps: () => Record<OrchestratorBackend, number>;
   authenticate: RequestHandler;
   /** `tjob rollback`: restore a job's worktree from a per-turn checkpoint (Worktrees module). */
@@ -79,12 +83,21 @@ export function createOrchestratorRouter(services: {
   });
 
   router.get('/', asyncHandler(async (_req, res) => {
+    const morphUsage = services.morphUsage.usage();
     res.set('Cache-Control', 'no-store').json(createApiSuccessResponse({
       jobs: services.jobs.list(),
       loads: services.jobs.loads(),
       caps: services.caps(),
       backendStatus: services.jobs.backendStatus(),
+      morphUsage,
+      morphLine: formatMorphLine(morphUsage),
     }));
+  }));
+
+  // Before `/:id`, which would otherwise read "meter" as a job id.
+  router.get('/meter', asyncHandler(async (_req, res) => {
+    const usage = services.morphUsage.usage();
+    res.set('Cache-Control', 'no-store').json(createApiSuccessResponse({ usage, line: formatMorphLine(usage), table: formatMorphTable(usage) }));
   }));
 
   router.post('/', asyncHandler(async (req, res) => {

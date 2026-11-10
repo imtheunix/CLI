@@ -13,6 +13,7 @@ import type { NormalizedMessage } from '@/shared/types.js';
 
 import { createJobsService, mergeStepTimings } from '../services/jobs.service.js';
 import { createMergeQueueService } from '../services/merge-queue.service.js';
+import { computeMorphUsage } from '../services/morph-usage.service.js';
 import { loadOrchestratorConfig } from '../services/orchestrator-config.service.js';
 import type { OrchestratorConfig } from '../services/orchestrator-config.service.js';
 import { checkEnvironment, resolveCheckCommand, runCommand } from '../services/workspace.service.js';
@@ -117,11 +118,18 @@ async function withWorkspace(
   tune(config);
 
   const runtime = createRuntime();
+  // Tests are deterministic: the real meter would read this machine's ledger/OpenCode DB. A test
+  // that exercises admission injects its own meter through `extraDeps`.
+  const admitAllMorph = {
+    usage: () => computeMorphUsage([], config.morph.caps, new Date(), 'none'),
+    admitted: () => true,
+  };
   const createJobs = (overrides: Partial<Parameters<typeof createJobsService>[0]> = {}) => {
     return createJobsService({
       runtime: runtime.gateway,
       config: () => config,
       probeZcode: async () => ({ ok: true }),
+      morphUsage: admitAllMorph,
       ...extraDeps,
       ...overrides,
     });
@@ -250,6 +258,46 @@ test('a morph job launches opencode with DeepSeek flash at medium effort', async
     assert.equal(turn.options.effort, 'medium');
     // Morph holds its own slot in the loads the CLI's `tjob ls` prints.
     assert.equal(jobs.loads().morph, 1);
+  });
+});
+
+test('a morph job waits for DeepSeek output headroom and starts when the window drops', async () => {
+  let admitted = false;
+  let clock = Date.now();
+  const meter = {
+    usage: () => computeMorphUsage([], { kimi: { uncachedIn: 1, out: 1 }, deepseek: { uncachedIn: 1, out: 1 } }, new Date(clock), 'none'),
+    admitted: () => admitted,
+  };
+  await withWorkspace(async ({ repo, jobs, runtime, job }) => {
+    const created = await jobs.create({ title: 'morph', prompt: 'do it', repoPath: repo, backend: 'morph', baseBranch: null });
+    // create() ticks once: no headroom, so the job stays queued and no turn starts.
+    assert.equal(job(created.id).state, 'queued');
+    assert.equal(runtime.turns.length, 0);
+    // The 3 s tick reuses the cached answer; it does not busy-loop the meter.
+    await jobs.tick();
+    assert.equal(job(created.id).state, 'queued');
+    assert.equal(runtime.turns.length, 0);
+    // The window drops; the next 15 s re-check admits the job.
+    admitted = true;
+    clock += 16_000;
+    await jobs.tick();
+    await eventually(() => job(created.id).state === 'active', 'morph job to start');
+    assert.equal(job(created.id).backend, 'morph');
+    assert.equal(runtime.turns.length, 1);
+  }, undefined, { morphUsage: meter, now: () => new Date(clock) });
+});
+
+test('a morph 429 is transient: a short retry, never a usage limit', async () => {
+  await withWorkspace(async ({ repo, jobs, runtime, job }) => {
+    const created = await jobs.create({ title: 'morph', prompt: 'do it', repoPath: repo, backend: 'morph', baseBranch: null });
+    await eventually(() => runtime.turns.length === 1, 'morph turn');
+    const sessionId = job(created.id).session_id!;
+    chatRunRegistry.getRun(sessionId)!.writer.send({ kind: 'error', provider: 'opencode', content: '429 Too Many Requests' });
+    runtime.finish(sessionId, { exitCode: 1 });
+    const after = job(created.id);
+    assert.equal(after.failure_class, 'transient');
+    assert.ok(after.resume_at && Date.parse(after.resume_at) - Date.now() <= 30_000);
+    assert.equal(jobs.get(created.id)?.limitWait?.failureClass, 'transient');
   });
 });
 

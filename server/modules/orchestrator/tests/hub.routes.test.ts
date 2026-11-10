@@ -13,6 +13,7 @@ import type { OrchestratorBackend } from '@/modules/database/index.js';
 import { AppError } from '@/shared/utils.js';
 import { createOrchestratorRouter } from '@/modules/orchestrator/orchestrator.routes.js';
 import { createHubService } from '@/modules/orchestrator/services/hub.service.js';
+import { createMorphUsageService } from '@/modules/orchestrator/services/morph-usage.service.js';
 import { loadOrchestratorConfig } from '@/modules/orchestrator/services/orchestrator-config.service.js';
 import type { OrchestratorConfig } from '@/modules/orchestrator/services/orchestrator-config.service.js';
 
@@ -68,6 +69,11 @@ async function withHubServer(
   app.use('/api/orchestrator', createOrchestratorRouter({
     ...fakeHeavyServices(),
     hub: createHubService({ config, configFile }),
+    morphUsage: createMorphUsageService({
+      config,
+      ledgerPath: path.join(root, 'no-ledger.jsonl'),
+      databasePath: path.join(root, 'no-opencode.db'),
+    }),
     caps: () => Object.fromEntries(Object.entries(config().backends).map(([name, backend]) => [name, backend.cap])) as Record<OrchestratorBackend, number>,
     authenticate: passAuth,
     rollbackJobCheckpoint: unexpected,
@@ -199,5 +205,22 @@ test('tjob hub use refuses to rewrite an invalid orchestrator.json instead of dr
     assert.equal(error.status, 500);
     assert.equal(error.code, 'HUB_CONFIG_INVALID');
     assert.equal(await readFile(configFile, 'utf8'), broken, 'the file is left as it was');
+  });
+});
+
+test('tjob meter: GET /meter and the ls line report both Morph groups against their caps', async () => {
+  await withHubServer(async ({ baseUrl }) => {
+    const response = await fetch(`${baseUrl}/api/orchestrator/meter`);
+    const data = dataOf(await response.json() as Record<string, unknown>) as {
+      usage: { source: string; groups: Record<string, { caps: { uncachedIn: number; out: number } }> };
+      line: string;
+      table: string;
+    };
+    assert.equal(response.status, 200);
+    assert.equal(data.usage.source, 'none');
+    assert.deepEqual(data.usage.groups.kimi.caps, { uncachedIn: 72_870, out: 6_162 });
+    assert.deepEqual(data.usage.groups.deepseek.caps, { uncachedIn: 2_103_237, out: 76_559 });
+    assert.equal(data.line, 'morph: kimi out 0/6.2k in 0/72.9k | deepseek out 0/76.6k in 0/2.1M');
+    assert.match(data.table, /morph usage \(none,/);
   });
 });
