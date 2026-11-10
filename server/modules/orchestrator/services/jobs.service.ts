@@ -703,7 +703,7 @@ export function createJobsService(deps: {
       if (!sessionId) {
         projectsDb.createProjectPath(job.worktree_path, `${path.basename(job.repo_path)} · ${job.title}`);
         sessionId = sessionsService.createAppSession(backendConfig.provider, job.worktree_path, job.title).sessionId;
-        sessionsDb.updateSessionCustomName(sessionId, `${label} · ${job.title}`);
+        sessionsDb.updateSessionCustomName(sessionId, `${label} · ${job.id} · ${job.title}`);
         sessionsDb.setSessionModel(sessionId, model);
         if (backendConfig.effort) sessionsDb.setSessionEffort(sessionId, backendConfig.effort);
       }

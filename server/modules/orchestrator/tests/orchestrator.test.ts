@@ -195,7 +195,7 @@ test('jobs go to the least busy backend, each a named session in its own worktre
     assert.ok(existsSync(path.join(first.worktree_path, 'app.txt')));
     assert.equal(git(first.worktree_path, 'rev-parse', '--abbrev-ref', 'HEAD'), first.branch);
     const session = sessionsDb.getSessionById(first.session_id!) as { custom_name: string; provider: string; model: string; project_path: string };
-    assert.equal(session.custom_name, 'GLM Flash · one');
+    assert.equal(session.custom_name, `GLM Flash · ${first.id} · one`);
     assert.equal(session.provider, 'opencode');
     assert.equal(session.model, 'zai-coding-plan/glm-5.3-flash');
     assert.equal(first.model, 'zai-coding-plan/glm-5.3-flash');
@@ -219,7 +219,7 @@ test('GLM runs Flash by default and the full model on request, kept on every lat
     assert.equal(job(full.id).backend, 'glm');
     assert.equal(job(full.id).model, 'zai-coding-plan/glm-5.3');
     const session = sessionsDb.getSessionById(job(full.id).session_id!) as { custom_name: string; model: string; effort: string };
-    assert.equal(session.custom_name, 'GLM · hard');
+    assert.equal(session.custom_name, `GLM · ${full.id} · hard`);
     assert.equal(session.model, 'zai-coding-plan/glm-5.3');
     assert.equal(session.effort, 'medium');
 
@@ -251,7 +251,7 @@ test('a morph job launches opencode with DeepSeek flash at medium effort', async
     assert.equal(session.provider, 'opencode');
     assert.equal(session.model, 'morph/morph-dsv41flash');
     assert.equal(session.effort, 'medium');
-    assert.equal(session.custom_name, 'Morph DeepSeek · morph');
+    assert.equal(session.custom_name, `Morph DeepSeek · ${created.id} · morph`);
 
     const turn = runtime.turns.find((t) => t.sessionId === job(created.id).session_id)!;
     assert.equal(turn.options.model, 'morph/morph-dsv41flash');
@@ -973,7 +973,7 @@ test('a message from a session goes to the load balancer as a job in that sessio
     assert.equal(job(sent.id).repo_path, repo);
     assert.equal(job(sent.id).title, 'Add a dark mode toggle to the settings page');
     assert.equal(job(sent.id).backend, 'glm');
-    assert.match(runtime.turns.at(-1)!.command, /Keep the current theme as default\.[\s\S]*Sent to the load balancer from the session "Claude · parent"/);
+    assert.match(runtime.turns.at(-1)!.command, new RegExp(`Keep the current theme as default\\.[\\s\\S]*Sent to the load balancer from the session "Claude · ${parent.id} · parent"`));
 
     await assert.rejects(jobs.createFromSession({ sessionId: 'missing', content: 'x', backend: null }), /not found/);
   });

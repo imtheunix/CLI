@@ -2,14 +2,23 @@ import fsSync from 'node:fs';
 import path from 'node:path';
 import readline from 'node:readline';
 
+import Database from 'better-sqlite3';
 import { spawn } from 'cross-spawn';
 import { rgPath } from '@vscode/ripgrep';
 
-import { isClaudeNonTurnMessageRow, stripAnsiSequences } from '@/shared/utils.js';
+import {
+  getOpenCodeDatabasePath,
+  getZcodeTranscriptPath,
+  isClaudeNonTurnMessageRow,
+  readJsonRecord,
+  readOptionalString,
+  stripAnsiSequences,
+  unwrapJsonStringLiteral,
+} from '@/shared/utils.js';
 import { projectsDb, sessionsDb } from '@/modules/database/index.js';
 
 type AnyRecord = Record<string, any>;
-type SearchableProvider = 'claude' | 'codex';
+type SearchableProvider = 'claude' | 'codex' | 'opencode' | 'zcode';
 
 type SearchSnippetHighlight = {
   start: number;
@@ -66,7 +75,15 @@ type SearchSessionConversationsInput = {
 type SessionRepositoryRow = ReturnType<typeof sessionsDb.getAllSessions>[number];
 type SearchableSessionRow = SessionRepositoryRow & {
   provider: SearchableProvider;
-  jsonl_path: string;
+  jsonl_path: string | null;
+};
+
+type OpenCodeSearchRow = {
+  session_id: string;
+  message_id: string;
+  part_data: string | null;
+  part_time_created: number | null;
+  message_data: string | null;
 };
 
 type SearchRuntime = {
@@ -78,6 +95,7 @@ type SearchRuntime = {
   matchedSessionKeys: Set<string>;
   claudeSessionsByFileKey: Map<string, SearchableSessionRow[]>;
   claudeFileResultsCache: Map<string, Map<string, SessionConversationResult>>;
+  openCodeRowsBySessionKey: Map<string, OpenCodeSearchRow[]>;
 };
 
 type SearchablePathEntry = {
@@ -93,7 +111,7 @@ type ProjectBucket = {
   sessions: SearchableSessionRow[];
 };
 
-const SUPPORTED_PROVIDERS = new Set<SearchableProvider>(['claude', 'codex']);
+const SUPPORTED_PROVIDERS = new Set<SearchableProvider>(['claude', 'codex', 'opencode', 'zcode']);
 const MAX_MATCHES_PER_SESSION = 2;
 const RIPGREP_FILE_CHUNK_SIZE = 40;
 const RIPGREP_CHUNK_CONCURRENCY = 6;
@@ -168,9 +186,29 @@ function toSummaryText(customName: string | null, fallback: string | null | unde
 }
 
 /**
- * Finds visible sessions whose displayed title contains the query. Title
- * matches are resolved from the database before transcript scanning so the UI
- * can always present them first, including sessions without a transcript yet.
+ * Job worktrees live at `~/Tribeira/.jobs/<repo>/<job id>`, and the job id is
+ * not part of the session title. Recover it from the project path so searching
+ * for a job id finds the session that ran it.
+ */
+function extractJobIdFromProjectPath(projectPath: string | null): string | null {
+  if (!projectPath) {
+    return null;
+  }
+
+  const segments = projectPath.split(/[\\/]+/).filter(Boolean);
+  const jobsIndex = segments.lastIndexOf('.jobs');
+  if (jobsIndex === -1 || segments.length - jobsIndex !== 3) {
+    return null;
+  }
+
+  return segments[jobsIndex + 2] || null;
+}
+
+/**
+ * Finds visible sessions whose displayed title, job id, or session id prefix
+ * contains the query. Title matches are resolved from the database before
+ * transcript scanning so the UI can always present them first, including
+ * sessions without a transcript yet.
  */
 function findSessionTitleResults(
   sessions: SessionRepositoryRow[],
@@ -184,14 +222,23 @@ function findSessionTitleResults(
     .flatMap((session) => {
       const sessionTitle = toSummaryText(session.custom_name, session.session_id, session.session_id);
       const normalizedTitle = sessionTitle.toLocaleLowerCase().replace(/\s+/g, ' ');
-      const matchIndex = normalizedTitle.indexOf(normalizedQuery);
-      if (matchIndex === -1) {
-        return [];
-      }
-
       const projectPath = typeof session.project_path === 'string' && session.project_path.trim()
         ? session.project_path.trim()
         : null;
+      const jobId = extractJobIdFromProjectPath(projectPath);
+      const normalizedJobId = jobId ? jobId.toLocaleLowerCase() : '';
+      const normalizedSessionId = session.session_id.toLocaleLowerCase();
+
+      const candidateIndexes = [
+        normalizedTitle.indexOf(normalizedQuery),
+        normalizedJobId ? normalizedJobId.indexOf(normalizedQuery) : -1,
+        normalizedSessionId.startsWith(normalizedQuery) ? 0 : -1,
+      ].filter((index) => index >= 0);
+      if (candidateIndexes.length === 0) {
+        return [];
+      }
+      const matchIndex = Math.min(...candidateIndexes);
+
       const projectKey = projectPath ?? UNKNOWN_PROJECT_KEY;
       if (!projectCache.has(projectKey)) {
         projectCache.set(
@@ -523,6 +570,25 @@ function extractCodexText(content: unknown): string {
     .join(' ');
 }
 
+function resolveZcodeTranscriptPath(row: SessionRepositoryRow): string | null {
+  const appPath = getZcodeTranscriptPath(row.session_id);
+  if (fsSync.existsSync(appPath)) {
+    return appPath;
+  }
+
+  const providerSessionId = typeof row.provider_session_id === 'string'
+    ? row.provider_session_id.trim()
+    : '';
+  if (providerSessionId && providerSessionId !== row.session_id) {
+    const providerPath = getZcodeTranscriptPath(providerSessionId);
+    if (fsSync.existsSync(providerPath)) {
+      return providerPath;
+    }
+  }
+
+  return null;
+}
+
 function normalizeSearchableSessions(rows: SessionRepositoryRow[]): SearchableSessionRow[] {
   const normalizedRows: SearchableSessionRow[] = [];
   const projectArchiveStateByPath = new Map<string, boolean>();
@@ -530,16 +596,6 @@ function normalizeSearchableSessions(rows: SessionRepositoryRow[]): SearchableSe
   for (const row of rows) {
     const provider = row.provider as SearchableProvider;
     if (!SUPPORTED_PROVIDERS.has(provider)) {
-      continue;
-    }
-
-    const rawJsonlPath = typeof row.jsonl_path === 'string' ? row.jsonl_path.trim() : '';
-    if (!rawJsonlPath) {
-      continue;
-    }
-
-    const absoluteJsonlPath = path.resolve(rawJsonlPath);
-    if (!fsSync.existsSync(absoluteJsonlPath)) {
       continue;
     }
 
@@ -562,6 +618,29 @@ function normalizeSearchableSessions(rows: SessionRepositoryRow[]): SearchableSe
       if (projectArchiveStateByPath.get(normalizedProjectPath) === true) {
         continue;
       }
+    }
+
+    // OpenCode keeps every conversation in one shared SQLite database, so its
+    // session rows have no per-session transcript path.
+    if (provider === 'opencode') {
+      normalizedRows.push({
+        ...row,
+        provider,
+        jsonl_path: null,
+      });
+      continue;
+    }
+
+    const rawJsonlPath = provider === 'zcode'
+      ? resolveZcodeTranscriptPath(row)
+      : (typeof row.jsonl_path === 'string' ? row.jsonl_path.trim() : '');
+    if (!rawJsonlPath) {
+      continue;
+    }
+
+    const absoluteJsonlPath = path.resolve(rawJsonlPath);
+    if (!fsSync.existsSync(absoluteJsonlPath)) {
+      continue;
     }
 
     normalizedRows.push({
@@ -840,8 +919,9 @@ async function parseClaudeSessionMatches(
   session: SearchableSessionRow,
   runtime: SearchRuntime,
 ): Promise<SessionConversationResult | null> {
-  const fileKey = normalizeComparablePath(session.jsonl_path);
-  if (!fileKey) {
+  const jsonlPath = session.jsonl_path;
+  const fileKey = normalizeComparablePath(jsonlPath ?? '');
+  if (!jsonlPath || !fileKey) {
     return null;
   }
 
@@ -893,7 +973,7 @@ async function parseClaudeSessionMatches(
     let currentSessionId: string | null = null;
 
     try {
-      const fileStream = fsSync.createReadStream(session.jsonl_path);
+      const fileStream = fsSync.createReadStream(jsonlPath);
       const rl = readline.createInterface({ input: fileStream, crlfDelay: Infinity });
 
       for await (const line of rl) {
@@ -1022,12 +1102,17 @@ async function parseCodexSessionMatches(
   session: SearchableSessionRow,
   runtime: SearchRuntime,
 ): Promise<SessionConversationResult | null> {
+  const jsonlPath = session.jsonl_path;
+  if (!jsonlPath) {
+    return null;
+  }
+
   const matches: SessionConversationMatch[] = [];
   let latestUserMessageText: string | null = null;
   const seenMessageFingerprints = new Set<string>();
 
   try {
-    const fileStream = fsSync.createReadStream(session.jsonl_path);
+    const fileStream = fsSync.createReadStream(jsonlPath);
     const rl = readline.createInterface({ input: fileStream, crlfDelay: Infinity });
 
     for await (const line of rl) {
@@ -1126,6 +1211,301 @@ async function parseCodexSessionMatches(
   };
 }
 
+/**
+ * Finds OpenCode sessions with at least one text part containing every query
+ * word. The `part_session_idx` index narrows the scan to the app's own
+ * sessions; the LIKE clauses are only an over-approximation and the exact
+ * word matcher runs again while building snippets.
+ */
+function findOpenCodeMatchingRows(
+  sessions: SearchableSessionRow[],
+  words: string[],
+  signal?: AbortSignal,
+): Map<string, OpenCodeSearchRow[]> {
+  const rowsBySessionKey = new Map<string, OpenCodeSearchRow[]>();
+  const sessionKeyByProviderId = new Map<string, string>();
+
+  for (const session of sessions) {
+    if (session.provider !== 'opencode') {
+      continue;
+    }
+
+    const providerSessionId = typeof session.provider_session_id === 'string'
+      ? session.provider_session_id.trim()
+      : '';
+    const targetId = providerSessionId || session.session_id;
+    if (targetId) {
+      sessionKeyByProviderId.set(targetId, getSessionKey(session));
+    }
+  }
+
+  if (sessionKeyByProviderId.size === 0 || words.length === 0 || signal?.aborted) {
+    return rowsBySessionKey;
+  }
+
+  const dbPath = getOpenCodeDatabasePath();
+  if (!fsSync.existsSync(dbPath)) {
+    return rowsBySessionKey;
+  }
+
+  let db: Database.Database;
+  try {
+    db = new Database(dbPath, { readonly: true, fileMustExist: true });
+  } catch {
+    return rowsBySessionKey;
+  }
+
+  try {
+    const providerSessionIds = Array.from(sessionKeyByProviderId.keys());
+    const likePatterns = words.map((word) => `%${word}%`);
+    const likeClause = likePatterns.map(() => 'p.data LIKE ?').join(' AND ');
+
+    for (const idChunk of chunkArray(providerSessionIds, 400)) {
+      if (signal?.aborted) {
+        break;
+      }
+
+      const placeholders = idChunk.map(() => '?').join(', ');
+      const rows = db.prepare(`
+        SELECT
+          p.session_id AS session_id,
+          p.message_id AS message_id,
+          p.data AS part_data,
+          p.time_created AS part_time_created,
+          m.data AS message_data
+        FROM part p
+        LEFT JOIN message m ON m.id = p.message_id
+        WHERE p.session_id IN (${placeholders})
+          AND ${likeClause}
+        ORDER BY p.time_created ASC
+      `).all(...idChunk, ...likePatterns) as OpenCodeSearchRow[];
+
+      for (const row of rows) {
+        const sessionKey = sessionKeyByProviderId.get(row.session_id);
+        if (!sessionKey) {
+          continue;
+        }
+
+        const existing = rowsBySessionKey.get(sessionKey);
+        if (existing) {
+          existing.push(row);
+        } else {
+          rowsBySessionKey.set(sessionKey, [row]);
+        }
+      }
+    }
+  } catch {
+    return rowsBySessionKey;
+  } finally {
+    db.close();
+  }
+
+  return rowsBySessionKey;
+}
+
+function parseOpenCodeSessionMatches(
+  session: SearchableSessionRow,
+  runtime: SearchRuntime,
+): SessionConversationResult | null {
+  const rows = runtime.openCodeRowsBySessionKey.get(getSessionKey(session)) ?? [];
+  const matches: SessionConversationMatch[] = [];
+  let latestUserMessageText: string | null = null;
+  const seenMessageFingerprints = new Set<string>();
+
+  for (const row of rows) {
+    if (runtime.totalMatches >= runtime.limit || runtime.isAborted()) {
+      break;
+    }
+
+    const partData = readJsonRecord(row.part_data);
+    if (readOptionalString(partData?.type) !== 'text') {
+      continue;
+    }
+
+    const text = unwrapJsonStringLiteral(
+      readOptionalString(partData?.text) ?? readOptionalString(partData?.content) ?? '',
+    );
+    if (!text.trim()) {
+      continue;
+    }
+
+    const messageInfo = readJsonRecord(row.message_data);
+    const role = readOptionalString(messageInfo?.role) === 'user' ? 'user' : 'assistant';
+    if (role === 'user') {
+      latestUserMessageText = text;
+    }
+
+    const fingerprint = `${role}:${text.trim().toLowerCase()}`;
+    if (seenMessageFingerprints.has(fingerprint)) {
+      continue;
+    }
+    seenMessageFingerprints.add(fingerprint);
+
+    if (!runtime.matchesQuery(text)) {
+      continue;
+    }
+
+    const { snippet, highlights } = runtime.buildSnippet(text);
+    addSessionMatch(runtime, matches, {
+      role,
+      snippet,
+      highlights,
+      timestamp: row.part_time_created ? new Date(row.part_time_created).toISOString() : null,
+      provider: 'opencode',
+    });
+  }
+
+  if (matches.length === 0) {
+    return null;
+  }
+
+  return {
+    sessionId: session.session_id,
+    provider: 'opencode',
+    sessionSummary: toSummaryText(session.custom_name, latestUserMessageText, 'OpenCode Session'),
+    matches,
+  };
+}
+
+async function parseZcodeSessionMatches(
+  session: SearchableSessionRow,
+  runtime: SearchRuntime,
+): Promise<SessionConversationResult | null> {
+  if (!session.jsonl_path) {
+    return null;
+  }
+
+  const matches: SessionConversationMatch[] = [];
+  const seenMessageFingerprints = new Set<string>();
+  let latestUserMessageText: string | null = null;
+  let assistantBuffer: { text: string; timestamp: string | null } | null = null;
+
+  const processText = (text: string, role: 'user' | 'assistant', timestamp: string | null): void => {
+    if (!text.trim()) {
+      return;
+    }
+    if (role === 'user') {
+      latestUserMessageText = text;
+    }
+
+    const fingerprint = `${role}:${text.trim().toLowerCase()}`;
+    if (seenMessageFingerprints.has(fingerprint)) {
+      return;
+    }
+    seenMessageFingerprints.add(fingerprint);
+
+    if (!runtime.matchesQuery(text)) {
+      return;
+    }
+
+    const { snippet, highlights } = runtime.buildSnippet(text);
+    addSessionMatch(runtime, matches, {
+      role,
+      snippet,
+      highlights,
+      timestamp,
+      provider: 'zcode',
+    });
+  };
+
+  const flushAssistant = (): void => {
+    if (assistantBuffer) {
+      processText(assistantBuffer.text, 'assistant', assistantBuffer.timestamp);
+      assistantBuffer = null;
+    }
+  };
+
+  const appendAssistant = (delta: string, timestamp: string | null): void => {
+    if (!assistantBuffer) {
+      assistantBuffer = { text: '', timestamp };
+    }
+    assistantBuffer.text += delta;
+    if (!assistantBuffer.timestamp) {
+      assistantBuffer.timestamp = timestamp;
+    }
+  };
+
+  try {
+    const fileStream = fsSync.createReadStream(session.jsonl_path);
+    const rl = readline.createInterface({ input: fileStream, crlfDelay: Infinity });
+
+    for await (const line of rl) {
+      if (runtime.totalMatches >= runtime.limit || runtime.isAborted()) {
+        break;
+      }
+      if (!line.trim()) {
+        continue;
+      }
+
+      let event: AnyRecord;
+      try {
+        event = JSON.parse(line) as AnyRecord;
+      } catch {
+        continue;
+      }
+
+      const timestamp = event.timestamp ? String(event.timestamp) : null;
+
+      if (event.event === 'user') {
+        flushAssistant();
+        processText(String(event.content ?? ''), 'user', timestamp);
+        continue;
+      }
+      if (event.event === 'text' || event.event === 'agent_response') {
+        flushAssistant();
+        processText(String(event.content ?? event.text_delta ?? ''), 'assistant', timestamp);
+        continue;
+      }
+      if (event.event === 'stream_delta') {
+        appendAssistant(String(event.content ?? ''), timestamp);
+        continue;
+      }
+
+      const payload = readJsonRecord(event.payload);
+      if (
+        event.type === 'model.streaming'
+        && payload?.kind === 'text_delta'
+        && typeof payload.delta === 'string'
+      ) {
+        appendAssistant(payload.delta, timestamp);
+        continue;
+      }
+
+      const step = readJsonRecord(event.step_update);
+      if (
+        event.event === 'step_update'
+        && step?.step_type === 'agent_response'
+        && typeof step.text_delta === 'string'
+      ) {
+        appendAssistant(step.text_delta, timestamp);
+        continue;
+      }
+
+      if (typeof event.text_delta === 'string') {
+        appendAssistant(event.text_delta, timestamp);
+        continue;
+      }
+
+      flushAssistant();
+    }
+
+    flushAssistant();
+  } catch {
+    return null;
+  }
+
+  if (matches.length === 0) {
+    return null;
+  }
+
+  return {
+    sessionId: session.session_id,
+    provider: 'zcode',
+    sessionSummary: toSummaryText(session.custom_name, latestUserMessageText, 'ZCode Session'),
+    matches,
+  };
+}
+
 async function parseSessionMatches(
   session: SearchableSessionRow,
   runtime: SearchRuntime,
@@ -1135,6 +1515,12 @@ async function parseSessionMatches(
   }
   if (session.provider === 'codex') {
     return parseCodexSessionMatches(session, runtime);
+  }
+  if (session.provider === 'opencode') {
+    return parseOpenCodeSessionMatches(session, runtime);
+  }
+  if (session.provider === 'zcode') {
+    return parseZcodeSessionMatches(session, runtime);
   }
   return null;
 }
@@ -1181,6 +1567,10 @@ export async function searchConversations(
   const searchablePathEntries: SearchablePathEntry[] = [];
 
   for (const session of searchableSessions) {
+    if (!session.jsonl_path) {
+      continue;
+    }
+
     const normalizedPath = normalizeComparablePath(session.jsonl_path);
     if (!normalizedPath) {
       continue;
@@ -1204,7 +1594,7 @@ export async function searchConversations(
     words,
     signal ?? undefined,
   );
-  if (isAborted() || matchedFileKeys.size === 0) {
+  if (isAborted()) {
     return { results: [], titleResults, totalMatches: 0, query: safeQuery };
   }
 
@@ -1220,6 +1610,19 @@ export async function searchConversations(
     }
   }
 
+  const openCodeRowsBySessionKey = findOpenCodeMatchingRows(
+    searchableSessions,
+    words,
+    signal ?? undefined,
+  );
+  for (const sessionKey of openCodeRowsBySessionKey.keys()) {
+    matchedSessionKeys.add(sessionKey);
+  }
+
+  if (matchedSessionKeys.size === 0) {
+    return { results: [], titleResults, totalMatches: 0, query: safeQuery };
+  }
+
   const projectBuckets = buildProjectBuckets(searchableSessions);
   const totalProjects = projectBuckets.length;
   const results: ProjectConversationResult[] = [];
@@ -1233,6 +1636,7 @@ export async function searchConversations(
     matchedSessionKeys,
     claudeSessionsByFileKey: new Map<string, SearchableSessionRow[]>(),
     claudeFileResultsCache: new Map<string, Map<string, SessionConversationResult>>(),
+    openCodeRowsBySessionKey,
   };
 
   for (const [fileKey, sessions] of sessionsByPathKey.entries()) {
