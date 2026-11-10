@@ -49,6 +49,7 @@ import {
 import { TurnTokenRateTracker, withTokenRate } from '@/modules/providers/services/token-rate.service.js';
 import { abortTurn, retireDetachedSessionTurns, spawnRelayedTurn } from '@/modules/detached-turns/index.js';
 import { createCompleteMessage, createNormalizedMessage } from '@/shared/utils.js';
+import { withOutputTokenRate } from '@/shared/token-rate.js';
 
 const activeSessions = new Map();
 // Outstanding background tasks per live session, keyed like activeSessions. An
@@ -568,6 +569,10 @@ export function createClaudeTurnLineParser(normalizeMessage: (raw: unknown, sess
   let assistantBudgetSent = false;
   let lastSentTokenBudget = null;
   let completeSent = false;
+  // The reattached turn's generation clock and cumulative output, for the
+  // measured tok/s shown while it keeps streaming after a server restart.
+  let turnStartedAt = Date.now();
+  let turnOutputTokens = 0;
 
   const parse = (line) => {
     let message;
@@ -620,7 +625,15 @@ export function createClaudeTurnLineParser(normalizeMessage: (raw: unknown, sess
     // The model re-invoked after the `result`: a new turn, owed its own complete.
     if (completeSent && resumesTurn(message)) {
       completeSent = false;
+      turnStartedAt = Date.now();
+      turnOutputTokens = 0;
       writer?.send(createTurnResumedMessage(sid));
+    }
+
+    // Each main-thread assistant row reports the output of its own request;
+    // summing them gives the turn's cumulative output for the rate.
+    if (message.type === 'assistant' && !message.parent_tool_use_id) {
+      turnOutputTokens += readNumber(message.message?.usage?.output_tokens ?? message.message?.usage?.outputTokens);
     }
 
     const transformed = transformMessage(message);
@@ -645,7 +658,11 @@ export function createClaudeTurnLineParser(normalizeMessage: (raw: unknown, sess
     if (tokenBudget) {
       if (message.type === 'assistant') assistantBudgetSent = true;
       lastSentTokenBudget = tokenBudget;
-      writer?.send(createNormalizedMessage({ kind: 'status', text: 'token_budget', tokenBudget, sessionId: sid, provider: 'claude' }));
+      // A result's fallback budget is the turn's cumulative bill; an assistant
+      // row's is only its own request, so the turn accumulator is the rate.
+      const rateOutputTokens = message.type === 'result' ? tokenBudget.outputTokens : turnOutputTokens;
+      const budgetWithRate = withOutputTokenRate(tokenBudget, rateOutputTokens, turnStartedAt, Date.now());
+      writer?.send(createNormalizedMessage({ kind: 'status', text: 'token_budget', tokenBudget: budgetWithRate, sessionId: sid, provider: 'claude' }));
     }
     rememberClaudeRateLimit(message);
 
@@ -1315,6 +1332,10 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
   let lastSentTokenBudget = null;
   // Measures this turn's output-token rate from the assistant usage events.
   const tokenRate = new TurnTokenRateTracker();
+  // The turn's generation clock and cumulative output, for the measured tok/s
+  // shown while it streams. A resumed turn starts a fresh window.
+  let turnStartedAt = Date.now();
+  let turnOutputTokens = 0;
 
   // A new turn supersedes any earlier process still registered for this
   // session, and only spawns once that one has been stopped and let go, so
@@ -1635,6 +1656,8 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
         resumedAfterResult = true;
         tokenRate.reset();
         tokenRate.start();
+        turnStartedAt = Date.now();
+        turnOutputTokens = 0;
         ws.send(createTurnResumedMessage(capturedSessionId || sessionId || null));
       }
       // Capture session ID from first message
@@ -1697,6 +1720,12 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
         mainThreadModel = message.message.model;
       }
 
+      // Each main-thread assistant row reports the output of its own request;
+      // summing them gives the turn's cumulative output for the rate.
+      if (message.type === 'assistant' && !message.parent_tool_use_id) {
+        turnOutputTokens += readNumber(message.message?.usage?.output_tokens ?? message.message?.usage?.outputTokens);
+      }
+
       // Only a turn's `result` states the window of the model that served it.
       const turnContextWindow = readReportedContextWindow(message, mainThreadModel);
       const contextWindowChanged = Boolean(turnContextWindow) && turnContextWindow !== reportedContextWindow;
@@ -1737,7 +1766,11 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
       }
       if (tokenBudgetData) {
         lastSentTokenBudget = tokenBudgetData;
-        ws.send(createNormalizedMessage({ kind: 'status', text: 'token_budget', tokenBudget: tokenBudgetData, sessionId: capturedSessionId || sessionId || null, provider: 'claude' }));
+        // A result's fallback budget is the turn's cumulative bill; an assistant
+        // row's is only its own request, so the turn accumulator is the rate.
+        const rateOutputTokens = message.type === 'result' ? tokenBudgetData.outputTokens : turnOutputTokens;
+        const budgetWithRate = withOutputTokenRate(tokenBudgetData, rateOutputTokens, turnStartedAt, Date.now());
+        ws.send(createNormalizedMessage({ kind: 'status', text: 'token_budget', tokenBudget: budgetWithRate, sessionId: capturedSessionId || sessionId || null, provider: 'claude' }));
       }
 
       if (startsBackgroundWork(message)) {

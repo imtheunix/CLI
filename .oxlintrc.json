@@ -73,7 +73,8 @@
           "server/shared/image-attachments.ts",
           "server/shared/message-unification.ts",
           "server/shared/spawn-lineage.ts",
-          "server/shared/glm-quota.ts"
+          "server/shared/glm-quota.ts",
+          "server/shared/token-rate.ts"
         ],
         "mode": "file"
       },

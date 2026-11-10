@@ -1,4 +1,4 @@
-import { memo } from 'react';
+import { memo, useEffect, useState } from 'react';
 import { ActivityIcon } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
@@ -6,6 +6,8 @@ type TokenUsageSummaryProps = {
   usage: Record<string, unknown> | null;
   /** Whether the viewed session is generating, so a live rate is not shown as last. */
   isProcessing?: boolean;
+  /** True while this session is producing a response, so a rate is live rather than the last one measured. */
+  isGenerating?: boolean;
   onClick?: () => void;
 };
 
@@ -34,6 +36,14 @@ const readUsageNumber = (value: unknown) => {
   return Number.isFinite(parsed) ? parsed : 0;
 };
 
+const readOptionalNumber = (value: unknown) => {
+  if (value === null || value === undefined || value === '') {
+    return null;
+  }
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+};
+
 const readTokenRate = (usage: Record<string, unknown> | null) => {
   const rate = usage?.rate;
   if (!rate || typeof rate !== 'object') {
@@ -56,7 +66,7 @@ const formatTokenRate = (value: number) => (
  * the measured output-token rate while a turn generates, and open the detailed
  * token breakdown on click.
  */
-function TokenUsageSummary({ usage, isProcessing = false, onClick }: TokenUsageSummaryProps) {
+function TokenUsageSummary({ usage, isProcessing = false, isGenerating, onClick }: TokenUsageSummaryProps) {
   const { t } = useTranslation();
   const breakdown =
     usage?.breakdown && typeof usage.breakdown === 'object'
@@ -65,10 +75,35 @@ function TokenUsageSummary({ usage, isProcessing = false, onClick }: TokenUsageS
   const inputTokens = readUsageNumber(usage?.inputTokens ?? breakdown?.input);
   const outputTokens = readUsageNumber(usage?.outputTokens ?? breakdown?.output);
   const usedTokens = readUsageNumber(usage?.used) || inputTokens + outputTokens;
-  const rate = readTokenRate(usage);
-  const rateIsLive = Boolean(rate?.live && isProcessing);
-  const rateText = rate ? `${formatTokenRate(rate.value)} tok/s` : '— tok/s';
-  const rateLabel = rate && !rateIsLive ? `last ${rateText}` : rateText;
+
+  const isGeneratingMode = isGenerating !== undefined;
+  const generating = isGenerating ?? isProcessing;
+
+  // A rate belongs to the turn that measured it. When a new turn starts, the
+  // previous turn's budget is still in state until the first usage event of
+  // the new turn arrives; showing that old rate as live would be a lie.
+  const [idleUsage, setIdleUsage] = useState<Record<string, unknown> | null>(null);
+  useEffect(() => {
+    if (!generating) {
+      setIdleUsage(usage);
+    }
+  }, [generating, usage]);
+
+  const rateSample = readTokenRate(usage);
+  const rawRate = rateSample?.value ?? readOptionalNumber(usage?.outputTokensPerSecond);
+
+  let rateLabel: string;
+  if (isGeneratingMode) {
+    const rateIsLive = generating && usage !== idleUsage && (rateSample ? rateSample.live : true);
+    const showRate = rawRate !== null && rawRate > 0 && (!generating || rateIsLive);
+    rateLabel = showRate
+      ? t(generating ? 'chat:misc.tokensPerSecond' : 'chat:misc.tokensPerSecondLast', { rate: formatTokenRate(rawRate) })
+      : t('chat:misc.tokensPerSecondUnavailable');
+  } else {
+    const rateIsLive = Boolean(rateSample?.live && isProcessing);
+    const rateText = rateSample ? `${formatTokenRate(rateSample.value)} tok/s` : '— tok/s';
+    rateLabel = rateSample && !rateIsLive ? `last ${rateText}` : rateText;
+  }
 
   return (
     <button
@@ -85,7 +120,13 @@ function TokenUsageSummary({ usage, isProcessing = false, onClick }: TokenUsageS
       <span className="hidden text-muted-foreground/70 sm:inline">
         {t('chat:misc.tokensLabel', { count: usedTokens })}
       </span>
-      <span className="text-muted-foreground/70" data-testid="token-rate">
+      <span className="text-muted-foreground/40" aria-hidden>·</span>
+      <span
+        className="tabular-nums text-muted-foreground/80"
+        title={rateLabel}
+        aria-label={rateLabel}
+        data-testid="token-rate"
+      >
         {rateLabel}
       </span>
     </button>

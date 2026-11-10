@@ -392,6 +392,9 @@
     "expandImage": "Expand {{name}}",
     "tokensLabel_one": "token",
     "tokensLabel_other": "tokens",
+    "tokensPerSecond": "{{rate}} tok/s",
+    "tokensPerSecondLast": "last {{rate}} tok/s",
+    "tokensPerSecondUnavailable": "—",
     "escClosesModal": "Esc closes the modal.",
     "close": "Close"
   },

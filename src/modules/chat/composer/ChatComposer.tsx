@@ -522,7 +522,12 @@ export default function ChatComposer({
                 <VoiceInputButton state={voiceState} onToggle={voiceToggle} errorMsg={voiceError} />
               )}
 
-              <TokenUsageSummary usage={tokenBudget} isProcessing={isLoading} onClick={onShowTokenUsage} />
+              <TokenUsageSummary
+                usage={tokenBudget}
+                isProcessing={isLoading}
+                isGenerating={isLoading}
+                onClick={onShowTokenUsage}
+              />
 
               <PromptInputButton
                 tooltip={{ content: t('input.showAllCommands') }}

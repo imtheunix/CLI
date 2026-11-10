@@ -20,6 +20,7 @@ import {
   normalizeImageDescriptors,
   createCompleteMessage,
   createNormalizedMessage,
+  withOutputTokenRate,
 } from '@/shared/index.js';
 import { notifyRunFailed, notifyRunStopped } from '@/modules/notifications/index.js';
 import { getCodexPathOverride } from '@/modules/providers/list/codex/codex-cli-path.js';
@@ -91,6 +92,9 @@ export function createCodexTurnLineParser(
 ): LineHandler {
   // One parser per turn: it keeps the thread id the turn reported.
   let capturedSessionId: string | null = null;
+  // Codex reports a turn's usage only when it completes, so the rate is
+  // measured over the turn's own generation window.
+  let turnStartedAt = Date.now();
   const parse = (line: string): AnyRecord | null => {
     try {
       const event = JSON.parse(line);
@@ -114,6 +118,9 @@ export function createCodexTurnLineParser(
     const event = parse(line);
     if (!event) return;
     captureThread(event, writer);
+    if (event.type === 'turn.started') {
+      turnStartedAt = Date.now();
+    }
     if (
       (event.type === 'item.started' || event.type === 'item.updated')
       && !PROGRESSIVE_CODEX_ITEM_TYPES.has(event.item?.type)
@@ -127,7 +134,8 @@ export function createCodexTurnLineParser(
     if (event.type === 'turn.completed') {
       const tokenBudget = extractCodexTokenBudget(event);
       if (tokenBudget) {
-        writer?.send(createNormalizedMessage({ kind: 'status', text: 'token_budget', tokenBudget, sessionId: sid, provider: 'codex' }));
+        const budgetWithRate = withOutputTokenRate(tokenBudget, tokenBudget.outputTokens, turnStartedAt, Date.now());
+        writer?.send(createNormalizedMessage({ kind: 'status', text: 'token_budget', tokenBudget: budgetWithRate, sessionId: sid, provider: 'codex' }));
       }
     }
   };
@@ -449,7 +457,14 @@ async function queryCodex(
       signal: abortController.signal
     });
 
+    // Codex reports a turn's usage only when it completes, so the rate is
+    // measured over the turn's own generation window.
+    let turnStartedAt = Date.now();
+
     for await (const event of streamedTurn.events) {
+      if (event.type === 'turn.started') {
+        turnStartedAt = Date.now();
+      }
       // Capture thread/session id lazily from the stream (Codex emits this asynchronously).
       if (event.type === 'thread.started') {
         const discoveredSessionId = event.thread_id || null;
@@ -521,10 +536,12 @@ async function queryCodex(
         const tokenBudget = extractCodexTokenBudget(event);
         if (tokenBudget) {
           const rate = tokenRate.setCumulativeOutputTokens(tokenBudget.outputTokens);
+          const withRate = withTokenRate(tokenBudget, rate, false);
+          const budgetWithRate = withOutputTokenRate(withRate, tokenBudget.outputTokens, turnStartedAt, Date.now());
           sendMessage(ws, createNormalizedMessage({
             kind: 'status',
             text: 'token_budget',
-            tokenBudget: withTokenRate(tokenBudget, rate, false),
+            tokenBudget: budgetWithRate,
             sessionId: capturedSessionId || sessionId || null,
             provider: 'codex',
           }));
