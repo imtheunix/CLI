@@ -128,6 +128,7 @@ async function withFixture(runTest: (fixture: Fixture) => Promise<void>): Promis
         let refuteIndex = 0;
         let gateCalls = 0;
         const refuteService: RefuteService = {
+          abort: () => undefined,
           refute: async (_job, backend, sessionId, onSession) => {
             refuteCalls.push({ backend, sessionId });
             onSession(`refute-session-${refuteCalls.length}`);
@@ -273,6 +274,7 @@ test('restart in refute resumes that persisted step without repeating the gate o
     let release: (() => void) | null = null;
     const waiting = new Promise<void>((resolve) => { release = resolve; });
     const refuteService: RefuteService = {
+      abort: () => undefined,
       refute: async () => { await waiting; return pass; },
     };
     const restarted = createReviewService({
