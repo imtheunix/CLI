@@ -96,3 +96,6 @@ def read_memories() -> list[Document]:
             process.wait(timeout=2)
         except subprocess.TimeoutExpired:
             process.kill()
+            process.wait()
+        process.stdin.close()
+        process.stdout.close()
