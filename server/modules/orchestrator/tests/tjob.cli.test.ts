@@ -98,6 +98,14 @@ const statusBody = JSON.stringify({
           kimi: { outputByRole: { hub: 150, planner: 300, jobs: 50, compaction: 100 }, reasoningShare: 0.316, cacheHit: 0.655, uncachedInputPerHubCall: 1_000 },
           flow: { leadTimeMedianMs: 7_200_000, reviewWaitMedianMs: 600_000, reviewWaitMaxMs: 600_000, fixRoundRate: 1, mergedPerHour: 1, tokensPerMergedJob: 5_000 },
           waste: { compactionTokens: 500, cancelledJobs: 1, pacerWaitMs: 1_000, retries429: 1 },
+          delegation: {
+            sessions: [
+              { id: 'hub', title: 'Hub session', kind: 'hub', label: 'hub', subagents: { explore: 1 }, subagentCalls: 1, edits: 0, reads: 1, bash: 1, outputTokens: 100, guidance: false },
+              { id: 'contract-1', title: 'Contract job', kind: 'job', label: 'contract-1 Contract job', subagents: { 'morph-scout': 2, explore: 1 }, subagentCalls: 3, edits: 1, reads: 2, bash: 1, outputTokens: 200, guidance: true },
+            ],
+            hub: { subagentCalls: 1, edits: 0, ratio: 1 },
+            jobs: { subagentCalls: 3, edits: 8, ratio: 3 / 11 },
+          },
         },
         day: {
           windowMs: 86_400_000,
@@ -105,6 +113,14 @@ const statusBody = JSON.stringify({
           kimi: { outputByRole: { hub: 450, planner: 300, jobs: 50, compaction: 100 }, reasoningShare: 0.32, cacheHit: 0.49, uncachedInputPerHubCall: 1_500 },
           flow: { leadTimeMedianMs: 7_200_000, reviewWaitMedianMs: 600_000, reviewWaitMaxMs: 600_000, fixRoundRate: 1, mergedPerHour: 0.04, tokensPerMergedJob: 5_000 },
           waste: { compactionTokens: 500, cancelledJobs: 1, pacerWaitMs: 3_000, retries429: 3 },
+          delegation: {
+            sessions: [
+              { id: 'hub', title: 'Hub session', kind: 'hub', label: 'hub', subagents: { explore: 1 }, subagentCalls: 1, edits: 0, reads: 1, bash: 1, outputTokens: 100, guidance: false },
+              { id: 'contract-1', title: 'Contract job', kind: 'job', label: 'contract-1 Contract job', subagents: { 'morph-scout': 2, explore: 1 }, subagentCalls: 3, edits: 1, reads: 2, bash: 1, outputTokens: 200, guidance: true },
+            ],
+            hub: { subagentCalls: 1, edits: 0, ratio: 1 },
+            jobs: { subagentCalls: 3, edits: 8, ratio: 3 / 11 },
+          },
         },
       },
     },
@@ -136,6 +152,8 @@ test('tjob status prints needs-you first, then goals, jobs, capacity, hub and ef
   assert.match(result.stdout, /Hub:/);
   assert.match(result.stdout, /Efficiency \(1h\):/);
   assert.match(result.stdout, /Efficiency \(24h\):/);
+  assert.match(result.stdout, /delegation: hub 1\/1 \(100\.0%\) \| jobs 3\/11 \(27\.3%\)/);
+  assert.match(result.stdout, /contract-1 Contract job  subagents explore:1 morph-scout:2 \| edits 1 \| reads 2 \| bash 1 \| out 200 \| guidance yes/);
 });
 
 test('tjob status --md prints the markdown rendering', () => {

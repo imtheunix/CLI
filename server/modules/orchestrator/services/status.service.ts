@@ -65,6 +65,37 @@ export type StatusCapacity = {
 /** The hub session and when it was last woken. */
 export type StatusHub = HubStatus & { lastWakeAt: string | null };
 
+/** One Kimi session's delegation activity in an efficiency window. */
+export type StatusDelegationSession = {
+  /** `hub` for the hub session, else the job id from the worktree directory. */
+  id: string;
+  /** The session title (the job title for a job). */
+  title: string;
+  kind: 'hub' | 'job';
+  /** `hub` or `<job id> <title>`, ready for a row. */
+  label: string;
+  /** Subagent calls by `subagent_type`. */
+  subagents: Record<string, number>;
+  subagentCalls: number;
+  /** Own edit and write tool calls. */
+  edits: number;
+  /** Own read tool calls. */
+  reads: number;
+  /** Own bash tool calls. */
+  bash: number;
+  /** Kimi output tokens (not reasoning). */
+  outputTokens: number;
+  /** Whether the session's first prompt carries the per-model guidance marker. */
+  guidance: boolean;
+};
+
+/** The delegation contract's per-session rows and its hub/job ratios. */
+export type StatusDelegation = {
+  sessions: StatusDelegationSession[];
+  hub: { subagentCalls: number; edits: number; ratio: number };
+  jobs: { subagentCalls: number; edits: number; ratio: number };
+};
+
 /** One efficiency window (rolling 1 h or 24 h). */
 export type StatusEfficiencyWindow = {
   windowMs: number;
@@ -103,6 +134,7 @@ export type StatusEfficiencyWindow = {
     pacerWaitMs: number;
     retries429: number;
   };
+  delegation: StatusDelegation;
 };
 
 /** Everything `tjob status`, the web Status view and STATUS.md render. */
@@ -276,27 +308,57 @@ function toStatusJob(job: OrchestratorJobRow, nowMs: number, reason: string | nu
 }
 
 /** One OpenCode assistant message, reduced to what the efficiency metrics need. */
-type OpenCodeMessage = { ts: number; agent: string; model: string; input: number; output: number; reasoning: number; cacheRead: number };
+type OpenCodeMessage = { sessionId: string; ts: number; agent: string; model: string; input: number; output: number; reasoning: number; cacheRead: number };
+
+/** One OpenCode session, reduced to what the delegation metrics need. */
+type OpenCodeSession = {
+  id: string;
+  parentId: string | null;
+  directory: string;
+  title: string;
+  agent: string;
+  updatedAt: number;
+};
+
+/** One OpenCode tool part, reduced to the delegation counts. */
+type OpenCodeToolCall = { sessionId: string; ts: number; tool: string; subagentType: string | null };
+
+/** A session's first user prompt, used for the per-model guidance marker. */
+type OpenCodePrompt = { sessionId: string; ts: number; text: string };
+
+/** The OpenCode rows the efficiency and delegation metrics read in one pass. */
+type OpenCodeData = {
+  messages: OpenCodeMessage[];
+  sessions: OpenCodeSession[];
+  toolCalls: OpenCodeToolCall[];
+  prompts: OpenCodePrompt[];
+};
 
 /** One morph-pacer ledger line, reduced to the waste metrics. */
 type LedgerEvent = { ts: number; waitMs: number; retries: number };
 
-/** Reads Morph's assistant messages from OpenCode's database, read-only and tolerant of a lock. */
-function readOpenCodeMessages(databasePath: string, sinceMs: number): OpenCodeMessage[] {
-  if (!existsSync(databasePath)) return [];
+/** A job worktree lives under `~/Tribeira/.jobs/<project>/<job id>`. */
+function isJobDirectory(directory: string): boolean {
+  return /(^|[\\/])\.jobs[\\/]/.test(directory);
+}
+
+/** Reads Morph's messages, Kimi sessions, tool calls and first prompts from OpenCode's database, read-only and tolerant of a lock. */
+function readOpenCodeData(databasePath: string, sinceMs: number): OpenCodeData {
+  const empty: OpenCodeData = { messages: [], sessions: [], toolCalls: [], prompts: [] };
+  if (!existsSync(databasePath)) return empty;
   let database: Database.Database;
   try {
     database = new Database(databasePath, { readonly: true, fileMustExist: true, timeout: 1_000 });
   } catch {
-    return [];
+    return empty;
   }
   try {
     // The message index leads with session_id, so narrow to sessions touched in the window first.
     const rows = database.prepare(`
-      SELECT time_created, data FROM message
+      SELECT session_id, time_created, data FROM message
       WHERE session_id IN (SELECT id FROM session WHERE time_updated >= ?)
         AND COALESCE(json_extract(data, '$.time.completed'), time_created) >= ?
-    `).all(sinceMs, sinceMs) as Array<{ time_created: number; data: string }>;
+    `).all(sinceMs, sinceMs) as Array<{ session_id: string; time_created: number; data: string }>;
     const messages: OpenCodeMessage[] = [];
     for (const row of rows) {
       try {
@@ -311,6 +373,7 @@ function readOpenCodeMessages(databasePath: string, sinceMs: number): OpenCodeMe
         if (data.role !== 'assistant' || data.providerID !== 'morph' || !data.tokens || !data.modelID) continue;
         const completed = typeof data.time?.completed === 'number' && Number.isFinite(data.time.completed) ? data.time.completed : row.time_created;
         messages.push({
+          sessionId: row.session_id,
           ts: completed,
           agent: data.agent ?? '',
           model: data.modelID,
@@ -323,9 +386,92 @@ function readOpenCodeMessages(databasePath: string, sinceMs: number): OpenCodeMe
         // A malformed message row is not usage.
       }
     }
-    return messages;
+
+    // Only Kimi sessions can delegate; the rest of the database is not read.
+    const kimiSessionIds = new Set(messages.filter((message) => isKimi(message.model)).map((message) => message.sessionId));
+    if (kimiSessionIds.size === 0) return { ...empty, messages };
+    const sessionRows = database.prepare(`
+      SELECT id, parent_id, directory, title, agent, time_updated FROM session WHERE time_updated >= ?
+    `).all(sinceMs) as Array<{
+      id: string;
+      parent_id: string | null;
+      directory: string;
+      title: string;
+      agent: string | null;
+      time_updated: number;
+    }>;
+    const sessions: OpenCodeSession[] = sessionRows
+      .filter((row) => kimiSessionIds.has(row.id))
+      .map((row) => ({
+        id: row.id,
+        parentId: row.parent_id,
+        directory: row.directory,
+        title: row.title,
+        agent: row.agent ?? '',
+        updatedAt: row.time_updated,
+      }));
+
+    // A subagent's child session is not a row of its own; only the hub and job sessions are.
+    const relevantIds = sessions
+      .filter((session) => session.parentId === null && (session.agent === 'morph-hub' || isJobDirectory(session.directory)))
+      .map((session) => session.id);
+    if (relevantIds.length === 0) return { ...empty, messages, sessions };
+    const relevantPlaceholders = relevantIds.map(() => '?').join(', ');
+
+    const partRows = database.prepare(`
+      SELECT session_id, time_created, data FROM part
+      WHERE session_id IN (${relevantPlaceholders}) AND time_created >= ?
+    `).all(...relevantIds, sinceMs) as Array<{ session_id: string; time_created: number; data: string }>;
+    const toolCalls: OpenCodeToolCall[] = [];
+    for (const row of partRows) {
+      try {
+        const data = JSON.parse(row.data) as { type?: string; tool?: string; state?: { input?: { subagent_type?: unknown } } };
+        if (data.type !== 'tool' || !data.tool) continue;
+        const subagentType = typeof data.state?.input?.subagent_type === 'string' ? data.state.input.subagent_type : null;
+        toolCalls.push({ sessionId: row.session_id, ts: row.time_created, tool: data.tool, subagentType });
+      } catch {
+        // A malformed part row is not a tool call.
+      }
+    }
+
+    // The first prompt may predate the window, so it is read without the time filter.
+    const promptRows = database.prepare(`
+      WITH first_user AS (
+        SELECT session_id, id, time_created,
+               ROW_NUMBER() OVER (PARTITION BY session_id ORDER BY time_created, id) AS rn
+        FROM message
+        WHERE session_id IN (${relevantPlaceholders})
+          AND json_extract(data, '$.role') = 'user'
+      )
+      SELECT f.session_id, f.id AS message_id, f.time_created, p.data
+      FROM first_user f JOIN part p ON p.message_id = f.id
+      WHERE f.rn = 1 AND json_extract(p.data, '$.type') = 'text'
+      ORDER BY f.session_id, p.time_created
+    `).all(...relevantIds) as Array<{ session_id: string; message_id: string; time_created: number; data: string }>;
+    const firstMessage = new Map<string, { id: string; ts: number; parts: string[] }>();
+    for (const row of promptRows) {
+      const first = firstMessage.get(row.session_id);
+      if (first === undefined) {
+        firstMessage.set(row.session_id, { id: row.message_id, ts: row.time_created, parts: [] });
+      }
+      const entry = firstMessage.get(row.session_id);
+      if (!entry || entry.id !== row.message_id) continue;
+      try {
+        const data = JSON.parse(row.data) as { text?: unknown };
+        if (typeof data.text === 'string') entry.parts.push(data.text);
+      } catch {
+        // A malformed text part is not a prompt.
+      }
+    }
+    const prompts: OpenCodePrompt[] = [...firstMessage.entries()].map(([sessionId, entry]) => ({
+      sessionId,
+      ts: entry.ts,
+      text: entry.parts.join('\n'),
+    }));
+
+    return { messages, sessions, toolCalls, prompts };
   } catch {
-    return [];
+    return empty;
   } finally {
     database.close();
   }
@@ -410,9 +556,98 @@ function morphSlotOccupancy(jobs: OrchestratorJobRow[], nowMs: number, windowMs:
   return occupied / minutes;
 }
 
+/** The delegation contract's rows and ratios for one window: hub first, then jobs by recency, at most 10 rows. */
+function computeDelegation(input: {
+  messages: OpenCodeMessage[];
+  sessions: OpenCodeSession[];
+  toolCalls: OpenCodeToolCall[];
+  prompts: OpenCodePrompt[];
+  since: number;
+  nowMs: number;
+}): StatusDelegation {
+  const { messages, sessions, toolCalls, prompts, since, nowMs } = input;
+  const sessionById = new Map(sessions.map((session) => [session.id, session]));
+  const promptBySession = new Map(prompts.map((prompt) => [prompt.sessionId, prompt]));
+  const kimiSessionIds = new Set(
+    messages
+      .filter((message) => message.ts >= since && message.ts <= nowMs && isKimi(message.model))
+      .map((message) => message.sessionId),
+  );
+
+  const rows: Array<StatusDelegationSession & { lastActivityMs: number }> = [];
+  for (const sessionId of kimiSessionIds) {
+    const session = sessionById.get(sessionId);
+    if (!session || session.parentId !== null) continue;
+    const kind = session.agent === 'morph-hub' ? 'hub' : isJobDirectory(session.directory) ? 'job' : null;
+    if (!kind) continue;
+
+    const sessionMessages = messages.filter((message) => message.sessionId === sessionId && message.ts >= since && message.ts <= nowMs && isKimi(message.model));
+    const sessionCalls = toolCalls.filter((call) => call.sessionId === sessionId && call.ts >= since && call.ts <= nowMs);
+    const subagents: Record<string, number> = {};
+    let edits = 0;
+    let reads = 0;
+    let bash = 0;
+    for (const call of sessionCalls) {
+      if (call.tool === 'task') {
+        const type = call.subagentType ?? 'unknown';
+        subagents[type] = (subagents[type] ?? 0) + 1;
+      } else if (call.tool === 'edit' || call.tool === 'write') {
+        edits += 1;
+      } else if (call.tool === 'read') {
+        reads += 1;
+      } else if (call.tool === 'bash') {
+        bash += 1;
+      }
+    }
+    const subagentCalls = Object.values(subagents).reduce((sum, count) => sum + count, 0);
+    const outputTokens = sessionMessages.reduce((sum, message) => sum + message.output, 0);
+    const lastActivityMs = Math.max(
+      session.updatedAt,
+      ...sessionMessages.map((message) => message.ts),
+      ...sessionCalls.map((call) => call.ts),
+    );
+    const jobId = path.basename(session.directory);
+    rows.push({
+      id: kind === 'hub' ? 'hub' : jobId,
+      title: session.title,
+      kind,
+      label: kind === 'hub' ? 'hub' : `${jobId} ${session.title}`.trim(),
+      subagents,
+      subagentCalls,
+      edits,
+      reads,
+      bash,
+      outputTokens,
+      guidance: (promptBySession.get(sessionId)?.text ?? '').includes('For this model'),
+      lastActivityMs,
+    });
+  }
+
+  rows.sort((a, b) => {
+    if (a.kind !== b.kind) return a.kind === 'hub' ? -1 : 1;
+    return b.lastActivityMs - a.lastActivityMs;
+  });
+
+  const summarize = (list: Array<StatusDelegationSession & { lastActivityMs: number }>): StatusDelegation['hub'] => {
+    const subagentCalls = list.reduce((sum, row) => sum + row.subagentCalls, 0);
+    const edits = list.reduce((sum, row) => sum + row.edits, 0);
+    const denominator = subagentCalls + edits;
+    return { subagentCalls, edits, ratio: denominator === 0 ? 0 : subagentCalls / denominator };
+  };
+
+  return {
+    sessions: rows.slice(0, 10).map(({ lastActivityMs: _lastActivityMs, ...row }) => row),
+    hub: summarize(rows.filter((row) => row.kind === 'hub')),
+    jobs: summarize(rows.filter((row) => row.kind === 'job')),
+  };
+}
+
 /** Used by the status service and its tests: one efficiency window from the raw events and jobs. */
 export function computeEfficiencyWindow(input: {
   messages: OpenCodeMessage[];
+  sessions?: OpenCodeSession[];
+  toolCalls?: OpenCodeToolCall[];
+  prompts?: OpenCodePrompt[];
   ledger: LedgerEvent[];
   jobs: OrchestratorJobRow[];
   nowMs: number;
@@ -421,7 +656,7 @@ export function computeEfficiencyWindow(input: {
   morphCap: number;
   getJobTokens?: (sessionId: string, model: string | null) => number | null;
 }): StatusEfficiencyWindow {
-  const { messages, ledger, jobs, nowMs, windowMs, deepseekCapOut, morphCap } = input;
+  const { messages, sessions = [], toolCalls = [], prompts = [], ledger, jobs, nowMs, windowMs, deepseekCapOut, morphCap } = input;
   const since = nowMs - windowMs;
   const inWindow = messages.filter((message) => message.ts >= since && message.ts <= nowMs);
   const ledgerInWindow = ledger.filter((event) => event.ts >= since && event.ts <= nowMs);
@@ -513,6 +748,7 @@ export function computeEfficiencyWindow(input: {
       pacerWaitMs: ledgerInWindow.reduce((sum, event) => sum + event.waitMs, 0),
       retries429: ledgerInWindow.reduce((sum, event) => sum + event.retries, 0),
     },
+    delegation: computeDelegation({ messages, sessions, toolCalls, prompts, since, nowMs }),
   };
 }
 
@@ -532,6 +768,11 @@ function formatTokens(value: number): string {
   if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
   if (value >= 1_000) return `${(value / 1_000).toFixed(1)}k`;
   return String(Math.round(value));
+}
+
+function formatSubagents(subagents: Record<string, number>): string {
+  const entries = Object.entries(subagents).sort(([a], [b]) => a.localeCompare(b));
+  return entries.length === 0 ? 'none' : entries.map(([type, count]) => `${type}:${count}`).join(' ');
 }
 
 /** Used by `tjob status --md` and the server's STATUS.md writer: the snapshot as markdown. */
@@ -612,6 +853,13 @@ export function formatStatusMarkdown(snapshot: StatusSnapshot): string {
       + ` | merged/h ${window.flow.mergedPerHour.toFixed(2)} | tokens/merged ${formatTokens(window.flow.tokensPerMergedJob)}`);
     lines.push(`waste: compaction ${formatTokens(window.waste.compactionTokens)} | cancelled ${window.waste.cancelledJobs}`
       + ` | pacer wait ${formatDuration(window.waste.pacerWaitMs)} | 429 retries ${window.waste.retries429}`);
+    const delegation = window.delegation;
+    lines.push(`delegation: hub ${delegation.hub.subagentCalls}/${delegation.hub.subagentCalls + delegation.hub.edits} (${formatPercent(delegation.hub.ratio)})`
+      + ` | jobs ${delegation.jobs.subagentCalls}/${delegation.jobs.subagentCalls + delegation.jobs.edits} (${formatPercent(delegation.jobs.ratio)})`);
+    for (const session of delegation.sessions) {
+      lines.push(`  ${session.label}  subagents ${formatSubagents(session.subagents)} | edits ${session.edits} | reads ${session.reads}`
+        + ` | bash ${session.bash} | out ${formatTokens(session.outputTokens)} | guidance ${session.guidance ? 'yes' : 'no'}`);
+    }
     lines.push('```', '');
   };
   efficiency('1h', snapshot.efficiency.hour);
@@ -698,10 +946,13 @@ export function createStatusService(deps: {
       if (!current || (parseTimestamp(job.resume_at) ?? Infinity) < (parseTimestamp(current) ?? Infinity)) quota[job.backend] = job.resume_at;
     }
 
-    const messages = readOpenCodeMessages(databasePath, nowMs - DAY_MS);
+    const openCode = readOpenCodeData(databasePath, nowMs - DAY_MS);
     const ledger = readLedgerEvents(ledgerPath, nowMs - DAY_MS);
     const efficiencyInput = {
-      messages,
+      messages: openCode.messages,
+      sessions: openCode.sessions,
+      toolCalls: openCode.toolCalls,
+      prompts: openCode.prompts,
       ledger,
       jobs: rows,
       nowMs,

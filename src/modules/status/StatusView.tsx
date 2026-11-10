@@ -30,6 +30,28 @@ type StatusJob = {
   reason: string | null;
 };
 
+/** One Kimi session's delegation activity in an efficiency window. */
+type StatusDelegationSession = {
+  id: string;
+  title: string;
+  kind: 'hub' | 'job';
+  label: string;
+  subagents: Record<string, number>;
+  subagentCalls: number;
+  edits: number;
+  reads: number;
+  bash: number;
+  outputTokens: number;
+  guidance: boolean;
+};
+
+/** The delegation contract's per-session rows and its hub/job ratios. */
+type StatusDelegation = {
+  sessions: StatusDelegationSession[];
+  hub: { subagentCalls: number; edits: number; ratio: number };
+  jobs: { subagentCalls: number; edits: number; ratio: number };
+};
+
 /** One efficiency window (rolling 1 h or 24 h). */
 type StatusEfficiencyWindow = {
   windowMs: number;
@@ -50,6 +72,7 @@ type StatusEfficiencyWindow = {
     tokensPerMergedJob: number;
   };
   waste: { compactionTokens: number; cancelledJobs: number; pacerWaitMs: number; retries429: number };
+  delegation: StatusDelegation;
 };
 
 /** The JSON `GET /api/orchestrator/status` returns. */
@@ -126,8 +149,14 @@ function JobSection({ title, jobs }: { title: string; jobs: StatusJob[] }) {
   );
 }
 
+function formatSubagents(subagents: Record<string, number>): string {
+  const entries = Object.entries(subagents).sort(([a], [b]) => a.localeCompare(b));
+  return entries.length === 0 ? 'none' : entries.map(([type, count]) => `${type}:${count}`).join(' ');
+}
+
 function EfficiencyCard({ label, window }: { label: string; window: StatusEfficiencyWindow }) {
   const roles = window.kimi.outputByRole;
+  const delegation = window.delegation;
   return (
     <Card>
       <CardHeader className="pb-2">
@@ -139,6 +168,25 @@ function EfficiencyCard({ label, window }: { label: string; window: StatusEffici
         <p>Kimi reasoning {formatPercent(window.kimi.reasoningShare)}, cache hit {formatPercent(window.kimi.cacheHit)}, uncached/hub call {formatTokens(window.kimi.uncachedInputPerHubCall)}</p>
         <p>Flow: lead {formatDuration(window.flow.leadTimeMedianMs)}, review wait {formatDuration(window.flow.reviewWaitMedianMs)} (max {formatDuration(window.flow.reviewWaitMaxMs)}), fix rounds {formatPercent(window.flow.fixRoundRate)}, tiers gate {window.flow.reviewTiers.gate} refute {window.flow.reviewTiers.refute} deep {window.flow.reviewTiers.deep}, merged/h {window.flow.mergedPerHour.toFixed(2)}, tokens/merged {formatTokens(window.flow.tokensPerMergedJob)}</p>
         <p>Waste: compaction {formatTokens(window.waste.compactionTokens)}, cancelled {window.waste.cancelledJobs}, pacer wait {formatDuration(window.waste.pacerWaitMs)}, 429 retries {window.waste.retries429}</p>
+        <p>
+          Delegation: hub {delegation.hub.subagentCalls}/{delegation.hub.subagentCalls + delegation.hub.edits} ({formatPercent(delegation.hub.ratio)}),
+          {' '}jobs {delegation.jobs.subagentCalls}/{delegation.jobs.subagentCalls + delegation.jobs.edits} ({formatPercent(delegation.jobs.ratio)})
+        </p>
+        {delegation.sessions.length === 0 ? <p className="text-muted-foreground">No Kimi sessions in this window</p> : (
+          <ul className="space-y-0.5 text-xs">
+            {delegation.sessions.map((session) => (
+              <li key={`${session.kind}:${session.id}`} className="flex flex-wrap gap-x-2">
+                <span className="font-mono">{session.label}</span>
+                <span>subagents {formatSubagents(session.subagents)}</span>
+                <span>edits {session.edits}</span>
+                <span>reads {session.reads}</span>
+                <span>bash {session.bash}</span>
+                <span>out {formatTokens(session.outputTokens)}</span>
+                <span>guidance {session.guidance ? 'yes' : 'no'}</span>
+              </li>
+            ))}
+          </ul>
+        )}
       </CardContent>
     </Card>
   );

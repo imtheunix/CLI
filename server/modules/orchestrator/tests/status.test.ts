@@ -115,10 +115,12 @@ async function withFixtures(run: (input: {
     const database = new Database(databasePath);
     try {
       database.exec(`
-        CREATE TABLE session (id TEXT PRIMARY KEY, time_updated INTEGER NOT NULL);
+        CREATE TABLE session (id TEXT PRIMARY KEY, parent_id TEXT, directory TEXT NOT NULL, title TEXT NOT NULL, agent TEXT, time_updated INTEGER NOT NULL);
         CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL, data TEXT NOT NULL);
+        CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT NOT NULL, session_id TEXT NOT NULL, time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL, data TEXT NOT NULL);
       `);
-      database.prepare('INSERT INTO session (id, time_updated) VALUES (?, ?)').run('s', NOW.getTime());
+      database.prepare('INSERT INTO session (id, parent_id, directory, title, agent, time_updated) VALUES (?, ?, ?, ?, ?, ?)')
+        .run('s', null, '/home/busu/Tribeira', 'Hub session', 'morph-hub', NOW.getTime());
       const insert = database.prepare('INSERT INTO message (id, session_id, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?)');
       const add = (id: string, msAgo: number, data: Record<string, unknown>) => {
         const row = JSON.parse(message(id, msAgo, data)) as { time_created: number; data: string };
@@ -135,6 +137,96 @@ async function withFixtures(run: (input: {
       add('k3', 30 * MINUTE, morph('build', 'morph-kimik31', { input: 200, output: 50, reasoning: 0, cache: { read: 0 } }));
       add('k4', 40 * MINUTE, morph('compaction', 'morph-kimik31', { input: 400, output: 60, reasoning: 40, cache: { read: 0 } }));
       add('k5', 2 * HOUR, morph('morph-hub', 'morph-kimik31', { input: 2_000, output: 200, reasoning: 100, cache: { read: 0 } }));
+    } finally {
+      database.close();
+    }
+
+    await run({ goalsPath, databasePath, ledgerPath, hubEventsLogPath, statusFilePath });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+}
+
+/** A hub, a contract job (delegates, few edits) and a pre-contract job (many edits, no delegation). */
+async function withDelegationFixtures(run: (input: {
+  goalsPath: string;
+  databasePath: string;
+  ledgerPath: string;
+  hubEventsLogPath: string;
+  statusFilePath: string;
+}) => Promise<void>): Promise<void> {
+  const root = await mkdtemp(path.join(tmpdir(), 'status-delegation-'));
+  try {
+    const goalsPath = path.join(root, 'goals.md');
+    const databasePath = path.join(root, 'opencode.db');
+    const ledgerPath = path.join(root, 'ledger.jsonl');
+    const hubEventsLogPath = path.join(root, 'hub-events.log');
+    const statusFilePath = path.join(root, 'STATUS.md');
+    await writeFile(goalsPath, '');
+    await writeFile(ledgerPath, '');
+    await writeFile(hubEventsLogPath, '');
+
+    const database = new Database(databasePath);
+    try {
+      database.exec(`
+        CREATE TABLE session (id TEXT PRIMARY KEY, parent_id TEXT, directory TEXT NOT NULL, title TEXT NOT NULL, agent TEXT, time_updated INTEGER NOT NULL);
+        CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL, data TEXT NOT NULL);
+        CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT NOT NULL, session_id TEXT NOT NULL, time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL, data TEXT NOT NULL);
+      `);
+      const insertSession = database.prepare('INSERT INTO session (id, parent_id, directory, title, agent, time_updated) VALUES (?, ?, ?, ?, ?, ?)');
+      const insertMessage = database.prepare('INSERT INTO message (id, session_id, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?)');
+      const insertPart = database.prepare('INSERT INTO part (id, message_id, session_id, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?, ?)');
+      const now = NOW.getTime();
+      const addSession = (id: string, parentId: string | null, directory: string, title: string, agent: string, msAgo: number) => {
+        insertSession.run(id, parentId, directory, title, agent, now - msAgo);
+      };
+      const addAssistant = (id: string, sessionId: string, msAgo: number, output: number) => {
+        const ts = now - msAgo;
+        insertMessage.run(id, sessionId, ts, ts, JSON.stringify({
+          role: 'assistant', providerID: 'morph', modelID: 'morph-kimik31', agent: 'build',
+          tokens: { input: 10, output, reasoning: 0, cache: { read: 0 } },
+        }));
+      };
+      const addUser = (id: string, sessionId: string, msAgo: number, text: string) => {
+        const ts = now - msAgo;
+        insertMessage.run(id, sessionId, ts, ts, JSON.stringify({ role: 'user' }));
+        insertPart.run(`${id}-p`, id, sessionId, ts, ts, JSON.stringify({ type: 'text', text }));
+      };
+      const addTool = (id: string, sessionId: string, msAgo: number, tool: string, input: Record<string, unknown> = {}) => {
+        const ts = now - msAgo;
+        insertPart.run(id, `msg-${id}`, sessionId, ts, ts, JSON.stringify({ type: 'tool', tool, state: { status: 'completed', input } }));
+      };
+
+      addSession('hub-sess', null, '/home/busu/Tribeira', 'Hub session', 'morph-hub', 5 * MINUTE);
+      addUser('hub-user', 'hub-sess', 2 * HOUR, 'You are the hub.');
+      addAssistant('hub-a1', 'hub-sess', 10 * MINUTE, 100);
+      addTool('hub-t1', 'hub-sess', 9 * MINUTE, 'task', { subagent_type: 'explore' });
+      addTool('hub-t2', 'hub-sess', 8 * MINUTE, 'read');
+      addTool('hub-t3', 'hub-sess', 7 * MINUTE, 'bash');
+
+      addSession('job-contract', null, '/home/busu/Tribeira/.jobs/tribeiracli/contract-1', 'Contract job', 'build', 3 * MINUTE);
+      addUser('contract-user', 'job-contract', 3 * HOUR, 'You are Morph.\nFor this model (morph-kimik31):\n- delegate');
+      addAssistant('contract-a1', 'job-contract', 5 * MINUTE, 200);
+      addTool('contract-t1', 'job-contract', 4 * MINUTE, 'task', { subagent_type: 'morph-scout' });
+      addTool('contract-t2', 'job-contract', 4 * MINUTE, 'task', { subagent_type: 'morph-scout' });
+      addTool('contract-t3', 'job-contract', 3 * MINUTE, 'task', { subagent_type: 'explore' });
+      addTool('contract-t4', 'job-contract', 2 * MINUTE, 'edit');
+      addTool('contract-t5', 'job-contract', 2 * MINUTE, 'read');
+      addTool('contract-t6', 'job-contract', 1 * MINUTE, 'read');
+      addTool('contract-t7', 'job-contract', 1 * MINUTE, 'bash');
+
+      addSession('job-pre', null, '/home/busu/Tribeira/.jobs/tribeiracli/pre-1', 'Pre-contract job', 'build', 2 * MINUTE);
+      addUser('pre-user', 'job-pre', 4 * HOUR, 'You are Morph.');
+      addAssistant('pre-a1', 'job-pre', 6 * MINUTE, 300);
+      for (let index = 0; index < 5; index += 1) addTool(`pre-edit-${index}`, 'job-pre', 5 * MINUTE, 'edit');
+      for (let index = 0; index < 2; index += 1) addTool(`pre-write-${index}`, 'job-pre', 5 * MINUTE, 'write');
+      for (let index = 0; index < 3; index += 1) addTool(`pre-read-${index}`, 'job-pre', 4 * MINUTE, 'read');
+      for (let index = 0; index < 2; index += 1) addTool(`pre-bash-${index}`, 'job-pre', 3 * MINUTE, 'bash');
+
+      // A subagent's child session is not a row of its own.
+      addSession('child-sess', 'job-contract', '/home/busu/Tribeira/.jobs/tribeiracli/contract-1', 'Child', 'morph-scout', 1 * MINUTE);
+      addAssistant('child-a1', 'child-sess', 1 * MINUTE, 50);
+      addTool('child-t1', 'child-sess', 1 * MINUTE, 'task', { subagent_type: 'explore' });
     } finally {
       database.close();
     }
@@ -274,6 +366,68 @@ test('status JSON from fixtures: needsYou, 24 h filtering, capacity, hub and eff
 
     const written = service.writeMarkdown();
     assert.equal(written, statusFilePath);
+  });
+});
+
+test('delegation metrics: one row per Kimi session, counts, marker and ratio', async () => {
+  await withDelegationFixtures(async ({ goalsPath, databasePath, ledgerPath, hubEventsLogPath, statusFilePath }) => {
+    const config = loadOrchestratorConfig('/nonexistent/orchestrator.json');
+    const service = createStatusService({
+      config: () => config,
+      jobs: {
+        list: () => [],
+        loads: () => ({ claude: 0, codex: 0, glm: 0, agy: 0, zcode: 0, morph: 0 }) as Record<OrchestratorBackend, number>,
+        backendStatus: () => ({ glm: null, zcode: null }),
+      },
+      morphUsage: { usage: () => MORPH_USAGE, admitted: () => true } as MorphUsageService,
+      hub: { status: () => HUB } as unknown as HubService,
+      now: () => NOW,
+      goalsPath,
+      databasePath,
+      ledgerPath,
+      hubEventsLogPath,
+      statusFilePath,
+    });
+
+    const day = service.snapshot().efficiency.day.delegation;
+    assert.deepEqual(day.sessions.map((session) => session.label), ['hub', 'contract-1 Contract job', 'pre-1 Pre-contract job']);
+
+    const hub = day.sessions[0];
+    assert.equal(hub.kind, 'hub');
+    assert.deepEqual(hub.subagents, { explore: 1 });
+    assert.equal(hub.subagentCalls, 1);
+    assert.equal(hub.edits, 0);
+    assert.equal(hub.reads, 1);
+    assert.equal(hub.bash, 1);
+    assert.equal(hub.outputTokens, 100);
+    assert.equal(hub.guidance, false);
+
+    const contract = day.sessions[1];
+    assert.equal(contract.kind, 'job');
+    assert.deepEqual(contract.subagents, { 'morph-scout': 2, explore: 1 });
+    assert.equal(contract.subagentCalls, 3);
+    assert.equal(contract.edits, 1);
+    assert.equal(contract.reads, 2);
+    assert.equal(contract.bash, 1);
+    assert.equal(contract.outputTokens, 200);
+    assert.equal(contract.guidance, true);
+
+    const pre = day.sessions[2];
+    assert.deepEqual(pre.subagents, {});
+    assert.equal(pre.subagentCalls, 0);
+    assert.equal(pre.edits, 7);
+    assert.equal(pre.reads, 3);
+    assert.equal(pre.bash, 2);
+    assert.equal(pre.outputTokens, 300);
+    assert.equal(pre.guidance, false);
+
+    assert.deepEqual(day.hub, { subagentCalls: 1, edits: 0, ratio: 1 });
+    assert.deepEqual(day.jobs, { subagentCalls: 3, edits: 8, ratio: 3 / 11 });
+
+    const markdown = formatStatusMarkdown(service.snapshot());
+    assert.match(markdown, /delegation: hub 1\/1 \(100\.0%\) \| jobs 3\/11 \(27\.3%\)/);
+    assert.match(markdown, /contract-1 Contract job  subagents explore:1 morph-scout:2 \| edits 1 \| reads 2 \| bash 1 \| out 200 \| guidance yes/);
+    assert.match(markdown, /pre-1 Pre-contract job  subagents none \| edits 7 \| reads 3 \| bash 2 \| out 300 \| guidance no/);
   });
 });
 

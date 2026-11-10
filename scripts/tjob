@@ -162,6 +162,20 @@ elif mode == "status":
         wa = w["waste"]
         print("  waste: compaction %s | cancelled %d | pacer wait %s | 429 retries %d" % (
             tok(wa["compactionTokens"]), wa["cancelledJobs"], dur(wa["pacerWaitMs"]), wa["retries429"]))
+        dg = w.get("delegation") or {}
+        hub = dg.get("hub") or {}
+        jobs = dg.get("jobs") or {}
+        def subagents(counts):
+            return " ".join("%s:%d" % (k, v) for k, v in sorted((counts or {}).items())) or "none"
+        print("  delegation: hub %d/%d (%s) | jobs %d/%d (%s)" % (
+            hub.get("subagentCalls", 0), hub.get("subagentCalls", 0) + hub.get("edits", 0), pct(hub.get("ratio", 0)),
+            jobs.get("subagentCalls", 0), jobs.get("subagentCalls", 0) + jobs.get("edits", 0), pct(jobs.get("ratio", 0))))
+        for session in dg.get("sessions") or []:
+            print("    %s  subagents %s | edits %d | reads %d | bash %d | out %s | guidance %s" % (
+                session.get("label") or session.get("id") or "?",
+                subagents(session.get("subagents")),
+                session.get("edits", 0), session.get("reads", 0), session.get("bash", 0),
+                tok(session.get("outputTokens", 0)), "yes" if session.get("guidance") else "no"))
     eff("1h", s["efficiency"]["hour"])
     eff("24h", s["efficiency"]["day"])
 else:
