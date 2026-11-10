@@ -597,6 +597,62 @@ export const sessionsDb = {
   },
 
   /**
+   * Reports whether an indexed row already matches the provider's current
+   * metadata, so a synchronizer can skip an unchanged upsert.
+   *
+   * SQLite-backed providers re-read a cursor window on every scan. Without
+   * this check a row whose timestamp sits at the cursor boundary would be
+   * rewritten on every scan, which also makes the sidebar refresh loop.
+   */
+  isSessionUnchanged(
+    providerSessionId: string,
+    provider: string,
+    projectPath: string,
+    customName: string | undefined,
+    updatedAt: string | undefined,
+    jsonlPath: string | null
+  ): boolean {
+    const db = getConnection();
+    const row = db
+      .prepare(
+        `SELECT ${SESSION_ROW_COLUMNS}
+         FROM sessions
+         WHERE provider_session_id = ? AND provider = ?
+         ORDER BY updated_at DESC
+         LIMIT 1`
+      )
+      .get(providerSessionId, provider) as SessionRow | undefined;
+
+    if (!row) {
+      return false;
+    }
+
+    const normalizedProjectPath = normalizeProjectPathForProvider(provider, projectPath);
+    const normalizedUpdatedAt = normalizeTimestamp(updatedAt);
+    const existingUpdatedAt = normalizeTimestamp(row.updated_at);
+
+    if (row.project_path !== normalizedProjectPath) {
+      return false;
+    }
+    if ((row.custom_name ?? null) !== (customName ?? null)) {
+      return false;
+    }
+    if ((row.jsonl_path ?? null) !== (jsonlPath ?? null)) {
+      return false;
+    }
+    if (
+      row.isArchived
+      && normalizedUpdatedAt
+      && existingUpdatedAt
+      && new Date(normalizedUpdatedAt).getTime() > new Date(existingUpdatedAt).getTime()
+    ) {
+      return false;
+    }
+
+    return existingUpdatedAt === normalizedUpdatedAt;
+  },
+
+  /**
    * Reports whether the index holds any row for one provider.
    *
    * Provider synchronizers use this to tell a fresh/reset database (where a

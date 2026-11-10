@@ -25,7 +25,9 @@ advance past sessions that were never indexed.
 - File discovery treats a file as changed when `max(birthtime, mtime)` is past
   the cursor, and rethrows non-ENOENT read errors.
 - OpenCode/agy/zcode synchronizers rethrow read failures so a partial scan
-  cannot advance the cursor or prune sessions.
+  cannot advance the cursor or prune sessions. They also skip an upsert when
+  the indexed row already matches the provider's metadata, so a row sitting on
+  the cursor boundary cannot make the sidebar refresh loop.
 - Projects routes serve the existing index immediately, run the incremental
   scan in the background, and broadcast `projects_refresh` only when a clean
   scan indexed something. Watchers are installed before the initial scan,

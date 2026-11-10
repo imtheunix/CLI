@@ -28,6 +28,11 @@ type SynchronizeRowsResult = {
   firstSessionId: string | null;
 };
 
+type UpsertSessionResult = {
+  sessionId: string | null;
+  changed: boolean;
+};
+
 type OpenCodeChildSessionRow = {
   id: string;
 };
@@ -100,15 +105,17 @@ export class OpenCodeSessionSynchronizer implements IProviderSessionSynchronizer
       let processed = 0;
       let firstSessionId: string | null = null;
       for (const row of rows) {
-        const indexedSessionId = this.upsertSession(db, row);
-        if (!indexedSessionId) {
+        const result = this.upsertSession(db, row);
+        if (!result.sessionId) {
           continue;
         }
 
         if (!firstSessionId) {
-          firstSessionId = indexedSessionId;
+          firstSessionId = result.sessionId;
         }
-        processed += 1;
+        if (result.changed) {
+          processed += 1;
+        }
       }
 
       return { processed, firstSessionId };
@@ -135,11 +142,11 @@ export class OpenCodeSessionSynchronizer implements IProviderSessionSynchronizer
     }
   }
 
-  private upsertSession(db: Database.Database, row: OpenCodeSessionRow): string | null {
+  private upsertSession(db: Database.Database, row: OpenCodeSessionRow): UpsertSessionResult {
     const sessionId = readOptionalString(row.id);
     const projectPath = readOptionalString(row.directory) ?? readOptionalString(row.worktree);
     if (!sessionId || !projectPath) {
-      return null;
+      return { sessionId: null, changed: false };
     }
 
     const fallbackTitle = 'Untitled OpenCode Session';
@@ -167,19 +174,34 @@ export class OpenCodeSessionSynchronizer implements IProviderSessionSynchronizer
       nextName = readOptionalString(row.title) ?? this.readFirstUserText(db, sessionId);
     }
 
+    const normalizedName = normalizeSessionName(nextName, fallbackTitle);
+    const updatedAt = normalizeProviderTimestamp(row.time_updated ?? row.time_created);
+
+    // A cursor window can include a row whose timestamp sits exactly on the
+    // boundary. Skip the write when the indexed row already matches it.
+    if (
+      existingSession
+      && sessionsDb.isSessionUnchanged(sessionId, this.provider, projectPath, normalizedName, updatedAt, null)
+    ) {
+      return { sessionId: existingSession.session_id, changed: false };
+    }
+
     // OpenCode stores every session in one shared sqlite database, so jsonl_path
     // must stay null to avoid deleting opencode.db when one app session is removed.
     // Return the canonical stored row id so watcher-triggered sidebar updates
     // stay on the app session once provider_session_id has already been mapped.
-    return sessionsDb.createSession(
-      sessionId,
-      this.provider,
-      projectPath,
-      normalizeSessionName(nextName, fallbackTitle),
-      normalizeProviderTimestamp(row.time_created),
-      normalizeProviderTimestamp(row.time_updated ?? row.time_created),
-      null,
-    );
+    return {
+      sessionId: sessionsDb.createSession(
+        sessionId,
+        this.provider,
+        projectPath,
+        normalizedName,
+        normalizeProviderTimestamp(row.time_created),
+        updatedAt,
+        null,
+      ),
+      changed: true,
+    };
   }
 
   private readFirstUserText(db: Database.Database, sessionId: string): string | undefined {

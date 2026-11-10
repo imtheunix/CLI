@@ -295,6 +295,12 @@ test('OpenCode session synchronizer indexes sqlite sessions without deletable tr
         assert.equal(sessionsDb.getSessionById('app-child-session-1'), null);
         assert.equal(sessionsDb.getSessionByProviderSessionId('open-child-session-1'), null);
 
+        assert.equal(
+          await synchronizer.synchronize(),
+          0,
+          'a repeat scan does not re-upsert unchanged sqlite rows',
+        );
+
         sessionsDb.createAppSession('app-child-session-2', 'opencode', workspacePath);
         sessionsDb.assignProviderSessionId('app-child-session-2', 'open-child-session-1');
         await synchronizer.synchronize(new Date(1_700_000_004_500));
