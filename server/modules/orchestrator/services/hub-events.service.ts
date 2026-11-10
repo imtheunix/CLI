@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 // review_fyi: a low-risk review auto-approved; waiting: provider recovery needs the hub (or says when it resumes).
-export type HubEventState = 'review' | 'review_fyi' | 'blocked' | 'merge_failed' | 'turn_ended' | 'merged' | 'stalled' | 'waiting';
+export type HubEventState = 'review' | 'review_fyi' | 'blocked' | 'merge_failed' | 'turn_ended' | 'merged' | 'cancelled' | 'stalled' | 'waiting';
 
 export type HubEventInput = {
   jobId: string;

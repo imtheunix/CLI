@@ -173,7 +173,7 @@ export function buildHandoverNote(input: {
 export type OrchestratorMergeStepTiming = OrchestratorMergeStepEvent & { durationMs: number | null };
 
 /** Steps with nothing after them: their duration is not counted. */
-const RESTING_MERGE_STEPS = new Set<string>(['none', 'review', 'merged', 'blocked']);
+const RESTING_MERGE_STEPS = new Set<string>(['none', 'review', 'merged', 'blocked', 'cancelled']);
 
 /**
  * Used by the job view: a step lasts until the next one began; the job's current step until now, unless it is a
@@ -271,6 +271,8 @@ export function createJobsService(deps: {
   morphUsage?: MorphUsageService;
   /** Cancellation also stops this job's slotless automatic reviewer, when one is running. */
   abortRefutation?: (job: OrchestratorJobRow) => void;
+  /** The CI/CD queue's own cancel: stops a running step by its tracked process and takes the job out of the queue. */
+  withdrawFromMergeQueue?: (job: OrchestratorJobRow) => Promise<{ cancelled: boolean; reason?: string }>;
 }) {
   const now = deps.now ?? (() => new Date());
   const morphUsage = deps.morphUsage ?? createMorphUsageService({ config: deps.config, now });
@@ -990,15 +992,22 @@ export function createJobsService(deps: {
      * `tjob cancel`: the person said they do not want the job anymore (in
      * its session, where its agent runs this, or from a shell). It frees its
      * slot and leaves the CI/CD queue; branch and session are kept; a clean worktree is removed after the session stops.
-     * A merge already past its rebase is not taken back.
+     * Before the push the queue stops the step it is running; from the push on the job is left to merge.
      */
     async cancel(id: string): Promise<OrchestratorJobView> {
       const job = orchestratorJobsDb.get(id);
       if (!job) throw new AppError(`Job ${id} was not found`, { code: 'JOB_NOT_FOUND', statusCode: 404 });
-      if (['rebase', 'check', 'push', 'deploy', 'merged'].includes(job.merge_step)) {
-        throw new AppError(`Job ${id} is already in the CI/CD queue (${job.merge_step})`, { code: 'JOB_MERGING', statusCode: 409 });
+      if (['queued', 'rebase', 'check', 'push', 'deploy', 'merged'].includes(job.merge_step)) {
+        const withdrawn = await deps.withdrawFromMergeQueue?.(job);
+        if (!withdrawn?.cancelled) {
+          throw new AppError(
+            withdrawn?.reason ?? `Job ${id} is already in the CI/CD queue (${job.merge_step})`,
+            { code: 'JOB_MERGING', statusCode: 409 },
+          );
+        }
+      } else {
+        orchestratorJobsDb.update(id, { state: 'cancelled', merge_step: 'none', in_turn: 0 });
       }
-      orchestratorJobsDb.update(id, { state: 'cancelled', merge_step: 'none', in_turn: 0 });
       // Persist cancellation first: a late verdict is superseded even while the provider interrupt is in flight.
       try {
         deps.abortRefutation?.(job);

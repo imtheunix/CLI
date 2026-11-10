@@ -36,14 +36,19 @@ export function createOrchestratorModule(input: { runtime: ProviderRuntimeGatewa
   const config = () => loadOrchestratorConfig();
   const morphUsage = createMorphUsageService({ config });
   const refuteService = createRefuteService({ runtime: input.runtime, config });
+  const mergeQueueRef: { current: ReturnType<typeof createMergeQueueService> | null } = { current: null };
   const jobs = createJobsService({
     runtime: input.runtime,
     config,
     morphUsage,
     abortRefutation: (job) => refuteService.abort(job),
+    withdrawFromMergeQueue: (job) => mergeQueueRef.current
+      ? mergeQueueRef.current.cancel(job)
+      : Promise.resolve({ cancelled: false, reason: `Job ${job.id} is already in the CI/CD queue (${job.merge_step})` }),
   });
   const review = createReviewService({ jobs, config, refuteService });
   const mergeQueue = createMergeQueueService({ jobs, config });
+  mergeQueueRef.current = mergeQueue;
   const hubWake = createHubWakeService({ runtime: input.runtime, config });
   const health = createHealthService({
     config,

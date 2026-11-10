@@ -12,6 +12,7 @@
 #   tjob approve <id>       the orchestrating session (the hub) reviewed the branch: hand it to the CI/CD queue
 #   tjob retry <id>         a blocked merge goes on from where it stopped
 #   tjob cancel <id>        the person does not want the job anymore: frees its slot, leaves the CI/CD queue
+#                           (before the push; once it is pushing, the push cannot be undone and it will merge)
 #   tjob resume <id>        a cancelled or failed job takes a slot again
 #   tjob rollback <id> <turn> [--discard-untracked]  reset the job's worktree files to how an earlier turn left them (per-turn
 #                              checkpoint; refuses while the job runs, and when untracked files would be lost unless

@@ -9,7 +9,7 @@ export type OrchestratorJobState = 'queued' | 'preparing' | 'active' | 'done' | 
 export type OrchestratorMergeStep = 'none' | 'review' | 'queued' | 'rebase' | 'check' | 'push' | 'deploy' | 'merged' | 'blocked';
 
 /** One entry of a job's CI/CD queue history: a step (or `check:run`, its check starting) and when it began. */
-export type OrchestratorMergeStepEvent = { step: OrchestratorMergeStep | 'check:run'; at: string };
+export type OrchestratorMergeStepEvent = { step: OrchestratorMergeStep | 'check:run' | 'cancelled'; at: string; by?: string };
 
 /** Automatic-review stages persisted on a job so the orchestrator can resume after a restart. */
 export type OrchestratorReviewStep = 'none' | 'gate' | 'refute' | 'policy' | 'fix' | 'hub' | 'approved';
@@ -225,10 +225,10 @@ export const orchestratorJobsDb = {
   },
 
   /** Appends to the step history without changing the step (`check:run`: the check got its slot). */
-  recordMergeStep(id: string, step: OrchestratorMergeStepEvent['step'], at = new Date().toISOString()): void {
+  recordMergeStep(id: string, step: OrchestratorMergeStepEvent['step'], at = new Date().toISOString(), by?: string): void {
     const current = this.get(id);
     if (!current) return;
-    const history = [...readMergeStepHistory(current), { step, at }];
+    const history = [...readMergeStepHistory(current), { step, at, ...(by ? { by } : {}) }];
     getConnection().prepare('UPDATE orchestrator_jobs SET merge_step_history = ? WHERE id = ?').run(JSON.stringify(history), id);
   },
 };

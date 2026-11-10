@@ -75,6 +75,44 @@ export function createMergeQueueService(deps: {
   const inFlight = new Set<string>();
   // The jobs whose check command is running. One server runs the queue for the whole workstation.
   const runningChecks = new Set<string>();
+  // The process each job's current step is running, so `tjob cancel` stops it by the pid it started.
+  const runningProcesses = new Map<string, { pid: number; group: boolean }>();
+  // Bumped when a job is cancelled: a step that was already running must not move the job on afterwards.
+  const runTokens = new Map<string, number>();
+
+  function tokenFor(id: string): number {
+    return runTokens.get(id) ?? 0;
+  }
+
+  function bumpToken(id: string): void {
+    runTokens.set(id, tokenFor(id) + 1);
+  }
+
+  function stale(id: string, token: number): boolean {
+    return tokenFor(id) !== token;
+  }
+
+  /** Runs a step's command and remembers its pid; `group` kills the whole detached process group. */
+  async function runTracked(
+    job: OrchestratorJobRow,
+    command: string,
+    args: string[],
+    options: NonNullable<Parameters<typeof run>[2]>,
+    group = false,
+  ): Promise<CommandResult> {
+    let pid: number | undefined;
+    try {
+      return await run(command, args, {
+        ...options,
+        onSpawn: (spawned) => {
+          pid = spawned;
+          runningProcesses.set(job.id, { pid: spawned, group });
+        },
+      });
+    } finally {
+      if (pid !== undefined && runningProcesses.get(job.id)?.pid === pid) runningProcesses.delete(job.id);
+    }
+  }
 
   function setStep(job: OrchestratorJobRow, step: OrchestratorMergeStep, extra: Parameters<typeof orchestratorJobsDb.update>[1] = {}): OrchestratorJobRow {
     const updated = orchestratorJobsDb.update(job.id, { merge_step: step, ...extra }) as OrchestratorJobRow;
@@ -112,13 +150,14 @@ export function createMergeQueueService(deps: {
   }
 
   /** Lets Gemini Flash resolve the conflicts of each stop of the rebase, then checks it left no markers. */
-  async function resolveConflicts(job: OrchestratorJobRow): Promise<string | null> {
+  async function resolveConflicts(job: OrchestratorJobRow, token: number): Promise<string | null> {
     const { command, model } = deps.config().conflictResolver;
     for (let round = 0; round < MAX_RESOLVE_ROUNDS; round += 1) {
+      if (stale(job.id, token)) return null;
       if (!await rebaseInProgress(job.worktree_path)) return null;
       const conflicted = (await git(job.worktree_path, 'diff', '--name-only', '--diff-filter=U')).stdout.trim();
       if (!conflicted) {
-        const proceed = await run('git', ['-c', 'core.editor=true', 'rebase', '--continue'], {
+        const proceed = await runTracked(job, 'git', ['-c', 'core.editor=true', 'rebase', '--continue'], {
           cwd: job.worktree_path,
           env: { ...process.env, GIT_EDITOR: 'true' },
         });
@@ -136,10 +175,11 @@ export function createMergeQueueService(deps: {
         'Then `git add` the resolved files and run `git -c core.editor=true rebase --continue`.',
         'If the conflicts cannot be resolved safely, run `git rebase --abort` and explain why.',
       ].join('\n\n');
-      const resolution = await run(command, ['-p', prompt, '--model', model, '--dangerously-skip-permissions'], {
+      const resolution = await runTracked(job, command, ['-p', prompt, '--model', model, '--dangerously-skip-permissions'], {
         cwd: job.worktree_path,
         timeoutMs: 20 * 60_000,
       });
+      if (stale(job.id, token)) return null;
       if (resolution.code !== 0) return `The conflict resolver failed: ${tail(resolution.stderr || resolution.stdout, 20)}`;
     }
     if (await rebaseInProgress(job.worktree_path)) return `Conflicts were still left after ${MAX_RESOLVE_ROUNDS} rounds.`;
@@ -155,29 +195,43 @@ export function createMergeQueueService(deps: {
   }
 
   async function stepRebase(job: OrchestratorJobRow): Promise<void> {
+    const token = tokenFor(job.id);
     const cwd = job.worktree_path;
     if (await rebaseInProgress(cwd)) await git(cwd, 'rebase', '--abort'); // cut short by a restart
+    if (stale(job.id, token)) return;
     const status = await git(cwd, 'status', '--porcelain');
+    if (stale(job.id, token)) return;
     if (status.stdout.trim()) {
       await backToAgent(job, `the worktree has uncommitted changes:\n${tail(status.stdout, 30)}\nCommit them, or remove what should not be there.`);
       return;
     }
     const fetch = await git(cwd, 'fetch', '--quiet', 'origin', job.base_branch);
+    if (stale(job.id, token)) return;
     if (fetch.code !== 0) throw new Error(`git fetch failed: ${tail(fetch.stderr, 10)}`);
-    const rebase = await git(cwd, 'rebase', `origin/${job.base_branch}`);
+    const rebase = await runTracked(job, 'git', ['rebase', `origin/${job.base_branch}`], { cwd });
+    if (stale(job.id, token)) {
+      if (await rebaseInProgress(cwd)) await git(cwd, 'rebase', '--abort');
+      return;
+    }
     if (rebase.code !== 0) {
-      const failure = await resolveConflicts(job);
+      const failure = await resolveConflicts(job, token);
+      if (stale(job.id, token)) {
+        if (await rebaseInProgress(cwd)) await git(cwd, 'rebase', '--abort');
+        return;
+      }
       if (failure) {
         if (await rebaseInProgress(cwd)) await git(cwd, 'rebase', '--abort');
         await backToAgent(job, `the rebase onto origin/${job.base_branch} stopped on conflicts the resolver could not settle (${failure.split('\n')[0]}). Run git fetch origin && git rebase origin/${job.base_branch} yourself and resolve them.`);
         return;
       }
       const markers = await leftoverMarkers(job);
+      if (stale(job.id, token)) return;
       if (markers) {
         await backToAgent(job, `the conflict resolution after rebasing onto origin/${job.base_branch} left conflict markers:\n${tail(markers, 20)}`);
         return;
       }
     }
+    if (stale(job.id, token)) return;
     setStep(job, 'check');
   }
 
@@ -190,10 +244,12 @@ export function createMergeQueueService(deps: {
     // Taken before the first await: the steps of one tick start side by side. No free slot: wait in `check`.
     if (runningChecks.size >= Math.max(1, deps.config().maxConcurrentChecks)) return;
     runningChecks.add(job.id);
+    const token = tokenFor(job.id);
     let key: string | null = null;
     try {
       // Process-bound: a check cut by a restart is dropped and run again; one that passed is not.
       const head = await revParse(job.worktree_path, 'HEAD');
+      if (stale(job.id, token)) return;
       const checkKey = `check:${job.id}:${head ?? 'unknown'}:${enteredAt(job, 'check')}`;
       const begun = outbox.begin({ key: checkKey, jobId: job.id, kind: 'merge_check', replay: 'process_bound' });
       if (begun.status === 'skipped') {
@@ -204,16 +260,26 @@ export function createMergeQueueService(deps: {
       key = checkKey;
       orchestratorJobsDb.recordMergeStep(job.id, 'check:run');
       const command = await resolveCheckCommand(job.repo_path, job.worktree_path, deps.config().checks);
+      if (stale(job.id, token)) {
+        outbox.finish(key, { ok: false, error: 'cancelled' });
+        key = null;
+        return;
+      }
       if (command) {
         const logPath = getCheckLogPath(job.worktree_path);
         const started = now();
         // Below the agents' own work on the CPU: the workstation stays usable while a gate runs.
-        const result = await run('nice', ['-n', '10', '/bin/bash', '-lc', command], {
+        const result = await runTracked(job, 'nice', ['-n', '10', '/bin/bash', '-lc', command], {
           cwd: job.worktree_path,
           timeoutMs: CHECK_TIMEOUT_MS,
           env: checkEnvironment(),
           logPath,
-        });
+        }, true);
+        if (stale(job.id, token)) {
+          outbox.finish(key, { ok: false, error: 'cancelled' });
+          key = null;
+          return;
+        }
         if (result.code !== 0 || result.timedOut || result.signal) {
           const output = result.stdout + result.stderr;
           // The tail of a long test run is its summary; the failing tests' names are further up.
@@ -228,6 +294,7 @@ export function createMergeQueueService(deps: {
       }
       outbox.finish(key, { ok: true });
       key = null;
+      if (stale(job.id, token)) return;
       setStep(job, 'push');
     } catch (error) {
       if (key) outbox.finish(key, { ok: false, error: error instanceof Error ? error.message : String(error) });
@@ -476,6 +543,38 @@ export function createMergeQueueService(deps: {
     /** Startup: replay handlers for the safe effects the queue records. */
     effectHandlers(): { push: EffectReplayHandler } {
       return { push: replayPush };
+    },
+
+    /**
+     * `tjob cancel` for a job in the queue: before the push, stop the step it is running (by the pid the queue
+     * started), take it out of the queue and keep its branch. A push cannot be undone safely, so from `push` on
+     * the job is left to merge.
+     */
+    async cancel(job: OrchestratorJobRow): Promise<{ cancelled: boolean; reason?: string }> {
+      if (['push', 'deploy', 'merged'].includes(job.merge_step)) {
+        return { cancelled: false, reason: `Job ${job.id} is already pushing; it will merge` };
+      }
+      if (!['queued', 'rebase', 'check'].includes(job.merge_step)) {
+        return { cancelled: false, reason: `Job ${job.id} is not in the CI/CD queue (${job.merge_step})` };
+      }
+      const step = job.merge_step;
+      bumpToken(job.id);
+      const running = runningProcesses.get(job.id);
+      if (running) {
+        const signal = (name: NodeJS.Signals) => {
+          try { process.kill(running.group ? -running.pid : running.pid, name); } catch { /* already exited */ }
+        };
+        signal('SIGTERM');
+        const escalation = setTimeout(() => signal('SIGKILL'), 1_000);
+        escalation.unref?.();
+      }
+      if (step === 'rebase') {
+        try { await git(job.worktree_path, 'rebase', '--abort'); } catch { /* no rebase in progress */ }
+      }
+      orchestratorJobsDb.update(job.id, { state: 'cancelled', merge_step: 'none', in_turn: 0, last_error: null });
+      orchestratorJobsDb.recordMergeStep(job.id, 'cancelled', new Date(now()).toISOString(), 'tjob cancel');
+      appendHubEvent({ jobId: job.id, state: 'cancelled', title: job.title, reason: `cancelled from the CI/CD queue at ${step}; branch kept` });
+      return { cancelled: true };
     },
 
     /** `tjob retry`: a blocked job goes on from where it was: watching its deploy if it was pushed, else from the rebase. */

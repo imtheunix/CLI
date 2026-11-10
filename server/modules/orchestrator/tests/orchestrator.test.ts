@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-import { closeConnection, initializeDatabase, orchestratorEffectsDb, orchestratorJobsDb, readBackendHandovers, sessionsDb, userDb } from '@/modules/database/index.js';
+import { closeConnection, initializeDatabase, orchestratorEffectsDb, orchestratorJobsDb, readBackendHandovers, readMergeStepHistory, sessionsDb, userDb } from '@/modules/database/index.js';
 import type { OrchestratorJobRow } from '@/modules/database/index.js';
 import { chatRunRegistry } from '@/modules/websocket/index.js';
 import type { NormalizedMessage } from '@/shared/types.js';
@@ -16,7 +16,8 @@ import { createMergeQueueService } from '../services/merge-queue.service.js';
 import { computeMorphUsage } from '../services/morph-usage.service.js';
 import { loadOrchestratorConfig } from '../services/orchestrator-config.service.js';
 import type { OrchestratorConfig } from '../services/orchestrator-config.service.js';
-import { checkEnvironment, resolveCheckCommand, runCommand } from '../services/workspace.service.js';
+import { checkEnvironment, getCheckLogPath, resolveCheckCommand, runCommand } from '../services/workspace.service.js';
+import type { CommandResult } from '../services/workspace.service.js';
 import { getHubEventsLogPath, onHubEvent } from '../services/hub-events.service.js';
 import { buildHubWakeMessage, parseHubEventLine } from '../services/hub-wake.service.js';
 
@@ -697,6 +698,108 @@ test('main moving during the queue sends the job back to rebase, not to a failed
     await drain(queue, () => ctx.job(id), ['deploy']);
     git(ctx.upstream, 'pull', '-q', 'origin', 'main');
     assert.ok(existsSync(path.join(ctx.upstream, 'feature.txt')));
+  });
+});
+
+test('tjob cancel during the check stops the check by its pid, leaves the queue and keeps the branch', async () => {
+  await withWorkspace(async (ctx) => {
+    const id = await finishedJob(ctx, (worktree) => commitFile(worktree, 'feature.txt', 'f\n', 'feature'));
+    const next = await finishedJob(ctx, (worktree) => commitFile(worktree, 'next.txt', 'n\n', 'next'));
+    const queue = createMergeQueueService({ jobs: ctx.jobs, config: () => ctx.config });
+    await drain(queue, () => ctx.job(id), ['check']);
+
+    const events: string[] = [];
+    const off = onHubEvent((event) => { if (event.jobId === id) events.push(event.state); });
+    try {
+      const ticking = queue.tick();
+      await eventually(() => {
+        try {
+          return readFileSync(getCheckLogPath(ctx.job(id).worktree_path), 'utf8').includes('check started');
+        } catch {
+          return false;
+        }
+      }, 'the check to start');
+      const result = await queue.cancel(ctx.job(id));
+      assert.equal(result.cancelled, true);
+      await ticking;
+    } finally {
+      off();
+    }
+
+    const cancelled = ctx.job(id);
+    assert.equal(cancelled.state, 'cancelled');
+    assert.equal(cancelled.merge_step, 'none');
+    assert.equal(git(ctx.repo, 'rev-parse', '--verify', cancelled.branch), git(cancelled.worktree_path, 'rev-parse', 'HEAD'));
+    assert.ok(readMergeStepHistory(cancelled).some((event) => event.step === 'cancelled' && event.by === 'tjob cancel'));
+    assert.ok(events.includes('cancelled'));
+
+    // The cancelled job no longer holds the repository's lane: the next queued job moves on.
+    await drain(queue, () => ctx.job(next), ['check', 'deploy']);
+    assert.notEqual(ctx.job(next).merge_step, 'queued');
+  }, (config) => { config.checks = { demo: 'echo check started; sleep 30' }; });
+});
+
+test('tjob cancel during the rebase stops the step and leaves the queue', async () => {
+  await withWorkspace(async (ctx) => {
+    const id = await finishedJob(ctx, (worktree) => commitFile(worktree, 'feature.txt', 'f\n', 'feature'));
+    let release!: (result: CommandResult) => void;
+    const blocked = new Promise<CommandResult>((resolve) => { release = resolve; });
+    let rebaseStarted!: () => void;
+    const started = new Promise<void>((resolve) => { rebaseStarted = resolve; });
+    const run: typeof runCommand = (command, args, options) => {
+      if (command === 'git' && args[0] === 'rebase' && args[1] === 'origin/main') {
+        rebaseStarted();
+        return blocked;
+      }
+      return runCommand(command, args, options);
+    };
+    const queue = createMergeQueueService({ jobs: ctx.jobs, config: () => ctx.config, run });
+    await queue.tick();
+    assert.equal(ctx.job(id).merge_step, 'rebase');
+
+    const ticking = queue.tick();
+    await started;
+    const result = await queue.cancel(ctx.job(id));
+    assert.equal(result.cancelled, true);
+    release({ code: 1, stdout: '', stderr: 'terminated' });
+    await ticking;
+
+    const cancelled = ctx.job(id);
+    assert.equal(cancelled.state, 'cancelled');
+    assert.equal(cancelled.merge_step, 'none');
+    assert.ok(git(ctx.repo, 'rev-parse', '--verify', cancelled.branch));
+    assert.ok(readMergeStepHistory(cancelled).some((event) => event.step === 'cancelled' && event.by === 'tjob cancel'));
+  });
+});
+
+for (const step of ['push', 'deploy'] as const) {
+  test(`tjob cancel at ${step} is refused: a push cannot be undone`, async () => {
+    await withWorkspace(async (ctx) => {
+      const id = await finishedJob(ctx, (worktree) => commitFile(worktree, 'feature.txt', 'f\n', 'feature'));
+      const queue = createMergeQueueService({ jobs: ctx.jobs, config: () => ctx.config });
+      await drain(queue, () => ctx.job(id), [step]);
+      assert.equal(ctx.job(id).merge_step, step);
+
+      const result = await queue.cancel(ctx.job(id));
+      assert.equal(result.cancelled, false);
+      assert.match(result.reason ?? '', /already pushing; it will merge/);
+      assert.equal(ctx.job(id).merge_step, step);
+      assert.equal(ctx.job(id).state, 'done');
+    });
+  });
+}
+
+test('tjob cancel through the jobs service withdraws a job from the queue', async () => {
+  await withWorkspace(async (ctx) => {
+    const id = await finishedJob(ctx, (worktree) => commitFile(worktree, 'feature.txt', 'f\n', 'feature'));
+    const queue = createMergeQueueService({ jobs: ctx.jobs, config: () => ctx.config });
+    const jobs = ctx.createJobs({ withdrawFromMergeQueue: (job) => queue.cancel(job) });
+    await drain(queue, () => ctx.job(id), ['check']);
+
+    const view = await jobs.cancel(id);
+    assert.equal(view.state, 'cancelled');
+    assert.equal(view.merge_step, 'none');
+    assert.ok(readMergeStepHistory(ctx.job(id)).some((event) => event.step === 'cancelled' && event.by === 'tjob cancel'));
   });
 });
 

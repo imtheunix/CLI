@@ -124,6 +124,8 @@ export function formatHubEventStateDescription(event: LoggedHubEvent): string {
       return `merge failed, ${event.reason}`;
     case 'merged':
       return `merged, ${event.reason}`;
+    case 'cancelled':
+      return `cancelled, ${event.reason}`;
     case 'stalled':
       return `stalled, ${event.reason}`;
     default:
