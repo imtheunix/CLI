@@ -4,6 +4,7 @@ import { runGitCommand } from '@/modules/worktrees/index.js';
 import { chatRunRegistry } from '@/modules/websocket/index.js';
 
 import { appendHubEvent } from './hub-events.service.js';
+import { lastJobActivityMs } from './job-activity.service.js';
 import type { OrchestratorConfig } from './orchestrator-config.service.js';
 import { readLimitRecovery } from './usage-recovery.service.js';
 
@@ -22,6 +23,9 @@ export type HealthFlag = {
 /** The HEAD of a job's worktree: its commit and when that commit was made. */
 export type WorktreeHead = { sha: string; committedAtMs: number };
 
+/** What a nudge attempt actually did: delivered, refused by a live run, or neither. */
+export type NudgeOutcome = { started: boolean; refused: boolean };
+
 /** Dependencies injected into createHealthService. */
 export type HealthDependencies = {
   config: () => OrchestratorConfig;
@@ -29,7 +33,7 @@ export type HealthDependencies = {
   /** Reads a worktree's HEAD; defaults to git. Tests inject a fake. */
   readHead?: (worktreePath: string) => Promise<WorktreeHead | null>;
   /** Sends a message into a job's own session; defaults to the jobs service's notify path. */
-  sendToJob?: (job: OrchestratorJobRow, message: string) => Promise<boolean>;
+  sendToJob?: (job: OrchestratorJobRow, message: string) => Promise<boolean | NudgeOutcome>;
 };
 
 /** The no-commit nudge: sent once per unchanged HEAD before the hub event. */
@@ -67,10 +71,19 @@ function isBusy(job: OrchestratorJobRow): boolean {
   return Boolean(job.session_id && chatRunRegistry.isProcessing(job.session_id)) || Boolean(job.in_turn);
 }
 
-/** A job whose last turn failed, or whose recovery gave up and waits for the hub. */
+/**
+ * A job whose last turn failed, or whose recovery gave up and waits for the hub.
+ * An armed usage-limit/auth recovery is silent by design: it has a resume
+ * scheduled, so it is not holding a slot for the hub to cancel or resume.
+ */
 function isWaitingForHub(job: OrchestratorJobRow): boolean {
-  if (job.last_error) return true;
-  return Boolean(readLimitRecovery(job.limit_recovery)?.gaveUp);
+  const recovery = readLimitRecovery(job.limit_recovery);
+  if (recovery) return recovery.gaveUp;
+  return Boolean(job.last_error);
+}
+
+function normalizeNudge(result: boolean | NudgeOutcome): NudgeOutcome {
+  return typeof result === 'boolean' ? { started: result, refused: !result } : result;
 }
 
 async function defaultReadHead(worktreePath: string): Promise<WorktreeHead | null> {
@@ -121,30 +134,60 @@ export function createHealthService(deps: HealthDependencies) {
     state.noCommitEventAtMs = null;
   }
 
+  /**
+   * The row as it is now, but only if it is still the same live job the tick
+   * snapshotted. A cancellation, completion or a fresh retry that replaced the
+   * row must not receive an event for work it no longer owns.
+   */
+  function currentLiveJob(job: OrchestratorJobRow, states: OrchestratorJobRow['state'][]): OrchestratorJobRow | null {
+    const current = orchestratorJobsDb.get(job.id);
+    if (!current) return null;
+    if (!states.includes(current.state)) return null;
+    if (current.created_at !== job.created_at) return null;
+    if (current.session_id !== job.session_id) return null;
+    return current;
+  }
+
+  function emitNoCommit(job: OrchestratorJobRow, state: JobHealthState, nowMs: number): void {
+    const current = currentLiveJob(job, ['active']);
+    if (!current) return;
+    appendHubEvent({
+      jobId: current.id,
+      state: 'stalled',
+      title: current.title,
+      reason: `no commit for ${minutes(nowMs - state.headSinceMs)}m`,
+    });
+    state.noCommitEventAtMs = nowMs;
+  }
+
   async function checkNoCommit(job: OrchestratorJobRow, state: JobHealthState, nowMs: number, noCommitMs: number): Promise<void> {
     if (!job.worktree_path) return;
     const head = await readHead(job.worktree_path);
     if (!head) return;
+    // An injected reader can hand back a non-finite commit time; fail closed
+    // instead of turning it into an immediate nudge.
+    if (!Number.isFinite(head.committedAtMs)) return;
     if (state.headSha !== head.sha) {
       resetNoCommit(state, head, job, nowMs);
     }
     if (!isBusy(job)) return;
     if (nowMs - state.headSinceMs < noCommitMs) return;
+    if (state.noCommitEventAtMs !== null) return;
 
     if (state.nudgedAtMs === null) {
-      const sent = await sendToJob(job, NO_COMMIT_NUDGE);
-      if (sent) state.nudgedAtMs = nowMs;
+      const outcome = normalizeNudge(await sendToJob(job, NO_COMMIT_NUDGE));
+      if (outcome.started) {
+        state.nudgedAtMs = nowMs;
+        return;
+      }
+      // A live run owns the session, so no nudge can be delivered until it ends.
+      // Waiting another 15 minutes for an impossible nudge would hide the
+      // condition; tell the hub now. A non-refusal failure is retried next tick.
+      if (outcome.refused) emitNoCommit(job, state, nowMs);
       return;
     }
-    if (state.noCommitEventAtMs !== null) return;
     if (nowMs - state.nudgedAtMs < NO_COMMIT_EVENT_DELAY_MS) return;
-    appendHubEvent({
-      jobId: job.id,
-      state: 'stalled',
-      title: job.title,
-      reason: `no commit for ${minutes(nowMs - state.headSinceMs)}m`,
-    });
-    state.noCommitEventAtMs = nowMs;
+    emitNoCommit(job, state, nowMs);
   }
 
   function checkOvertime(job: OrchestratorJobRow, state: JobHealthState, nowMs: number, maxRunMs: number): void {
@@ -153,11 +196,17 @@ export function createHealthService(deps: HealthDependencies) {
     if (created === null) return;
     const runningMs = nowMs - created;
     if (runningMs < maxRunMs) return;
+    // Old is not the same as dead: a run still producing transcript/run activity
+    // is healthy, however long it has been going. Only an observably idle run is
+    // overdue; a genuinely dead one still alerts here (and in hub-wake).
+    if (nowMs - lastJobActivityMs(job, nowMs) < maxRunMs) return;
     if (state.overtimeEventAtMs !== null && nowMs - state.overtimeEventAtMs < EVENT_DEBOUNCE_MS) return;
+    const current = currentLiveJob(job, ['active']);
+    if (!current) return;
     appendHubEvent({
-      jobId: job.id,
+      jobId: current.id,
       state: 'stalled',
-      title: job.title,
+      title: current.title,
       reason: `over ${minutes(maxRunMs)} min: split or stop`,
     });
     state.overtimeEventAtMs = nowMs;
@@ -170,10 +219,12 @@ export function createHealthService(deps: HealthDependencies) {
     const since = parseTimestamp(job.updated_at);
     if (since === null || nowMs - since < deadSlotMs) return;
     if (state.deadSlotEventAtMs !== null && nowMs - state.deadSlotEventAtMs < EVENT_DEBOUNCE_MS) return;
+    const current = currentLiveJob(job, ['active', 'preparing']);
+    if (!current) return;
     appendHubEvent({
-      jobId: job.id,
+      jobId: current.id,
       state: 'stalled',
-      title: job.title,
+      title: current.title,
       reason: `holding a slot: cancel or resume (${minutes(nowMs - since)}m)`,
     });
     state.deadSlotEventAtMs = nowMs;
@@ -193,7 +244,8 @@ export function createHealthService(deps: HealthDependencies) {
     }
     if (job.state === 'active') {
       const created = parseTimestamp(job.created_at);
-      if (created !== null && nowMs - created >= config.maxRunMin * 60_000) {
+      const maxRunMs = config.maxRunMin * 60_000;
+      if (created !== null && nowMs - created >= maxRunMs && nowMs - lastJobActivityMs(job, nowMs) >= maxRunMs) {
         const sinceMs = nowMs - created;
         flags.push({ condition: 'overtime', label: `over ${minutes(config.maxRunMin)}m`, sinceMs });
       }

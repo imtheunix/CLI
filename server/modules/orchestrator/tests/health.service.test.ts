@@ -18,7 +18,7 @@ import type { OrchestratorJobRow } from '@/modules/database/index.js';
 import { chatRunRegistry } from '@/modules/websocket/index.js';
 
 import { createHealthService, NO_COMMIT_NUDGE } from '../services/health.service.js';
-import type { WorktreeHead } from '../services/health.service.js';
+import type { HealthDependencies, WorktreeHead } from '../services/health.service.js';
 import { parseHubEventLine } from '../services/hub-wake.service.js';
 import { loadOrchestratorConfig } from '../services/orchestrator-config.service.js';
 import type { OrchestratorConfig } from '../services/orchestrator-config.service.js';
@@ -107,7 +107,7 @@ function serviceFor(ctx: {
   clock: { now: Date };
   heads: Map<string, WorktreeHead>;
   sent: Sent[];
-}) {
+}, overrides: Partial<HealthDependencies> = {}) {
   return createHealthService({
     config: () => ctx.config,
     now: () => ctx.clock.now,
@@ -115,6 +115,48 @@ function serviceFor(ctx: {
     sendToJob: async (job, message) => {
       ctx.sent.push({ jobId: job.id, message });
       return true;
+    },
+    ...overrides,
+  });
+}
+
+function armedRecovery(ctx: { clock: { now: Date } }, gaveUp = false): string {
+  return JSON.stringify({
+    key: 'recovery-key',
+    kind: 'usage_limit',
+    resetAt: new Date(ctx.clock.now.getTime() + 2 * 60 * 60_000).toISOString(),
+    dueAt: new Date(ctx.clock.now.getTime() + 2 * 60 * 60_000).toISOString(),
+    attempt: 1,
+    firstFailedAt: new Date(ctx.clock.now.getTime() - 21 * 60_000).toISOString(),
+    delivered: false,
+    gaveUp,
+    reason: 'usage cap reached; the provider stated a reset',
+  });
+}
+
+async function realJobsService(ctx: { config: OrchestratorConfig; clock: { now: Date } }) {
+  const { createJobsService } = await import('../services/jobs.service.js');
+  return createJobsService({
+    runtime: {
+      hasRuntime: () => true,
+      hasBackgroundWork: () => false,
+      stopBackgroundTask: async () => false,
+      resolveToolApproval: () => undefined,
+      getPendingApprovalsForSession: () => [],
+      abort: async () => true,
+      run: async () => undefined,
+    },
+    config: () => ctx.config,
+    probeZcode: async () => ({ ok: true }),
+    morphUsage: {
+      usage: () => ({
+        source: 'none', at: ctx.clock.now.toISOString(),
+        groups: {
+          kimi: { group: 'kimi', uncachedIn: 0, out: 0, caps: { uncachedIn: 1, out: 1 }, minutes: [] },
+          deepseek: { group: 'deepseek', uncachedIn: 0, out: 0, caps: { uncachedIn: 1, out: 1 }, minutes: [] },
+        },
+      }),
+      admitted: () => true,
     },
   });
 }
@@ -199,6 +241,8 @@ test('overtime: fires once at maxRunMin and again only after the 30 min debounce
     ctx.createJob('long', {
       state: 'active',
       created_at: new Date(ctx.clock.now.getTime() - 31 * 60_000).toISOString(),
+      // No activity since it started: an observably idle run, not a live one.
+      updated_at: new Date(ctx.clock.now.getTime() - 31 * 60_000).toISOString(),
     });
     const service = serviceFor(ctx);
 
@@ -247,8 +291,8 @@ test('health flags are exposed for status and disabled config emits nothing', as
       in_turn: 1,
       session_id: 'session-flagged',
       created_at: new Date(ctx.clock.now.getTime() - 50 * 60_000).toISOString(),
+      updated_at: new Date(ctx.clock.now.getTime() - 50 * 60_000).toISOString(),
     });
-    startBusy(job.session_id!);
     ctx.heads.set('flagged', { sha: 'ddd', committedAtMs: ctx.clock.now.getTime() - 50 * 60_000 });
     const service = serviceFor(ctx);
     await service.tick();
@@ -262,6 +306,172 @@ test('health flags are exposed for status and disabled config emits nothing', as
     await service.tick();
     assert.equal(ctx.events().length, before, 'disabled health emits nothing');
     assert.equal(service.flags().size, 0);
+  });
+});
+
+test('no commit: a real busy run refuses the nudge, so the hub is told now and in_turn is kept', async () => {
+  await withHealthContext(async (ctx) => {
+    ctx.config.health.maxRunMin = 1_000;
+    const jobs = await realJobsService(ctx);
+    const sessionId = sessionsDb.createSession('sess-real-busy', 'claude', ctx.dir, 'Real busy');
+    const job = ctx.createJob('real-busy', {
+      state: 'active',
+      in_turn: 1,
+      session_id: sessionId,
+      backend: 'claude',
+      created_at: new Date(ctx.clock.now.getTime() - 60 * 60_000).toISOString(),
+    });
+    startBusy(sessionId);
+    ctx.heads.set('real-busy', { sha: 'aaa', committedAtMs: ctx.clock.now.getTime() - 50 * 60_000 });
+
+    // Exactly the module wiring: health -> jobs.notifyWithOutcome -> runDetachedChatTurn.
+    const service = createHealthService({
+      config: () => ctx.config,
+      now: () => ctx.clock.now,
+      readHead: async (worktreePath) => ctx.heads.get(path.basename(worktreePath)) ?? null,
+      sendToJob: (row, message) => jobs.notifyWithOutcome(row, message),
+    });
+
+    await service.tick();
+    const events = ctx.events();
+    assert.equal(events.length, 1, 'a refused nudge escalates to the hub instead of waiting 15 impossible minutes');
+    assert.match(events[0]!.reason, /no commit for \d+m/);
+    assert.equal((orchestratorJobsDb.get(job.id) as OrchestratorJobRow).in_turn, 1, 'the live run keeps its in_turn flag');
+    assert.equal(chatRunRegistry.isProcessing(sessionId), true, 'the run is still processing');
+
+    ctx.clock.advance(60);
+    await service.tick();
+    assert.equal(ctx.events().length, 1, 'one event per unchanged HEAD');
+  });
+});
+
+test('dead slot: an armed auto-recovery is not waiting for the hub, a gave-up one still is', async () => {
+  await withHealthContext(async (ctx) => {
+    ctx.createJob('armed', {
+      state: 'active',
+      in_turn: 0,
+      backend: 'claude',
+      last_error: 'usage_limit: usage cap reached; the provider stated a reset',
+      limit_recovery: armedRecovery(ctx),
+      created_at: new Date(ctx.clock.now.getTime() - 2 * 60_000).toISOString(),
+      updated_at: new Date(ctx.clock.now.getTime() - 21 * 60_000).toISOString(),
+    });
+    ctx.createJob('gave-up', {
+      state: 'active',
+      in_turn: 0,
+      backend: 'claude',
+      last_error: 'usage_limit: usage cap reached; the provider stated a reset',
+      limit_recovery: armedRecovery(ctx, true),
+      created_at: new Date(ctx.clock.now.getTime() - 2 * 60_000).toISOString(),
+      updated_at: new Date(ctx.clock.now.getTime() - 21 * 60_000).toISOString(),
+    });
+    const service = serviceFor(ctx);
+
+    await service.tick();
+    const events = ctx.events();
+    assert.equal(events.length, 1, 'only the gave-up recovery holds a slot for the hub');
+    assert.equal(events[0]!.jobId, 'gave-up');
+    assert.match(events[0]!.reason, /holding a slot: cancel or resume/);
+  });
+});
+
+test('dead slot: a successful non-aborted turn clears a stale usage-limit last_error', async () => {
+  await withHealthContext(async (ctx) => {
+    const jobs = await realJobsService(ctx);
+    const sessionId = sessionsDb.createSession('sess-recovered', 'claude', ctx.dir, 'Recovered');
+    const job = ctx.createJob('recovered', {
+      state: 'active',
+      in_turn: 0,
+      session_id: sessionId,
+      backend: 'claude',
+      last_error: 'usage_limit: usage cap reached; the provider stated a reset',
+      limit_recovery: null,
+      updated_at: new Date(ctx.clock.now.getTime() - 21 * 60_000).toISOString(),
+    });
+
+    jobs.handleRunCompleted({ appSessionId: sessionId, exitCode: 0, aborted: false });
+    await jobs.afterCheckpoints();
+
+    assert.equal((orchestratorJobsDb.get(job.id) as OrchestratorJobRow).last_error, null, 'the stale error is gone');
+    const service = serviceFor(ctx);
+    await service.tick();
+    assert.equal(ctx.events().filter((event) => event !== null && /cancel or resume/.test(event.reason)).length, 0, 'no dead-slot alert for a healthy job');
+  });
+});
+
+test('overtime: fresh activity at the same age is healthy, unchanged old activity is overdue', async () => {
+  await withHealthContext(async (ctx) => {
+    ctx.createJob('live', {
+      state: 'active',
+      created_at: new Date(ctx.clock.now.getTime() - 31 * 60_000).toISOString(),
+      updated_at: ctx.clock.now.toISOString(),
+    });
+    ctx.createJob('idle', {
+      state: 'active',
+      created_at: new Date(ctx.clock.now.getTime() - 31 * 60_000).toISOString(),
+      updated_at: new Date(ctx.clock.now.getTime() - 31 * 60_000).toISOString(),
+    });
+    const service = serviceFor(ctx);
+
+    await service.tick();
+    const events = ctx.events();
+    assert.equal(events.length, 1, 'only the idle run is overdue');
+    assert.equal(events[0]!.jobId, 'idle');
+    assert.match(events[0]!.reason, /over 30 min: split or stop/);
+
+    const flags = service.flags();
+    assert.equal(flags.has('live'), false, 'live work is not flagged overtime');
+    assert.ok(flags.get('idle')?.some((flag) => flag.condition === 'overtime'));
+  });
+});
+
+test('no commit: a job cancelled during the tick receives no hub event', async () => {
+  await withHealthContext(async (ctx) => {
+    ctx.config.health.maxRunMin = 1_000;
+    const job = ctx.createJob('cancelled-mid-tick', {
+      state: 'active',
+      in_turn: 1,
+      session_id: 'session-cancelled-mid-tick',
+      created_at: new Date(ctx.clock.now.getTime() - 60 * 60_000).toISOString(),
+    });
+    startBusy(job.session_id!);
+    ctx.heads.set('cancelled-mid-tick', { sha: 'aaa', committedAtMs: ctx.clock.now.getTime() - 50 * 60_000 });
+
+    let calls = 0;
+    const service = serviceFor(ctx, {
+      readHead: async (worktreePath) => {
+        calls += 1;
+        if (calls === 2) orchestratorJobsDb.update(job.id, { state: 'cancelled', in_turn: 0 });
+        return ctx.heads.get(path.basename(worktreePath)) ?? null;
+      },
+    });
+
+    await service.tick();
+    assert.equal(ctx.sent.length, 1);
+    ctx.clock.advance(16);
+    await service.tick();
+
+    assert.equal((orchestratorJobsDb.get(job.id) as OrchestratorJobRow).state, 'cancelled');
+    assert.equal(ctx.events().length, 0, 'the event is dropped after the row is re-read');
+  });
+});
+
+test('no commit: a non-finite committedAtMs from an injected reader fails closed', async () => {
+  await withHealthContext(async (ctx) => {
+    ctx.config.health.maxRunMin = 1_000;
+    const job = ctx.createJob('nan-head', {
+      state: 'active',
+      in_turn: 1,
+      session_id: 'session-nan-head',
+      created_at: new Date(ctx.clock.now.getTime() - 3 * 60 * 60_000).toISOString(),
+    });
+    startBusy(job.session_id!);
+    ctx.heads.set('nan-head', { sha: 'yyy', committedAtMs: Number.NaN });
+    const service = serviceFor(ctx);
+
+    await service.tick();
+    assert.equal(ctx.sent.length, 0, 'no nudge from a non-finite commit time');
+    assert.equal(ctx.events().length, 0);
   });
 });
 

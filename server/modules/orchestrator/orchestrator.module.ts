@@ -47,7 +47,7 @@ export function createOrchestratorModule(input: { runtime: ProviderRuntimeGatewa
   const hubWake = createHubWakeService({ runtime: input.runtime, config });
   const health = createHealthService({
     config,
-    sendToJob: (job, message) => jobs.notify(job, message),
+    sendToJob: (job, message) => jobs.notifyWithOutcome(job, message),
   });
   const hub = createHubService({ config });
   const status = createStatusService({ config, jobs, morphUsage, hub, health });

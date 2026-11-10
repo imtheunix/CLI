@@ -480,22 +480,32 @@ export function createJobsService(deps: {
     if (outcome.status.startsWith('worktree removal failed')) throw new Error(outcome.status);
   };
 
-  /** Starts a turn in the job's session. False when the session is busy or gone. */
-  async function sendTurn(
+  /**
+   * Starts a turn in the job's session and says what happened: `started` when
+   * the turn is running, `refused` when a live run (or a cancelled/gone job)
+   * owns the session and no turn can start. A timer is never evidence of
+   * delivery: after the grace period only a registered run counts as started.
+   */
+  async function sendTurnOutcome(
     job: OrchestratorJobRow,
     content: string,
     resumeKey: string | null = null,
     // The caller probed ZCode moments ago (a handover): no second probe before the first turn.
     options: { zcodeProbed?: boolean } = {},
-  ): Promise<boolean> {
-    if (!job.session_id || !job.backend || orchestratorJobsDb.get(job.id)?.state === 'cancelled') return false;
+  ): Promise<{ started: boolean; refused: boolean }> {
+    if (!job.session_id || !job.backend || orchestratorJobsDb.get(job.id)?.state === 'cancelled') {
+      return { started: false, refused: true };
+    }
+    // A processing session cannot take another turn. Report the refusal directly
+    // instead of racing the timer below, which would call it delivered.
+    if (chatRunRegistry.isProcessing(job.session_id)) return { started: false, refused: true };
     const backend = deps.config().backends[job.backend];
 
     if (!options.zcodeProbed && (job.backend === 'glm' || job.backend === 'zcode' || backend.provider === 'zcode')) {
       const probe = await probeZcode({ now: now() });
       if (!probe.ok && probe.error === 'login_failed') {
         holdForAuthRequired(job, probe.message);
-        return false;
+        return { started: false, refused: true };
       }
     }
 
@@ -505,7 +515,7 @@ export function createJobsService(deps: {
     if (begun.status === 'skipped') {
       // A failed abort or cleanup of this job: no new turn before the old work is undone.
       orchestratorJobsDb.update(job.id, { last_error: `No new turn: ${begun.row.kind} ${begun.row.key} failed (${begun.row.last_error ?? 'unknown'}); it must be undone first` });
-      return false;
+      return { started: false, refused: true };
     }
     liveTurnKeys.add(turnKey);
     orchestratorJobsDb.update(job.id, { in_turn: 1 });
@@ -533,10 +543,32 @@ export function createJobsService(deps: {
     // Settles when the turn ends; only a turn that never started is reported here.
     const started = await Promise.race([
       turn.then((result) => result.started),
-      new Promise<boolean>((resolve) => setTimeout(() => resolve(true), 2_000)),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), 2_000)),
     ]);
-    if (!started) orchestratorJobsDb.update(job.id, { in_turn: 0 });
-    return started;
+    if (started === null) {
+      // The grace period elapsed without a verdict. A registered run is real
+      // delivery; anything else is not, and must not be reported as started.
+      return chatRunRegistry.isProcessing(job.session_id)
+        ? { started: true, refused: false }
+        : { started: false, refused: false };
+    }
+    if (!started) {
+      // A refused nudge must not clear a live run's in_turn: only clear when no
+      // run owns the session now.
+      if (!chatRunRegistry.isProcessing(job.session_id)) orchestratorJobsDb.update(job.id, { in_turn: 0 });
+      return { started: false, refused: true };
+    }
+    return { started: true, refused: false };
+  }
+
+  /** Starts a turn in the job's session. False when the session is busy or gone. */
+  async function sendTurn(
+    job: OrchestratorJobRow,
+    content: string,
+    resumeKey: string | null = null,
+    options: { zcodeProbed?: boolean } = {},
+  ): Promise<boolean> {
+    return (await sendTurnOutcome(job, content, resumeKey, options)).started;
   }
 
   function effectHandlers(): Partial<Record<OrchestratorEffectRow['kind'], EffectReplayHandler>> {
@@ -1015,6 +1047,11 @@ export function createJobsService(deps: {
       return sendTurn(job, message);
     },
 
+    /** Used by health: like notify, but says whether a live run refused the message. */
+    async notifyWithOutcome(job: OrchestratorJobRow, message: string): Promise<{ started: boolean; refused: boolean }> {
+      return sendTurnOutcome(job, message);
+    },
+
     /** Used by the CI/CD queue to wait for an agent's last turn before touching its worktree. */
     isSessionBusy(job: OrchestratorJobRow): boolean {
       return Boolean(job.session_id && (chatRunRegistry.isProcessing(job.session_id) || deps.runtime.hasBackgroundWork(job.session_id)));
@@ -1094,8 +1131,9 @@ export function createJobsService(deps: {
         // A turn that did not stop on a limit or login ends the streak.
         ...(job.limit_recovery && !completion.aborted ? { failure_class: null, resume_at: null, limit_recovery: null } : {}),
         ...(completion.exitCode !== 0 && !completion.aborted ? { last_error: `The last turn ended with exit code ${completion.exitCode}` } : {}),
-        // A later successful turn clears the previous turn's error, so health's dead-slot check sees the last turn.
-        ...(completion.exitCode === 0 && !completion.aborted && job.last_error?.startsWith('The last turn ended with exit code') ? { last_error: null } : {}),
+        // A later successful turn clears the previous turn's error (exit code, usage
+        // limit or login), so health's dead-slot check sees the last turn.
+        ...(completion.exitCode === 0 && !completion.aborted && job.last_error ? { last_error: null } : {}),
       });
       if (job.state === 'active') {
         appendHubEvent({
