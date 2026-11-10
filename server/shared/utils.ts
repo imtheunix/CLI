@@ -1182,7 +1182,19 @@ export async function findFilesRecursivelyCreatedAfter(
       continue;
     }
 
-    const fileStat = await stat(fullPath);
+    let fileStat;
+    try {
+      fileStat = await stat(fullPath);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === 'ENOENT' || code === 'ENOTDIR') {
+        // The file was removed between readdir and stat; the next scan will
+        // see the deletion, and failing the whole scan here would be worse.
+        continue;
+      }
+      throw error;
+    }
+
     const lastChangedAt = Math.max(fileStat.birthtime.getTime(), fileStat.mtime.getTime());
     if (lastChangedAt > lastScanAt.getTime()) {
       fileList.push(fullPath);
