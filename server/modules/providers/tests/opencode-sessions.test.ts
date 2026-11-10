@@ -579,6 +579,43 @@ test('OpenCode sessions provider reads sqlite history and token usage', { concur
   }
 });
 
+test('OpenCode sessions provider decodes a quoted first prompt whose newlines were left unescaped', { concurrency: false }, async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'opencode-session-quoted-prompt-'));
+  const workspacePath = path.join(tempRoot, 'workspace');
+  await mkdir(workspacePath, { recursive: true });
+  const restoreHomeDir = patchHomeDir(tempRoot);
+
+  try {
+    await createOpenCodeDatabase(tempRoot, workspacePath);
+
+    // The shape OpenCode really writes for a job's first prompt: the whole
+    // prompt wrapped in quotes with its inner quotes escaped, but its newlines
+    // left as literal control characters, so it is not valid JSON.
+    const prompt = 'You are Morph DeepSeek, working on job 20450fe0 — "CLI: sidebar refresh".\n\nMeasured on the live server.';
+    const storedLiteral = `"${prompt.replace(/"/g, '\\"')}"`;
+    const db = new Database(path.join(tempRoot, '.local', 'share', 'opencode', 'opencode.db'));
+    try {
+      db.prepare('UPDATE part SET data = ? WHERE id = ?').run(
+        JSON.stringify({ type: 'text', text: storedLiteral }),
+        'part-user-text',
+      );
+    } finally {
+      db.close();
+    }
+
+    const provider = new OpenCodeSessionsProvider();
+    const history = await provider.fetchHistory('open-session-1');
+    const userMessage = history.messages.find((message) => message.kind === 'text' && message.role === 'user');
+
+    // Decoded, so it matches the live echo of the same turn and the client's
+    // optimistic-user dedupe retires that echo instead of showing it twice.
+    assert.equal(userMessage?.content, prompt);
+  } finally {
+    restoreHomeDir();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 /**
  * Seeds a single OpenCode session with a controllable stored title and first
  * user message. Uses a minimal schema (only the columns the synchronizer reads)

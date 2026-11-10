@@ -1067,6 +1067,11 @@ export function getZcodeTranscriptPath(sessionId: string): string {
  * message body never surfaces with surrounding quote characters. Only fully
  * quoted, valid JSON string literals are unwrapped; ordinary prose that merely
  * happens to start/end with a quote is returned untouched.
+ *
+ * OpenCode sometimes leaves the newlines and tabs inside that literal
+ * unescaped, so `JSON.parse` rejects an otherwise quoted prompt. Those control
+ * characters are escaped and the parse retried; a value that still does not
+ * parse is ordinary prose and is returned untouched.
  */
 export function unwrapJsonStringLiteral(value: string): string {
   const trimmed = value.trim();
@@ -1078,7 +1083,22 @@ export function unwrapJsonStringLiteral(value: string): string {
     const parsed = JSON.parse(trimmed);
     return typeof parsed === 'string' ? parsed : value;
   } catch {
-    return value;
+    try {
+      const escaped = trimmed.replace(/[\u0000-\u001f]/g, (char) => {
+        switch (char) {
+          case '\n': return '\\n';
+          case '\r': return '\\r';
+          case '\t': return '\\t';
+          case '\b': return '\\b';
+          case '\f': return '\\f';
+          default: return `\\u${char.charCodeAt(0).toString(16).padStart(4, '0')}`;
+        }
+      });
+      const parsed = JSON.parse(escaped);
+      return typeof parsed === 'string' ? parsed : value;
+    } catch {
+      return value;
+    }
   }
 }
 
