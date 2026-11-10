@@ -1070,6 +1070,8 @@ test('automatic review is enabled with bounded refutations and conservative defa
   const review = loadOrchestratorConfig('/nonexistent/orchestrator.json').review;
   assert.equal(review.enabled, true);
   assert.equal(review.refuteCap, 2);
+  assert.equal(review.refuteTimeoutMs, 20 * 60_000);
+  assert.ok(review.refuteTimeoutMs <= 20 * 60_000);
   assert.equal(review.maxLines, 400);
   assert.deepEqual(review.protectedRepos, []);
   assert.ok(review.riskyPaths.includes('.github'));
