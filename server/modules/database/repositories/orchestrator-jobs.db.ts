@@ -59,8 +59,8 @@ export type OrchestratorJobRow = {
   /** JSON array of OrchestratorMergeStepEvent; read it with `readMergeStepHistory`. */
   merge_step_history: string | null;
   last_error: string | null;
-  /** usage_limit | auth_required while the job waits on its provider; NULL otherwise. */
-  failure_class: 'usage_limit' | 'auth_required' | null;
+  /** usage_limit | auth_required | transient while the job waits on its provider; NULL otherwise. */
+  failure_class: 'usage_limit' | 'auth_required' | 'transient' | null;
   /** When an armed usage-limit recovery resumes the job (ISO 8601). */
   resume_at: string | null;
   /** JSON of the orchestrator's armed LimitRecovery; persisted so it survives a restart. */

@@ -24,6 +24,12 @@ type BackendConfig = {
   label: string;
 };
 
+/** Morph Ultra's two model groups: Kimi K3.1 (the hub) and the DeepSeek ids (jobs) that share a cap. */
+export type MorphModelGroup = 'kimi' | 'deepseek';
+
+/** Morph Ultra's per-rolling-minute caps, uncached input and output (reasoning counts as output). */
+export type MorphCaps = Record<MorphModelGroup, { uncachedIn: number; out: number }>;
+
 /** Configuration consumed by the orchestrator jobs, balancer, and merge queue services. */
 export type OrchestratorConfig = {
   backends: Record<OrchestratorBackend, BackendConfig>;
@@ -69,6 +75,12 @@ export type OrchestratorConfig = {
    * GPT have no room.
    */
   glmPeakHours: { avoid: boolean; utcOffsetHours: number; fromHour: number; toHour: number };
+  /**
+   * Morph Ultra's per-minute caps and the headroom below which a new morph job may start. The
+   * DeepSeek output window must stay below `admitBelow` of its cap; the configured backend cap
+   * remains the ceiling on concurrent morph jobs.
+   */
+  morph: { caps: MorphCaps; admitBelow: number };
   /**
    * Hub-and-spoke (the user, 2026-10-27: sub-agents never reach each other or production on their own): a job's
    * `tjob done` parks it at `review`; the orchestrating session (the hub) reads the branch and runs `tjob approve`
@@ -154,6 +166,14 @@ function defaults(): OrchestratorConfig {
       tokenFile: path.join(home, '.config/forgejo/claude-code-ops.token'),
     },
     glmPeakHours: { avoid: true, utcOffsetHours: 8, fromHour: 14, toHour: 18 },
+    // Morph Ultra, per rolling minute: Kimi K3.1 and the two DeepSeek ids (which share a cap).
+    morph: {
+      caps: {
+        kimi: { uncachedIn: 72_870, out: 6_162 },
+        deepseek: { uncachedIn: 2_103_237, out: 76_559 },
+      },
+      admitBelow: 0.7,
+    },
     review: true,
   };
 }
@@ -213,6 +233,22 @@ export function loadOrchestratorConfig(file = path.join(os.homedir(), '.config/c
   config.baseBranches = { ...config.baseBranches, ...(override.baseBranches as Record<string, string> ?? {}) };
   config.forgejo = { ...config.forgejo, ...(override.forgejo as object ?? {}) };
   config.glmPeakHours = { ...config.glmPeakHours, ...(override.glmPeakHours as object ?? {}) };
+  if (override.morph && typeof override.morph === 'object') {
+    const morph = override.morph as Record<string, unknown>;
+    if (morph.caps && typeof morph.caps === 'object') {
+      const caps = morph.caps as Record<string, unknown>;
+      for (const group of ['kimi', 'deepseek'] as const) {
+        const cap = caps[group];
+        if (!cap || typeof cap !== 'object') continue;
+        const values = cap as Record<string, unknown>;
+        if (typeof values.uncachedIn === 'number' && values.uncachedIn > 0) config.morph.caps[group].uncachedIn = values.uncachedIn;
+        if (typeof values.out === 'number' && values.out > 0) config.morph.caps[group].out = values.out;
+      }
+    }
+    if (typeof morph.admitBelow === 'number' && morph.admitBelow > 0 && morph.admitBelow <= 1) {
+      config.morph.admitBelow = morph.admitBelow;
+    }
+  }
   if (typeof override.review === 'boolean') config.review = override.review;
   if (override.hub && typeof override.hub === 'object') {
     const hub = override.hub as Record<string, unknown>;

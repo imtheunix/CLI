@@ -47,6 +47,8 @@ import {
 } from './usage-recovery.service.js';
 import type { LimitRecovery, TurnFailure } from './usage-recovery.service.js';
 import { isInGlmPeakHours, pickBackend } from './balancer.service.js';
+import { createMorphUsageService } from './morph-usage.service.js';
+import type { MorphUsageService } from './morph-usage.service.js';
 import { modelLabel, resolveRequestedModel } from './orchestrator-config.service.js';
 import type { OrchestratorConfig } from './orchestrator-config.service.js';
 import { prepareJobProjectMap } from './project-map.service.js';
@@ -80,8 +82,8 @@ export type OrchestratorJobView = OrchestratorJobRow & {
   mergeSteps: OrchestratorMergeStepTiming[];
   /** `tjob show`: full output of the latest merge check, retained outside the worktree. */
   checkLogPath: string | null;
-  /** `tjob ls`: the job waits on its provider (usage limit or login); resumesAt is null when only the hub can resume it. */
-  limitWait: { failureClass: 'usage_limit' | 'auth_required'; resumesAt: string | null; waitsForHub: boolean } | null;
+  /** `tjob ls`: the job waits on its provider (usage limit, transient capacity or login); resumesAt is null when only the hub can resume it. */
+  limitWait: { failureClass: 'usage_limit' | 'auth_required' | 'transient'; resumesAt: string | null; waitsForHub: boolean } | null;
   /** Token usage and notional API cost calculated from session transcript. */
   usage: JobTokenUsage | null;
   /** `tjob ls`: the job's backend handovers, e.g. `codex->glm (quota)`; null when it never changed backend. */
@@ -220,8 +222,11 @@ export function createJobsService(deps: {
   outbox?: EffectOutbox;
   /** The per-turn checkpoint capture; tests inject a failing one to prove a failed snapshot never fails the turn. */
   captureCheckpoint?: (job: { jobId: string; worktreePath: string }) => Promise<unknown>;
+  /** Morph's usage meter: a new morph job starts only while the DeepSeek output window has headroom. */
+  morphUsage?: MorphUsageService;
 }) {
   const now = deps.now ?? (() => new Date());
+  const morphUsage = deps.morphUsage ?? createMorphUsageService({ config: deps.config, now });
   const captureCheckpoint = deps.captureCheckpoint ?? ((job: { jobId: string; worktreePath: string }) => captureJobCheckpoint(job, { runGit: runGitCommand }));
   const outbox = deps.outbox ?? getEffectOutbox();
   // start_turn rows whose turn promise this process holds; the others (re-attached after a restart) close on completion.
@@ -262,6 +267,18 @@ export function createJobsService(deps: {
 
   function caps(config: OrchestratorConfig): Record<OrchestratorBackend, number> {
     return Object.fromEntries(BACKENDS.map((backend) => [backend, config.backends[backend].cap])) as Record<OrchestratorBackend, number>;
+  }
+
+  // Morph admission is re-read at most every 15 s, and only while a morph job is queued: the
+  // balancer's 3 s tick must not turn into a busy loop against the ledger or OpenCode's database.
+  const MORPH_ADMISSION_RECHECK_MS = 15_000;
+  let morphAdmission: { at: number; admitted: boolean } | null = null;
+  function morphAdmitted(): boolean {
+    const at = now().getTime();
+    if (!morphAdmission || at - morphAdmission.at >= MORPH_ADMISSION_RECHECK_MS) {
+      morphAdmission = { at, admitted: morphUsage.admitted() };
+    }
+    return morphAdmission.admitted;
   }
 
   function view(job: OrchestratorJobRow): OrchestratorJobView {
@@ -341,7 +358,9 @@ export function createJobsService(deps: {
     if (result.status === 'unchanged') return true;
     saveRecovery(job.id, result.recovery);
     const login = failure.failureClass === 'auth_required';
-    // One hub wake per login wait, and when recovery is refused or exhausted; an armed usage-limit resume is silent.
+    const transient = failure.failureClass === 'transient';
+    // One hub wake per login wait, and when recovery is refused or exhausted; an armed usage-limit
+    // or transient retry is silent (a 429 must not wake the hub on every capacity blip).
     if (result.status !== 'armed' || (login && previous?.kind !== 'auth_required')) {
       appendHubEvent({
         jobId: job.id,
@@ -349,7 +368,7 @@ export function createJobsService(deps: {
         title: job.title,
         reason: result.status === 'armed'
           ? `login needed for ${job.backend}; resumes when its login check passes (${failure.reason})`
-          : `${login ? 'login needed' : 'usage limit'}, ${result.status === 'refused' ? 'stated reset already past' : 'recovery exhausted'}; waiting for the hub (${failure.reason})`,
+          : `${login ? 'login needed' : transient ? 'rate limited' : 'usage limit'}, ${result.status === 'refused' ? 'stated reset already past' : 'recovery exhausted'}; waiting for the hub (${failure.reason})`,
       });
     }
     return true;
@@ -1073,6 +1092,9 @@ export function createJobsService(deps: {
         const backend = pickBackend(requested, loads(), caps(config), config.fallbackBackend, avoid, quota);
         // A planned handoff waits for agy rather than overflowing back to GLM.
         if (!backend || (continuation && config.glmQuotaFallback === 'agy' && backend !== 'agy')) continue;
+        // Morph Ultra's cap is the ceiling; a new morph job also needs headroom in the DeepSeek
+        // output window. Without it the job stays queued and the next re-check (15 s) tries again.
+        if (backend === 'morph' && !morphAdmitted()) continue;
         void start(job, backend);
       }
     },
