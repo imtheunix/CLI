@@ -256,6 +256,10 @@ async function dispatchRun(
   if (typeof clientOptions.effort === 'string' && clientOptions.effort.trim()) {
     providerModelsService.setSessionEffort(provider, sessionId, clientOptions.effort);
   }
+  // Same for a named agent (OpenCode): the session keeps running with it.
+  if (typeof clientOptions.agent === 'string' && clientOptions.agent.trim()) {
+    sessionsDb.setSessionAgent(sessionId, clientOptions.agent.trim());
+  }
 
   const attachmentCandidates = [
     ...normalizeAttachmentDescriptors(clientOptions.images),

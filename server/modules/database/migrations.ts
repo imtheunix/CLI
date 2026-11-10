@@ -474,6 +474,20 @@ const addSessionEffortColumn = (db: Database): void => {
   addColumnToTableIfNotExists(db, 'sessions', columnNames, 'effort', 'TEXT');
 };
 
+/**
+ * Adds the `agent` column that records the OpenCode agent a session runs with
+ * (`opencode run --agent`, e.g. the hub's `morph-hub`).
+ *
+ * Existing rows stay NULL on purpose: they never named an agent, and guessing
+ * one would switch sessions onto an agent they never ran.
+ */
+const addSessionAgentColumn = (db: Database): void => {
+  const sessionsTableInfo = getTableInfo(db, 'sessions');
+  const columnNames = sessionsTableInfo.map((column) => column.name);
+
+  addColumnToTableIfNotExists(db, 'sessions', columnNames, 'agent', 'TEXT');
+};
+
 /** Jobs created before `tjob new --model` ran on their backend's default model; NULL says so. */
 const addOrchestratorJobModelColumn = (db: Database): void => {
   const columnNames = getTableInfo(db, 'orchestrator_jobs').map((column) => column.name);
@@ -623,6 +637,7 @@ export const runMigrations = (db: Database) => {
     addProviderSessionIdMapping(db);
     addSessionModelColumn(db);
     addSessionEffortColumn(db);
+    addSessionAgentColumn(db);
     addForkedFromSessionIdColumn(db);
     addSpawnedBySessionIdColumn(db);
     ensureProjectsForSessionPaths(db);

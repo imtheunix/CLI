@@ -6,4 +6,7 @@ export type { HubEventInput, HubEventState } from './services/hub-events.service
 // HubWakeService: wakes the orchestrating hub session on job events.
 export { createHubWakeService } from './services/hub-wake.service.js';
 export type { HubWakeService, HubWakeDependencies, LoggedHubEvent } from './services/hub-wake.service.js';
+// HubService: `tjob hub` status and switching (use / new) for the orchestrator routes.
+export { createHubService } from './services/hub.service.js';
+export type { HubService, HubStatus, HubSessionCreated } from './services/hub.service.js';
 export type { HubWakeConfig } from './services/orchestrator-config.service.js';

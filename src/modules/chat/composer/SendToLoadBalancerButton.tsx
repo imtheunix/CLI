@@ -8,7 +8,7 @@ import type { LoadBalancerContext } from '@/shared/types';
 
 type SentJob = { id: string; backend: string | null; state: string };
 
-const BACKEND_LABELS: Record<string, string> = { claude: 'Claude', codex: 'GPT', glm: 'GLM' };
+const BACKEND_LABELS: Record<string, string> = { claude: 'Claude', codex: 'GPT', glm: 'GLM', morph: 'Morph' };
 
 /** What the server knows about the session's repository and the picker's list; a failed lookup throws with the reason. */
 async function loadContext(sessionId: string): Promise<LoadBalancerContext> {

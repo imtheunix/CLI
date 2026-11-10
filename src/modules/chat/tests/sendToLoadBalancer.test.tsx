@@ -75,6 +75,17 @@ test('when the load balancer refuses, the message stays queued and the reason is
   expect(screen.getByRole('status').textContent).toBe('repo /home/me/Tribeira/gone does not exist');
 });
 
+test('a morph job is announced by its label', async () => {
+  writeQueuedMessage('s1', { id: 'morphed', content: 'Do it on Morph' });
+  inSession({ sessionRepoPath: '/home/me/Tribeira/tripam' });
+  answer(201, { success: true, data: { job: { id: 'cc44ddec', backend: 'morph', state: 'preparing' } } });
+  render(<QueuedMessageList scope="s1" busy />);
+
+  await act(async () => { fireEvent.click(screen.getByLabelText('Send to load balancer')); });
+
+  expect(screen.getByRole('status').textContent).toMatch(/job cc44ddec to Morph/);
+});
+
 test('the composer button clears the input once sent, and says when every model is busy', async () => {
   inSession({ sessionRepoPath: '/home/me/Tribeira/tripam' });
   answer(201, { success: true, data: { job: { id: 'ef56', backend: null, state: 'queued' } } });

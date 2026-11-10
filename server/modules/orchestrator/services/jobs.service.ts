@@ -64,7 +64,7 @@ import {
 /** Jobs that hold a backend's slot: being set up, or with an agent on them (working or waiting for an answer). */
 const SLOT_STATES = ['preparing', 'active'] as const;
 
-const BACKENDS: OrchestratorBackend[] = ['claude', 'codex', 'glm', 'agy', 'zcode'];
+const BACKENDS: OrchestratorBackend[] = ['claude', 'codex', 'glm', 'agy', 'zcode', 'morph'];
 
 /** What a job looks like to its callers: the row, plus what its session is doing right now. */
 
@@ -253,7 +253,7 @@ export function createJobsService(deps: {
   const pendingHandovers = new Set<Promise<unknown>>();
 
   function loads(): Record<OrchestratorBackend, number> {
-    const counts: Record<OrchestratorBackend, number> = { claude: 0, codex: 0, glm: 0, agy: 0, zcode: 0 };
+    const counts: Record<OrchestratorBackend, number> = { claude: 0, codex: 0, glm: 0, agy: 0, zcode: 0, morph: 0 };
     for (const job of orchestratorJobsDb.listByState([...SLOT_STATES])) {
       if (job.backend) counts[job.backend] += 1;
     }

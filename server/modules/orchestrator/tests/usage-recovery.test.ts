@@ -60,6 +60,45 @@ test('glm/zcode: Z.ai limits carry their UTC+8 reset', () => {
   assert.equal(failure.resetAt?.toISOString(), new Date('2026-11-07T12:28:03+08:00').toISOString());
 });
 
+test('morph: a quota wall is a usage limit without a stated reset (backoff)', () => {
+  const now = new Date('2026-11-10T12:00:00Z');
+  for (const text of ['Payment Required', 'Monthly quota exceeded for morph/morph-dsv41flash', '{"message":"Payment Required"}']) {
+    const failure = classifyTurnFailure('morph', text, now);
+    assert.equal(failure.failureClass, 'usage_limit', text);
+    assert.equal(failure.resetAt, null, text);
+  }
+});
+
+test('morph: 429/at-capacity is transient — usage-limit backoff, Retry-After honored, never quota exhausted', () => {
+  const now = new Date('2026-11-10T12:00:00Z');
+  for (const text of [
+    '429 Too Many Requests',
+    'Error: 429 rate limit exceeded, please retry',
+    'Model is at capacity, try again later',
+    '{"message":"rate limit exceeded"}',
+    'overloaded',
+  ]) {
+    const failure = classifyTurnFailure('morph', text, now);
+    assert.equal(failure.failureClass, 'usage_limit', text);
+    assert.equal(failure.resetAt, null, text);
+  }
+  // A stated Retry-After sets the resume time instead of the backoff ladder.
+  const retryAfter = classifyTurnFailure('morph', '429 Too Many Requests (retry-after: 90 seconds)', now);
+  assert.equal(retryAfter.failureClass, 'usage_limit');
+  assert.equal(retryAfter.resetAt?.toISOString(), '2026-11-10T12:01:30.000Z');
+  const retryMinutes = classifyTurnFailure('morph', 'Error: 429, retry-after 2 minutes', now);
+  assert.equal(retryMinutes.resetAt?.toISOString(), '2026-11-10T12:02:00.000Z');
+});
+
+test('morph: login failures are auth_required, ordinary errors stay other', () => {
+  const now = new Date();
+  assert.equal(classifyTurnFailure('morph', 'Invalid API key', now).failureClass, 'auth_required');
+  assert.equal(classifyTurnFailure('morph', '401 Unauthorized', now).failureClass, 'auth_required');
+  assert.equal(classifyTurnFailure('morph', '{"message":"Not logged in"}', now).failureClass, 'auth_required');
+  assert.equal(classifyTurnFailure('morph', 'The last turn ended with exit code 1', now).failureClass, 'other');
+  assert.equal(classifyTurnFailure('morph', 'ENOENT: no such file', now).failureClass, 'other');
+});
+
 const usage = (resetAt: Date | null): TurnFailure & { failureClass: 'usage_limit' } => ({ failureClass: 'usage_limit', resetAt, reason: 'limit' });
 const NOW = new Date('2026-11-07T12:00:00Z');
 
@@ -67,7 +106,7 @@ const NOW = new Date('2026-11-07T12:00:00Z');
 test('only provider failure signals classify: a failing test that quotes the limit text is other', () => {
   const failingTest = 'FAIL test: expected "You have hit your usage limit" to equal "ok"';
   assert.equal(classifyTurnFailure('codex', failingTest, NOW).failureClass, 'other');
-  for (const backend of ['claude', 'codex', 'glm', 'zcode', 'agy'] as const) {
+  for (const backend of ['claude', 'codex', 'glm', 'zcode', 'agy', 'morph'] as const) {
     assert.equal(classifyTurnFailure(backend, [{ message: failingTest }, { message: `AssertionError: ${CLAUDE_SESSION}` }], NOW).failureClass, 'other', backend);
   }
   // Claude: the SDK's structured error code decides; its message only supplies the reset.

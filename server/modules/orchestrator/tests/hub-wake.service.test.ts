@@ -1485,3 +1485,40 @@ test('stacked job wake: a base job sitting at review past 30m wakes the hub once
     service.stop();
   });
 });
+
+test('a wake to a hub session that runs an agent carries provider, model and agent', async () => {
+  // The hub may be an OpenCode session on Morph Kimi; a wake is a turn like
+  // any other, so it runs with the hub session's model, effort and agent.
+  await withTestContext(async ({ config, runtime, eventsLogPath, offsetPath, stallsPath, clock, hubSessionId }) => {
+    sessionsDb.setSessionModel(hubSessionId, 'morph/morph-kimik31');
+    sessionsDb.setSessionEffort(hubSessionId, 'low');
+    sessionsDb.setSessionAgent(hubSessionId, 'morph-hub');
+    const captured: Array<Record<string, unknown>> = [];
+    const runTurn = (async (input: { options?: Record<string, unknown> }) => {
+      captured.push(input.options ?? {});
+      return { started: true, error: null };
+    }) as unknown as NonNullable<Parameters<typeof createHubWakeService>[0]['runTurn']>;
+    const service = createHubWakeService({
+      config: () => config,
+      runtime: runtime.gateway,
+      now: () => clock.now,
+      eventsLogPath,
+      offsetPath,
+      stallsPath,
+      turnTimeoutMs: 20,
+      runTurn,
+    });
+    service.start();
+
+    appendHubEvent({ jobId: 'job-agent', state: 'merged', title: 'Agent Job', reason: 'pushed e937275' });
+    clock.advance(100); // past the 90 s debounce
+    await service.tick();
+
+    assert.equal(captured.length, 1);
+    assert.equal(captured[0].model, 'morph/morph-kimik31');
+    assert.equal(captured[0].effort, 'low');
+    assert.equal(captured[0].agent, 'morph-hub');
+    assert.equal(captured[0].permissionMode, 'bypassPermissions');
+    service.stop();
+  });
+});

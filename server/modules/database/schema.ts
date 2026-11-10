@@ -187,6 +187,10 @@ CREATE TABLE IF NOT EXISTS sessions (
     -- restores its exact runtime configuration instead of provider defaults.
     model TEXT,
     effort TEXT,
+    -- The OpenCode agent this session runs with ("opencode run --agent"),
+    -- NULL until the app records one. Written when a caller sets it (the
+    -- orchestrator hub) and on every send, alongside model and effort.
+    agent TEXT,
     -- The app session this one was branched from, NULL for sessions created
     -- normally. Informational only: a fork is a fully independent provider
     -- session, and deleting the source does not affect it.

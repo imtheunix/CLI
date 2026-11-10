@@ -8,9 +8,10 @@ import { AppError, asyncHandler, createApiSuccessResponse } from '@/shared/utils
 import { JOB_KINDS, type JobsService, type OrchestratorJobKind } from './services/jobs.service.js';
 import type { createMergeQueueService } from './services/merge-queue.service.js';
 import type { HubWakeService } from './services/hub-wake.service.js';
+import type { HubService } from './services/hub.service.js';
 import { isOrchestratorToken } from './services/orchestrator-token.service.js';
 
-const BACKENDS = ['claude', 'codex', 'glm', 'agy', 'zcode'];
+const BACKENDS = ['claude', 'codex', 'glm', 'agy', 'zcode', 'morph'];
 
 function readString(value: unknown, name: string, required: true): string;
 function readString(value: unknown, name: string, required: false): string | null;
@@ -34,7 +35,7 @@ function readBackend(value: unknown): OrchestratorBackend | null {
   const backend = readString(value, 'backend', false);
   if (backend === null || backend === 'auto') return null;
   if (!BACKENDS.includes(backend)) {
-    throw new AppError('backend must be claude, codex, glm, agy, zcode or auto', { code: 'INVALID_BACKEND', statusCode: 400 });
+    throw new AppError('backend must be claude, codex, glm, agy, zcode, morph or auto', { code: 'INVALID_BACKEND', statusCode: 400 });
   }
   return backend as OrchestratorBackend;
 }
@@ -58,6 +59,8 @@ export function createOrchestratorRouter(services: {
   jobs: JobsService;
   mergeQueue: ReturnType<typeof createMergeQueueService>;
   hubWake: HubWakeService;
+  /** `tjob hub` / `tjob hub use` / `tjob hub new`: the hub session's status and switching. */
+  hub: HubService;
   caps: () => Record<OrchestratorBackend, number>;
   authenticate: RequestHandler;
   /** `tjob rollback`: restore a job's worktree from a per-turn checkpoint (Worktrees module). */
@@ -117,7 +120,29 @@ export function createOrchestratorRouter(services: {
     res.set('Cache-Control', 'no-store').json(createApiSuccessResponse(context));
   }));
 
-  // Before `/:id`, which would otherwise read "hub-wake" as a job id.
+  // Before `/:id`, which would otherwise read "hub" and "hub-wake" as job ids.
+  router.get('/hub', asyncHandler(async (_req, res) => {
+    res.set('Cache-Control', 'no-store').json(createApiSuccessResponse({ hub: services.hub.status() }));
+  }));
+
+  router.post('/hub/use', asyncHandler(async (req, res) => {
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const hub = services.hub.useSession(readString(body.sessionId, 'sessionId', true));
+    res.json(createApiSuccessResponse({ hub }));
+  }));
+
+  router.post('/hub/new', asyncHandler(async (req, res) => {
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const session = services.hub.createSession({
+      provider: readString(body.provider, 'provider', true),
+      model: readString(body.model, 'model', false),
+      effort: readString(body.effort, 'effort', false),
+      agent: readString(body.agent, 'agent', false),
+      cwd: readString(body.cwd, 'cwd', false),
+    });
+    res.status(201).json(createApiSuccessResponse({ session }));
+  }));
+
   router.post('/hub-wake', asyncHandler(async (req, res) => {
     const body = (req.body && typeof req.body === 'object' ? req.body : {}) as Record<string, unknown>;
     const isTest = body.test === true || body.test === 'true';

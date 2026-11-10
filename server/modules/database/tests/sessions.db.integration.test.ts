@@ -169,3 +169,16 @@ test('recent sessions are globally ordered, paginated, and limited to visible co
     );
   });
 });
+
+test('setSessionAgent records the OpenCode agent a session runs with', async () => {
+  await withIsolatedDatabase(async () => {
+    projectsDb.createProjectPath('/workspace/hub');
+    const sessionId = sessionsDb.createAppSession('hub-session', 'opencode', '/workspace/hub', 'Hub');
+
+    // NULL until recorded, so nothing inherits an agent it never ran.
+    assert.equal(sessionsDb.getSessionById(sessionId)?.agent, null);
+
+    sessionsDb.setSessionAgent(sessionId, 'morph-hub');
+    assert.equal(sessionsDb.getSessionById(sessionId)?.agent, 'morph-hub');
+  });
+});

@@ -13,6 +13,8 @@ export type SessionRow = {
   model: string | null;
   /** Reasoning effort this session runs with; NULL until the app records one. */
   effort: string | null;
+  /** OpenCode agent this session runs with (`--agent`); NULL until recorded. */
+  agent: string | null;
   /** The app session this one was branched from; NULL unless it is a fork. */
   forked_from_session_id: string | null;
   /**
@@ -31,7 +33,7 @@ type RecentSessionsPage = {
 };
 
 const SESSION_ROW_COLUMNS =
-  'session_id, provider, provider_session_id, project_path, jsonl_path, custom_name, model, effort, forked_from_session_id, spawned_by_session_id, isArchived, created_at, updated_at';
+  'session_id, provider, provider_session_id, project_path, jsonl_path, custom_name, model, effort, agent, forked_from_session_id, spawned_by_session_id, isArchived, created_at, updated_at';
 
 const SQLITE_UTC_TIMESTAMP_REGEX = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/;
 
@@ -442,6 +444,21 @@ export const sessionsDb = {
        SET effort = ?
        WHERE session_id = ?`
     ).run(effort, sessionId);
+  },
+
+  /**
+   * Records the OpenCode agent one session runs with (`opencode run --agent`).
+   *
+   * Used by the orchestrator's hub sessions (e.g. `morph-hub`) and on every
+   * send that names an agent, so the session keeps running with it.
+   */
+  setSessionAgent(sessionId: string, agent: string): void {
+    const db = getConnection();
+    db.prepare(
+      `UPDATE sessions
+       SET agent = ?
+       WHERE session_id = ?`
+    ).run(agent, sessionId);
   },
 
   updateSessionCustomName(sessionId: string, customName: string): void {

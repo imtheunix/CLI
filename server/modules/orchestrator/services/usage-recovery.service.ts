@@ -108,6 +108,21 @@ function codexReset(text: string, now: Date): Date | null {
 }
 
 /**
+ * Morph: a stated `Retry-After` (header echo or prose, seconds/minutes/hours)
+ * sets the resume time of a transient 429/at-capacity backoff; without one the
+ * recovery falls back to its own backoff ladder.
+ */
+function morphReset(text: string, now: Date): Date | null {
+  const match = /retry[-\s]?after["'\s:]+(\d+(?:\.\d+)?)\s*(hours?|hrs?|h|minutes?|mins?|m|seconds?|secs?|s)?/i.exec(text);
+  if (!match) return null;
+  const amount = Number(match[1]);
+  if (!Number.isFinite(amount) || amount < 0) return null;
+  const unit = (match[2] ?? 's').toLowerCase();
+  const multiplier = unit.startsWith('h') ? 3_600_000 : unit.startsWith('m') ? 60_000 : 1_000;
+  return new Date(now.getTime() + amount * multiplier);
+}
+
+/**
  * A provider's own failure report for a turn: the message of its error event or error object, and its
  * structured error code when it has one (Claude's SDK `error`: rate_limit, authentication_failed...).
  * Never assistant prose or tool output: a test that prints "You've hit your usage limit" is not a limit.
@@ -123,6 +138,13 @@ const CODE_CLASS: Partial<Record<OrchestratorBackend, Record<string, 'usage_limi
 const MESSAGE_START = String.raw`(?:^|"message"\s*:\s*")`;
 const GO_WRAPPED = String.raw`^(?:[A-Za-z][\w .-]*: )*`; // agy: "failed to ...: error getting token source: <cause>"
 const ZAI_LIMIT = String.raw`${MESSAGE_START}(?:Usage limit reached for \d+\s+(?:hour|day|week|month)s?\b|Weekly\/Monthly Limit Exhausted)|"code"\s*:\s*"?13(?:08|10)\b`;
+// Morph (through OpenCode): a real quota wall ("Payment Required" is the 402
+// reason phrase) counts as a usage limit; 429/at-capacity/rate-limit reports
+// are transient capacity, so they back off (Retry-After parsed below) instead
+// of ever being recorded as quota exhausted. One short prose prefix ("Error:",
+// "Model is") is allowed ahead of the keyword, like agy's wrapped causes.
+const MORPH_PROSE = String.raw`(?:[A-Za-z][\w .,'!?-]{0,60}(?:: |[,.!?;] | ))?`;
+const MORPH_LIMIT = String.raw`${MESSAGE_START}${MORPH_PROSE}(?:Payment Required|Monthly quota exceeded|429\b[^"\n]*|rate limit[^"\n]*|too many requests[^"\n]*|at capacity[^"\n]*|overloaded[^"\n]*)`;
 
 const USAGE_LIMIT: Record<OrchestratorBackend, RegExp> = {
   claude: new RegExp(String.raw`${MESSAGE_START}You(?:'|’| ha)ve hit your (?:session |weekly |usage |opus )?limit|"type"\s*:\s*"rate_limit_error"`, 'i'),
@@ -130,6 +152,7 @@ const USAGE_LIMIT: Record<OrchestratorBackend, RegExp> = {
   glm: new RegExp(ZAI_LIMIT, 'i'),
   zcode: new RegExp(ZAI_LIMIT, 'i'),
   agy: new RegExp(String.raw`${GO_WRAPPED}(?:RESOURCE_EXHAUSTED|You have exhausted your (?:capacity|quota))|"status"\s*:\s*"RESOURCE_EXHAUSTED"`, 'i'),
+  morph: new RegExp(MORPH_LIMIT, 'i'),
 };
 
 const AUTH_REQUIRED: Record<OrchestratorBackend, RegExp> = {
@@ -138,6 +161,7 @@ const AUTH_REQUIRED: Record<OrchestratorBackend, RegExp> = {
   glm: new RegExp(String.raw`${MESSAGE_START}(?:Invalid API key|Authentication failed|401 Unauthorized)|"code"\s*:\s*"?1000\b`, 'i'),
   zcode: /^(?:\[project-access-token\] \{.*\bcode: '|)project_token_login_failed\b/i,
   agy: new RegExp(String.raw`${GO_WRAPPED}(?:You are not logged into Antigravity|auth timed out)|"status"\s*:\s*"UNAUTHENTICATED"`, 'i'),
+  morph: new RegExp(String.raw`${MESSAGE_START}(?:Invalid API key|Authentication failed|Not logged in|401 Unauthorized)`, 'i'),
 };
 
 /**
@@ -165,6 +189,7 @@ export function classifyTurnFailure(backend: OrchestratorBackend, signals: Provi
   if (backend === 'claude') resetAt = claudeReset(text, now);
   else if (backend === 'codex') resetAt = codexReset(text, now);
   else if ((backend === 'glm' || backend === 'zcode') && /Your limit will reset at/i.test(text)) resetAt = detectGlmQuotaReset(text, now);
+  else if (backend === 'morph') resetAt = morphReset(text, now);
   return { failureClass: 'usage_limit', resetAt, reason };
 }
 

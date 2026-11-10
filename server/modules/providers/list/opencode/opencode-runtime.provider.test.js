@@ -4,6 +4,8 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
+import { getConnection } from '../../../database/index.js';
+
 import {
   opencodeRuntime,
   resolveOpenCodePermissionOptions,
@@ -179,6 +181,148 @@ test('resolveOpenCodePermissionOptions maps UI permission modes onto OpenCode co
   // default and anything unknown leave the user's own opencode config in charge.
   assert.deepEqual(resolveOpenCodePermissionOptions('default'), { args: [], env: {} });
   assert.deepEqual(resolveOpenCodePermissionOptions(undefined), { args: [], env: {} });
+});
+
+/** Shared harness for the CLI-argument tests: a fake `opencode` plus a capturing writer. */
+async function withFakeOpenCode(run) {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'opencode-cli-args-'));
+  const pathKey = findEnvKey('PATH');
+  const pathExtKey = findEnvKey('PATHEXT');
+  const previousPath = process.env[pathKey];
+  const previousPathExt = process.env[pathExtKey];
+  const previousArgsCapture = process.env.OPENCODE_ARGS_CAPTURE;
+  const messages = [];
+  const writer = {
+    userId: null,
+    sessionId: null,
+    send(message) {
+      messages.push(message);
+    },
+    setSessionId(sessionId) {
+      this.sessionId = sessionId;
+    },
+  };
+
+  try {
+    await createFakeOpenCodeExecutable(tempRoot);
+    process.env[pathKey] = `${tempRoot}${path.delimiter}${previousPath || ''}`;
+    if (process.platform === 'win32') {
+      process.env[pathExtKey] = previousPathExt?.toUpperCase().includes('.CMD')
+        ? previousPathExt
+        : `.COM;.EXE;.BAT;.CMD${previousPathExt ? `;${previousPathExt}` : ''}`;
+    }
+    return await run(tempRoot, writer, messages);
+  } finally {
+    if (previousPath === undefined) {
+      delete process.env[pathKey];
+    } else {
+      process.env[pathKey] = previousPath;
+    }
+
+    if (previousPathExt === undefined) {
+      delete process.env[pathExtKey];
+    } else {
+      process.env[pathExtKey] = previousPathExt;
+    }
+
+    if (previousArgsCapture === undefined) {
+      delete process.env.OPENCODE_ARGS_CAPTURE;
+    } else {
+      process.env.OPENCODE_ARGS_CAPTURE = previousArgsCapture;
+    }
+
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+}
+
+async function captureArgs(tempRoot, name) {
+  const argsCapturePath = path.join(tempRoot, name);
+  process.env.OPENCODE_ARGS_CAPTURE = argsCapturePath;
+  return argsCapturePath;
+}
+
+test('spawnOpenCode records its detached turns under the opencode provider', async () => {
+  // Regression (2026-11-10): the turn row was recorded with backend 'glm', so
+  // after a server restart the reattach ran a provider lookup with a label
+  // that is not a provider and abort/lookup broke.
+  await withFakeOpenCode(async (tempRoot, writer) => {
+    await captureArgs(tempRoot, 'opencode-args-backend.json');
+    await opencodeRuntime.run(
+      'Hi',
+      { cwd: tempRoot, sessionId: 'app-opencode-backend' },
+      writer,
+      runtimeContext,
+    );
+
+    const rows = getConnection()
+      .prepare('SELECT backend, session_id FROM running_turns WHERE session_id = ?')
+      .all('app-opencode-backend');
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].backend, 'opencode');
+  });
+});
+
+test('spawnOpenCode passes the session agent unless the permission mode already picked one', async () => {
+  await withFakeOpenCode(async (tempRoot, writer) => {
+    const argsCapturePath = await captureArgs(tempRoot, 'opencode-args-agent.json');
+    await opencodeRuntime.run(
+      'Hi',
+      { cwd: tempRoot, agent: 'morph-hub' },
+      writer,
+      runtimeContext,
+    );
+
+    let capture = JSON.parse(await readFile(argsCapturePath, 'utf8'));
+    assert.ok(capture.args.includes('--agent'));
+    assert.ok(capture.args.includes('morph-hub'));
+    // The prompt stays the last positional argument, after the agent flag.
+    assert.equal(capture.args[capture.args.length - 1], 'Hi');
+
+    const planCapturePath = await captureArgs(tempRoot, 'opencode-args-agent-plan.json');
+    await opencodeRuntime.run(
+      'Hi',
+      { cwd: tempRoot, agent: 'morph-hub', permissionMode: 'plan' },
+      writer,
+      runtimeContext,
+    );
+
+    capture = JSON.parse(await readFile(planCapturePath, 'utf8'));
+    // The turn's read-only plan agent outranks the session's standing one.
+    assert.deepEqual(capture.args.slice(capture.args.indexOf('--agent'), capture.args.indexOf('--agent') + 2), ['--agent', 'plan']);
+    assert.equal(capture.args.includes('morph-hub'), false);
+  });
+});
+
+test('spawnOpenCode launches a morph model with its effort variant', async () => {
+  const morphModels = {
+    OPTIONS: [
+      {
+        value: 'morph/morph-dsv41flash',
+        label: 'DeepSeek V4.1 Flash',
+        description: 'Morph',
+        effort: { values: [{ value: 'low' }, { value: 'medium' }, { value: 'high' }] },
+      },
+    ],
+    DEFAULT: 'morph/morph-dsv41flash',
+  };
+  const morphContext = { ...runtimeContext, getProviderModels: async () => morphModels };
+
+  await withFakeOpenCode(async (tempRoot, writer) => {
+    const argsCapturePath = await captureArgs(tempRoot, 'opencode-args-morph.json');
+    await opencodeRuntime.run(
+      'Hi',
+      { cwd: tempRoot, model: 'morph/morph-dsv41flash', effort: 'medium' },
+      writer,
+      morphContext,
+    );
+
+    const capture = JSON.parse(await readFile(argsCapturePath, 'utf8'));
+    const modelAt = capture.args.indexOf('--model');
+    assert.deepEqual(capture.args.slice(modelAt, modelAt + 2), ['--model', 'morph/morph-dsv41flash']);
+    const variantAt = capture.args.indexOf('--variant');
+    assert.deepEqual(capture.args.slice(variantAt, variantAt + 2), ['--variant', 'medium']);
+    assert.equal(capture.args[capture.args.length - 1], 'Hi');
+  });
 });
 
 test('spawnOpenCode passes permission mode flags and env to the CLI', async () => {

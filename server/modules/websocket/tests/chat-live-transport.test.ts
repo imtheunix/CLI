@@ -76,3 +76,41 @@ test('local websocket server delivers Send now and Stop to phone and desktop idl
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test('a detached turn records the model, effort and agent it runs with on the session', { timeout: 10_000 }, async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'chat-agent-record-'));
+  const previousPath = process.env.DATABASE_PATH;
+  closeConnection();
+  process.env.DATABASE_PATH = path.join(directory, 'auth.db');
+  await initializeDatabase();
+  const runtime: ProviderRuntimeGateway = {
+    hasRuntime: () => true, hasBackgroundWork: () => false,
+    getPendingApprovalsForSession: () => [], resolveToolApproval: () => {},
+    stopBackgroundTask: async () => false,
+    abort: async () => true,
+    run: async () => {},
+  };
+  try {
+    const user = userDb.createUser('agent-record-test', 'hash');
+    // A hub session on OpenCode: `tjob hub new` set model, effort and agent on the row.
+    sessionsDb.createAppSession('hub-session', 'opencode', directory);
+    sessionsDb.setSessionModel('hub-session', 'morph/morph-kimik31');
+    sessionsDb.setSessionEffort('hub-session', 'low');
+    sessionsDb.setSessionAgent('hub-session', 'morph-hub');
+
+    await runDetachedChatTurn(
+      { sessionId: 'hub-session', userId: Number(user.id), content: 'wake', options: { agent: 'morph-hub' } },
+      { runtime },
+    );
+
+    const row = sessionsDb.getSessionById('hub-session');
+    assert.ok(row);
+    assert.equal(row.model, 'morph/morph-kimik31');
+    assert.equal(row.effort, 'low');
+    assert.equal(row.agent, 'morph-hub', 'the turn keeps the session on its agent');
+  } finally {
+    connectedClients.clear(); chatRunRegistry.clearAll(); closeConnection();
+    if (previousPath === undefined) delete process.env.DATABASE_PATH; else process.env.DATABASE_PATH = previousPath;
+    await rm(directory, { recursive: true, force: true });
+  }
+});

@@ -83,6 +83,7 @@ test('orchestrator job view attaches usage from transcript with notional USD', a
           codex: { provider: 'codex', model: 'gpt-6.1-terra', models: {}, cap: 1, label: 'GPT', effort: null },
           glm: { provider: 'opencode', model: 'zai-coding-plan/glm-5.3-flash', models: {}, cap: 3, label: 'GLM', effort: null },
           agy: { provider: 'agy', model: 'gemini-3.8-flash-medium', models: {}, cap: 2, label: 'Agy', effort: null },
+          morph: { provider: 'opencode', model: 'morph/morph-dsv41flash', models: {}, cap: 2, label: 'Morph', effort: null },
         },
         fallbackBackend: 'glm',
         glmQuotaFallback: 'wait',

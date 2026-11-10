@@ -10,6 +10,7 @@ import { AppError } from '@/shared/index.js';
 
 import { createOrchestratorRouter } from './orchestrator.routes.js';
 import { getEffectOutbox } from './services/effect-outbox.service.js';
+import { createHubService } from './services/hub.service.js';
 import { createJobsService } from './services/jobs.service.js';
 import { createMergeQueueService } from './services/merge-queue.service.js';
 import { createHubWakeService } from './services/hub-wake.service.js';
@@ -30,6 +31,7 @@ export function createOrchestratorModule(input: { runtime: ProviderRuntimeGatewa
   const jobs = createJobsService({ runtime: input.runtime, config });
   const mergeQueue = createMergeQueueService({ jobs, config });
   const hubWake = createHubWakeService({ runtime: input.runtime, config });
+  const hub = createHubService({ config });
   let timer: ReturnType<typeof setInterval> | null = null;
   let unsubscribe: (() => void) | null = null;
   let ticking = false;
@@ -53,6 +55,7 @@ export function createOrchestratorModule(input: { runtime: ProviderRuntimeGatewa
       jobs,
       mergeQueue,
       hubWake,
+      hub,
       authenticate: input.authenticate,
       caps: () => {
         const { backends } = config();

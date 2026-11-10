@@ -132,6 +132,7 @@ async function spawnOpenCode(command, options = {}, ws, context) {
       cwd,
       model,
       effort,
+      agent,
       sessionSummary,
       images,
       files,
@@ -273,6 +274,13 @@ async function spawnOpenCode(command, options = {}, ws, context) {
       }
       const permissionOptions = resolveOpenCodePermissionOptions(permissionMode);
       args.push(...permissionOptions.args);
+      // A per-session OpenCode agent (e.g. morph-hub) rides along unless the
+      // turn's permission mode already picked one (`plan`). Before the prompt:
+      // the positional prompt must stay the last argument.
+      const sessionAgent = typeof agent === 'string' ? agent.trim() : '';
+      if (sessionAgent && !permissionOptions.args.includes('--agent')) {
+        args.push('--agent', sessionAgent);
+      }
       const hasAttachments =
         normalizeAttachmentDescriptors(images).length > 0
         || normalizeAttachmentDescriptors(files).length > 0;
@@ -295,7 +303,9 @@ async function spawnOpenCode(command, options = {}, ws, context) {
         args,
         cwd: workingDir,
         sessionId: processKey,
-        backend: 'glm',
+        // The real provider id: after a restart the turn reattaches through it
+        // (provider lookup, abort), so a foreign label here would break both.
+        backend: 'opencode',
         jobId: typeof options.jobId === 'string' ? options.jobId : null,
         env: permissionOptions.env,
         onLine: (line) => {

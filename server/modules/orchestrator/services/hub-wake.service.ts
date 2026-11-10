@@ -852,6 +852,9 @@ export function createHubWakeService(deps: HubWakeDependencies) {
     };
     if (session.model) options.model = session.model;
     if (session.effort) options.effort = session.effort;
+    // The hub may run through an OpenCode agent (e.g. morph-hub); a wake is a
+    // turn like any other, so it keeps the session's agent.
+    if (session.agent) options.agent = session.agent;
 
     const wakeId = ++wakeSequence;
     wakeInFlight = wakeId;

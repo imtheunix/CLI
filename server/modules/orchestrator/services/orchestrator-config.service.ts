@@ -97,7 +97,7 @@ export type HubWakeConfig = {
 };
 
 /** Jobs/balancer services: ordinary auto-selection ties, cheapest first. Agy is reserved for quota fallback or explicit requests. */
-export const BACKEND_TIE_ORDER: OrchestratorBackend[] = ['glm', 'codex', 'claude'];
+export const BACKEND_TIE_ORDER: OrchestratorBackend[] = ['glm', 'codex', 'claude', 'morph'];
 
 function defaults(): OrchestratorConfig {
   const home = os.homedir();
@@ -115,6 +115,15 @@ function defaults(): OrchestratorConfig {
         effort: 'medium',
         cap: 3,
         label: 'GLM',
+      },
+      // Morph DeepSeek through OpenCode (jobs); Morph Kimi K3.1 is the hub's model.
+      morph: {
+        provider: 'opencode',
+        model: 'morph/morph-dsv41flash',
+        models: { 'morph/morph-dsv41flash': 'Morph DeepSeek' },
+        effort: 'medium',
+        cap: 2,
+        label: 'Morph',
       },
       zcode: {
         provider: 'zcode',

@@ -178,7 +178,9 @@ test('jobs go to the least busy backend, each a named session in its own worktre
       created.push(await jobs.create({ title, prompt: `do ${title}`, repoPath: repo, backend: null, baseBranch: null }));
       await eventually(() => job(created.at(-1)!.id).state === 'active', `${title} to start`);
     }
-    assert.deepEqual(created.map((c) => job(c.id).backend), ['glm', 'codex', 'claude', 'glm']);
+    // Morph joins the tie order last (prices unknown): the 4th auto job takes
+    // the idle Morph slot instead of a second GLM.
+    assert.deepEqual(created.map((c) => job(c.id).backend), ['glm', 'codex', 'claude', 'morph']);
 
     const first = job(created[0].id);
     assert.equal(first.base_branch, 'main');
@@ -225,6 +227,29 @@ test('GLM runs Flash by default and the full model on request, kept on every lat
     await eventually(() => job(flash.id).state === 'active', 'easy to start');
     assert.equal(job(flash.id).model, 'zai-coding-plan/glm-5.3-flash');
     assert.equal(jobs.get(flash.id)!.model, 'zai-coding-plan/glm-5.3-flash');
+  });
+});
+
+test('a morph job launches opencode with DeepSeek flash at medium effort', async () => {
+  await withWorkspace(async ({ repo, runtime, jobs, job }) => {
+    const created = await jobs.create({ title: 'morph', prompt: 'do it', repoPath: repo, backend: 'morph', baseBranch: null });
+    await eventually(() => job(created.id).state === 'active', 'morph job to start');
+    assert.equal(job(created.id).backend, 'morph');
+    assert.equal(job(created.id).model, 'morph/morph-dsv41flash');
+
+    // The session runs on the opencode provider, so the CLI is `opencode run
+    // --model morph/morph-dsv41flash` once the runtime resolves the same row.
+    const session = sessionsDb.getSessionById(job(created.id).session_id!) as { provider: string; model: string; effort: string; custom_name: string };
+    assert.equal(session.provider, 'opencode');
+    assert.equal(session.model, 'morph/morph-dsv41flash');
+    assert.equal(session.effort, 'medium');
+    assert.equal(session.custom_name, 'Morph DeepSeek · morph');
+
+    const turn = runtime.turns.find((t) => t.sessionId === job(created.id).session_id)!;
+    assert.equal(turn.options.model, 'morph/morph-dsv41flash');
+    assert.equal(turn.options.effort, 'medium');
+    // Morph holds its own slot in the loads the CLI's `tjob ls` prints.
+    assert.equal(jobs.loads().morph, 1);
   });
 });
 
