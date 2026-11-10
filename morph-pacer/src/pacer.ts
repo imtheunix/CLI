@@ -159,8 +159,13 @@ export class Pacer {
         const reservedOut = sumReservations(state, 'output');
         const inputLimit = state.caps.uncachedIn * this.config.headroom;
         const outLimit = state.caps.out * this.config.headroom;
-        const inputOver = totals.uncachedIn + reservedIn + estimatedIn > inputLimit;
-        const outOver = totals.out + reservedOut + estimatedOut > outLimit;
+        const strict = this.config.admission === 'strict';
+        const inputOver = strict
+          ? totals.uncachedIn + reservedIn + estimatedIn > inputLimit
+          : totals.uncachedIn >= inputLimit;
+        const outOver = strict
+          ? totals.out + reservedOut + estimatedOut > outLimit
+          : totals.out >= outLimit;
 
         if (!inputOver && !outOver) break;
         if (now >= deadline) {
@@ -173,10 +178,11 @@ export class Pacer {
         const wait = this.computeWait(
           state,
           now,
-          estimatedIn,
-          estimatedOut,
+          strict ? estimatedIn : 0,
+          strict ? estimatedOut : 0,
           inputOver,
           outOver,
+          strict,
         );
         await this.clock.sleep(Math.max(1, Math.min(wait, deadline - now)));
       }
@@ -204,13 +210,14 @@ export class Pacer {
     estimatedOut: number,
     inputOver: boolean,
     outOver: boolean,
+    strict = true,
   ): number {
     const totals = state.window.totals(now);
     const events = state.window.snapshot(now).sort((a, b) => a.t - b.t);
     const waits: number[] = [];
 
     if (inputOver) {
-      const reservedIn = sumReservations(state, 'input');
+      const reservedIn = strict ? sumReservations(state, 'input') : 0;
       const limit = state.caps.uncachedIn * this.config.headroom;
       const available = limit - reservedIn - estimatedIn;
       if (available < 0) {
@@ -223,7 +230,7 @@ export class Pacer {
     }
 
     if (outOver) {
-      const reservedOut = sumReservations(state, 'output');
+      const reservedOut = strict ? sumReservations(state, 'output') : 0;
       const limit = state.caps.out * this.config.headroom;
       const available = limit - reservedOut - estimatedOut;
       if (available < 0) {

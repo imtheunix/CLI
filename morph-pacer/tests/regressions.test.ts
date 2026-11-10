@@ -29,6 +29,7 @@ test('reserves uncached input at admission so a parallel burst cannot exceed the
     response.end(JSON.stringify({ usage: { prompt_tokens: 900, completion_tokens: 10 } }));
   });
   const proxy = await startProxy({
+    admission: 'strict',
     upstream: upstream.url,
     headroom: 1,
     groups: {

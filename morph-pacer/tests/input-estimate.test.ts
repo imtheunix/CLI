@@ -28,3 +28,31 @@ test('cached context is discounted by the recent uncached share', async () => {
   assert.equal(next.waitMs, 0);
   assert.equal(next.reservedInput, 4_000);
 });
+
+// Morph admits a request whenever the window is under the cap, whatever its size, and answers the
+// next one with 429 + Retry-After (measured 2026-11-10: two 122k-uncached Kimi requests served, the
+// third got 429, Retry-After 21). The default 'morph' admission does the same instead of also
+// counting in-flight reservations and this request's own estimate.
+test('morph admission: concurrent requests go through while the window is under the cap', async () => {
+  const clock = new FakeClock();
+  const pacer = new Pacer({ ...DEFAULT_CONFIG, admission: 'morph' }, clock, quiet);
+  const a = await pacer.admit('morph-kimik31', 400_000 * 4);
+  const b = await pacer.admit('morph-kimik31', 400_000 * 4);
+  assert.equal(a.waitMs, 0);
+  assert.equal(b.waitMs, 0);
+});
+
+test('morph admission: waits once the recorded window is over the cap, until it decays', async () => {
+  const clock = new FakeClock();
+  const pacer = new Pacer({ ...DEFAULT_CONFIG, admission: 'morph', maxWaitMs: 120_000 }, clock, quiet);
+  const first = await pacer.admit('morph-kimik31', 1_000);
+  pacer.complete(first, { promptTokens: 100_000, cachedTokens: 0, completionTokens: 10, reasoningTokens: 0 });
+  let admitted = false;
+  const next = pacer.admit('morph-kimik31', 1_000).then((x) => { admitted = true; return x; });
+  await new Promise((resolve) => setImmediate(resolve)); // let admit start at t=0 before time moves
+  await clock.advance(30_000);
+  assert.equal(admitted, false);
+  await clock.advance(31_000);
+  const got = await next;
+  assert.ok(got.waitMs >= 60_000 && got.waitMs <= 61_000, `waited ${got.waitMs}`);
+});

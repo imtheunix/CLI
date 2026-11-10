@@ -19,6 +19,12 @@ export interface PacerConfig {
   apiKeyFile: string;
   apiKey?: string;
   headroom: number;
+  /**
+   * 'morph' (default): admit while the recorded window is under cap x headroom, as Morph itself does
+   * (measured 2026-11-10: two 122k-uncached Kimi requests were both served; only the third got a 429,
+   * Retry-After 21). 'strict': window + in-flight reservations + this request's estimate must fit.
+   */
+  admission: 'morph' | 'strict';
   maxWaitMs: number;
   maxRetries: number;
   pollMs: number;
@@ -44,6 +50,7 @@ export const DEFAULT_CONFIG: PacerConfig = {
   upstream: 'https://api.morphllm.com/v1',
   apiKeyFile: '~/.config/morph/api_key',
   headroom: 0.95,
+  admission: 'morph',
   maxWaitMs: 120_000,
   maxRetries: 6,
   pollMs: 100,

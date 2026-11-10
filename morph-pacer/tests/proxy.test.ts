@@ -99,6 +99,7 @@ test('waits for the output window to decay before forwarding', { timeout: 5_000 
     response.end(JSON.stringify({ usage: { prompt_tokens: 10, completion_tokens: out } }));
   });
   const proxy = await startProxy({
+    admission: 'strict',
     upstream: upstream.url,
     groups: {
       test: { models: ['morph-test'], caps: { uncachedIn: 100_000, out: 1_000 } },
@@ -186,6 +187,7 @@ test('forwards after the max wait instead of rejecting for budget', { timeout: 5
     response.end(JSON.stringify({ usage: { prompt_tokens: 10, completion_tokens: out } }));
   });
   const proxy = await startProxy({
+    admission: 'strict',
     upstream: upstream.url,
     maxWaitMs: 1_000,
     groups: {
@@ -230,6 +232,7 @@ test('shares one budget across both DeepSeek model ids', { timeout: 5_000 }, asy
     response.end(JSON.stringify({ usage: { prompt_tokens: 10, completion_tokens: out } }));
   });
   const proxy = await startProxy({
+    admission: 'strict',
     upstream: upstream.url,
     groups: {
       deepseek: {
