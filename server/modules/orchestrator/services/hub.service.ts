@@ -64,10 +64,17 @@ function hubStatus(config: OrchestratorConfig): HubStatus {
  */
 function writeHubSession(sessionId: string, file: string): void {
   let raw: Record<string, unknown> = {};
-  try {
-    raw = JSON.parse(readFileSync(file, 'utf8')) as Record<string, unknown>;
-  } catch {
-    // No file yet, or unreadable: the hub entry starts fresh either way.
+  // Only a missing file starts fresh. An unreadable or invalid one must stop
+  // here: rewriting it from {} would drop every other setting (backends, checks).
+  if (existsSync(file)) {
+    try {
+      raw = JSON.parse(readFileSync(file, 'utf8')) as Record<string, unknown>;
+    } catch (error) {
+      throw new AppError(`${file} is not valid JSON; refusing to rewrite it (${(error as Error).message})`, {
+        code: 'HUB_CONFIG_INVALID',
+        statusCode: 500,
+      });
+    }
   }
   const existing = typeof raw.hub === 'object' && raw.hub !== null ? raw.hub as Record<string, unknown> : {};
   const hub = { ...existing, sessionId };

@@ -186,3 +186,18 @@ test('tjob hub use refuses an unknown session; hub/new refuses an unknown provid
     assert.equal(errorOf(noProvider.status, noProvider.body).code, 'INVALID_REQUEST_BODY');
   });
 });
+
+test('tjob hub use refuses to rewrite an invalid orchestrator.json instead of dropping its settings', async () => {
+  await withHubServer(async ({ baseUrl, configFile }) => {
+    const created = await post(baseUrl, '/hub/new', { provider: 'opencode', model: 'morph/morph-kimik31', cwd: tmpdir() });
+    const session = (dataOf(created.body) as { session: Record<string, unknown> }).session;
+
+    const broken = '{ "backends": { "glm": { "cap": 3 } }, "hub": ';
+    await writeFile(configFile, broken);
+    const used = await post(baseUrl, '/hub/use', { sessionId: session.sessionId });
+    const error = errorOf(used.status, used.body);
+    assert.equal(error.status, 500);
+    assert.equal(error.code, 'HUB_CONFIG_INVALID');
+    assert.equal(await readFile(configFile, 'utf8'), broken, 'the file is left as it was');
+  });
+});
