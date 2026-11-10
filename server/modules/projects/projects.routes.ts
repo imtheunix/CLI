@@ -61,13 +61,10 @@ function parseNonNegativeIntQuery(value: unknown, name: string, fallback: number
 router.get(
   '/',
   asyncHandler(async (req, res) => {
-    const skipSynchronization =
-      readQueryStringValue(req.query.skipSynchronization).trim() === '1' ||
-      readQueryStringValue(req.query.skipSync).trim() === '1';
     const sessionsLimit = readOptionalNumericQueryValue(req.query.sessionsLimit) ?? undefined;
     const sessionsOffset = readOptionalNumericQueryValue(req.query.sessionsOffset) ?? undefined;
     const projects = await getProjectsWithSessions({
-      skipSynchronization,
+      skipSynchronization: true,
       sessionsLimit,
       sessionsOffset,
     });
@@ -78,7 +75,7 @@ router.get(
 router.get(
   '/archived',
   asyncHandler(async (_req, res) => {
-    const projects = await getArchivedProjectsWithSessions();
+    const projects = await getArchivedProjectsWithSessions({ skipSynchronization: true });
     res.json(createApiSuccessResponse({ projects }));
   }),
 );
