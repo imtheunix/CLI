@@ -285,15 +285,20 @@ export function createOpenCodeTurnLineParser(normalizeMessage) {
           }
           return;
         }
-        // Diverged from the streamed prefix: emit the authoritative text
-        // rather than lose it.
+        // Diverged from the streamed prefix. The normalized protocol has no
+        // replace/rewind event, so the already-streamed prefix cannot be
+        // retracted without a client change. Emit the authoritative text
+        // rather than lose it; this is the one case where the client may see
+        // both the divergent prefix and the completed text.
         for (const message of normalizeMessage(event, sid)) {
           writer?.send(message);
         }
         return;
       }
 
-      if (streamBroken) {
+      // After a reset, stale synthetic bridge deltas must not print, but
+      // authoritative run stdout may still use the same flat delta shape.
+      if (streamBroken && event.bridge === true) {
         return;
       }
 
@@ -328,6 +333,9 @@ export function createOpenCodeTurnLineParser(normalizeMessage) {
         continue;
       }
       if (type === 'text' && partId) {
+        if (streamBroken && event.bridge === true) {
+          continue;
+        }
         if (typeof part.text === 'string') {
           streamedTextByPart.set(partId, part.text);
         } else {

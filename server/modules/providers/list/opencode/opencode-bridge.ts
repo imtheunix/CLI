@@ -14,6 +14,7 @@
  * ordinary authoritative `opencode run` instead of failing the turn.
  */
 
+import { spawnSync } from 'node:child_process';
 import type { ChildProcess, SpawnOptions } from 'node:child_process';
 import net from 'node:net';
 
@@ -115,20 +116,51 @@ const killGroup = (child: ChildProcess | null, signal: NodeJS.Signals): void => 
     return;
   }
   try {
-    if (process.platform !== 'win32') {
-      process.kill(-child.pid, signal);
-    } else {
-      child.kill(signal);
-    }
+    process.kill(-child.pid, signal);
   } catch {}
 };
 
 /**
- * Bounded process-tree teardown. The group is signalled even when the leader
- * already exited, because a grandchild may still hold the inherited stdout.
+ * Windows has no process groups, so use the built-in `taskkill /T` to reach
+ * the private SDK's descendants. Bounded by the same cleanup timeout; if the
+ * utility is unavailable, fall back to killing the leader.
+ */
+const killWindowsTree = (child: ChildProcess, signal: NodeJS.Signals): void => {
+  if (!child.pid) {
+    return;
+  }
+  try {
+    const result = spawnSync('taskkill', ['/PID', String(child.pid), '/T', '/F'], {
+      stdio: 'ignore',
+      timeout: CLEANUP_TIMEOUT_MS,
+      windowsHide: true,
+    });
+    if (result.error) {
+      child.kill(signal);
+    }
+  } catch {
+    try {
+      child.kill(signal);
+    } catch {}
+  }
+};
+
+/**
+ * Bounded process-tree teardown. On POSIX the group is signalled even when the
+ * leader already exited, because a grandchild may still hold the inherited
+ * stdout. On Windows `taskkill /T` walks the tree.
  */
 const terminate = async (child: ChildProcess | null): Promise<void> => {
   if (!child) {
+    return;
+  }
+  if (process.platform === 'win32') {
+    killWindowsTree(child, 'SIGTERM');
+    if (!(await waitForExit(child, CLEANUP_TIMEOUT_MS))) {
+      try {
+        child.kill('SIGKILL');
+      } catch {}
+    }
     return;
   }
   killGroup(child, 'SIGTERM');
@@ -385,6 +417,7 @@ const runBridge = async (): Promise<number> => {
   let serve: ChildProcess | null = null;
   let run: ChildProcess | null = null;
   let runFinished = false;
+  let runExited = false;
   let shuttingDown = false;
   let shutdownPromise: Promise<void> | null = null;
   let sseDone: Promise<void> | null = null;
@@ -403,6 +436,9 @@ const runBridge = async (): Promise<number> => {
   const emitDelta = (delta: SseDelta): void => {
     writeLine(JSON.stringify({
       type: 'text',
+      // Internal marker: the parser may drop these stale synthetic deltas
+      // after a stream reset while still accepting authoritative run stdout.
+      bridge: true,
       sessionID: delta.sessionId,
       part: {
         id: delta.partId,
@@ -432,16 +468,24 @@ const runBridge = async (): Promise<number> => {
   };
 
   const handleSseEvent = (event: SseEvent): void => {
-    if (shuttingDown || runFinished) {
+    if (shuttingDown || runFinished || runExited) {
       return;
     }
-    if (event.id) {
-      if (seenEventIds.has(event.id)) {
+    // Real OpenCode events carry their identity in the JSON body
+    // (`{ id, type, properties }`); the SSE `id:` field is a compatibility
+    // fallback for older/simpler producers.
+    const data = event.data;
+    const jsonId = data && typeof data === 'object' && typeof (data as { id?: unknown }).id === 'string'
+      ? (data as { id: string }).id
+      : null;
+    const identity = jsonId || event.id;
+    if (identity) {
+      if (seenEventIds.has(identity)) {
         return;
       }
-      seenEventIds.add(event.id);
+      seenEventIds.add(identity);
     }
-    const delta = readDelta(event.data);
+    const delta = readDelta(data);
     if (!delta) {
       return;
     }
@@ -571,10 +615,12 @@ const runBridge = async (): Promise<number> => {
     });
     const exitCode = await new Promise<number>((resolve) => {
       run!.once('error', (error) => {
+        runExited = true;
         writeError(error.message);
         resolve(1);
       });
       run!.once('exit', (code, signal) => {
+        runExited = true;
         resolve(code ?? (signal ? 1 : 0));
       });
     });

@@ -69,6 +69,11 @@ if (args[0] === 'serve') {
             sendNext();
             return;
           }
+          if (frame && typeof frame === 'object' && frame.marker) {
+            fs.writeFileSync(frame.marker, '1');
+            sendNext();
+            return;
+          }
           if (frame && typeof frame === 'object' && frame.destroy) {
             res.destroy();
             return;
@@ -693,6 +698,44 @@ test('spawnOpenCode falls back to the completed part when the producer sent no d
   }
 });
 
+const FLAT_STDOUT_FALLBACK_SCRIPT = buildFakeOpenCodeScript(`
+const say = (event) => process.stdout.write(JSON.stringify(event) + '\\n');
+const part = { id: 'prt_1', messageID: 'msg_1', sessionID: 'open-live-1', type: 'text' };
+say({ type: 'text', sessionID: 'open-live-1', part: { ...part }, delta: 'Hel' });
+say({ type: 'text', sessionID: 'open-live-1', part: { ...part }, delta: 'lo' });
+say({ type: 'text', sessionID: 'open-live-1', part: { ...part, text: 'Hello' } });
+say({ type: 'step_finish', sessionID: 'open-live-1' });
+`);
+
+test('spawnOpenCode keeps authoritative flat stdout deltas after a startup fallback reset', async () => {
+  const previousDisableSystemd = process.env.CLI_DISABLE_SYSTEMD_RUN;
+  const previousTurnsDir = process.env.CLI_TURNS_DIR;
+  const previousServeFail = process.env.OPENCODE_FAKE_SERVE_FAIL;
+  process.env.CLI_DISABLE_SYSTEMD_RUN = '1';
+  process.env.OPENCODE_FAKE_SERVE_FAIL = '1';
+
+  try {
+    await withFakeOpenCode(async (tempRoot, writer, messages) => {
+      process.env.CLI_TURNS_DIR = path.join(tempRoot, 'turns');
+      await opencodeRuntime.run('Hi', { cwd: tempRoot }, writer, runtimeContext);
+
+      const deltas = messages.filter((message) => message.kind === 'stream_delta');
+      assert.deepEqual(deltas.map((message) => message.content), ['Hel', 'lo']);
+      // The completed part repeats the streamed text; it must not be sent again.
+      assert.equal(messages.filter((message) => message.kind === 'text' && message.content === 'Hello').length, 0);
+      assert.equal(messages.filter((message) => message.kind === 'stream_end').length, 1);
+      assert.equal(messages.filter((message) => message.kind === 'complete').length, 1);
+    }, FLAT_STDOUT_FALLBACK_SCRIPT);
+  } finally {
+    if (previousDisableSystemd === undefined) delete process.env.CLI_DISABLE_SYSTEMD_RUN;
+    else process.env.CLI_DISABLE_SYSTEMD_RUN = previousDisableSystemd;
+    if (previousTurnsDir === undefined) delete process.env.CLI_TURNS_DIR;
+    else process.env.CLI_TURNS_DIR = previousTurnsDir;
+    if (previousServeFail === undefined) delete process.env.OPENCODE_FAKE_SERVE_FAIL;
+    else process.env.OPENCODE_FAKE_SERVE_FAIL = previousServeFail;
+  }
+});
+
 test('OpenCode turn line parser primes a partial stream and sends only the completion remainder', () => {
   const parser = createOpenCodeTurnLineParser((raw, sessionId) => sessionsProvider.normalizeMessage(raw, sessionId));
   const messages = [];
@@ -773,12 +816,14 @@ test('OpenCode turn line parser keeps the streamed prefix across a reset and ign
   };
   const deltaLine = JSON.stringify({
     type: 'text',
+    bridge: true,
     sessionID: 'open-live-1',
     part: { id: 'prt_1', messageID: 'msg_1', type: 'text' },
     delta: 'Hel',
   });
   const lateDeltaLine = JSON.stringify({
     type: 'text',
+    bridge: true,
     sessionID: 'open-live-1',
     part: { id: 'prt_1', messageID: 'msg_1', type: 'text' },
     delta: 'late',
@@ -811,6 +856,96 @@ test('OpenCode turn line parser keeps the streamed prefix across a reset and ign
   assert.equal(messages.length, 3);
   assert.equal(messages[2].kind, 'stream_delta');
   assert.equal(messages[2].content, 'lo');
+});
+
+test('OpenCode turn line parser keeps authoritative flat stdout deltas after a reset but drops marked bridge deltas', () => {
+  const parser = createOpenCodeTurnLineParser((raw, sessionId) => sessionsProvider.normalizeMessage(raw, sessionId));
+  const messages = [];
+  const writer = {
+    send(message) {
+      messages.push(message);
+    },
+    setSessionId() {},
+    getSessionId: () => 'open-live-1',
+  };
+  const bridgeDelta = JSON.stringify({
+    type: 'text',
+    bridge: true,
+    sessionID: 'open-live-1',
+    part: { id: 'prt_1', messageID: 'msg_1', type: 'text' },
+    delta: 'Hel',
+  });
+  const bridgeLateDelta = JSON.stringify({
+    type: 'text',
+    bridge: true,
+    sessionID: 'open-live-1',
+    part: { id: 'prt_1', messageID: 'msg_1', type: 'text' },
+    delta: 'late',
+  });
+  // Authoritative run stdout uses the same flat shape but carries no bridge marker.
+  const authoritativeDelta = JSON.stringify({
+    type: 'text',
+    sessionID: 'open-live-1',
+    part: { id: 'prt_1', messageID: 'msg_1', type: 'text' },
+    delta: 'lo',
+  });
+  const completedLine = JSON.stringify({
+    type: 'text',
+    sessionID: 'open-live-1',
+    part: { id: 'prt_1', messageID: 'msg_1', type: 'text', text: 'Hello' },
+  });
+
+  parser(bridgeDelta, writer, 'app-session');
+  parser(JSON.stringify({ type: 'stream_reset' }), writer, 'app-session');
+  parser(bridgeLateDelta, writer, 'app-session');
+  parser(authoritativeDelta, writer, 'app-session');
+  parser(completedLine, writer, 'app-session');
+
+  assert.deepEqual(
+    messages.map((message) => ({ kind: message.kind, content: message.content })),
+    [
+      { kind: 'stream_delta', content: 'Hel' },
+      { kind: 'stream_delta', content: 'lo' },
+    ],
+  );
+});
+
+test('OpenCode turn line parser emits the authoritative text when a completion diverges from the streamed prefix', () => {
+  const parser = createOpenCodeTurnLineParser((raw, sessionId) => sessionsProvider.normalizeMessage(raw, sessionId));
+  const messages = [];
+  const writer = {
+    send(message) {
+      messages.push(message);
+    },
+    setSessionId() {},
+    getSessionId: () => 'open-live-1',
+  };
+  const deltaLine = JSON.stringify({
+    type: 'text',
+    sessionID: 'open-live-1',
+    part: { id: 'prt_1', messageID: 'msg_1', type: 'text' },
+    delta: 'Hel',
+  });
+  const completedLine = JSON.stringify({
+    type: 'text',
+    sessionID: 'open-live-1',
+    part: { id: 'prt_1', messageID: 'msg_1', type: 'text', text: 'World' },
+  });
+
+  parser(deltaLine, writer, 'app-session');
+  parser(completedLine, writer, 'app-session');
+
+  // The normalized protocol has no replace/rewind event, so a divergent
+  // completion cannot retract the already-streamed prefix. The honest
+  // behavior is to keep the authoritative text rather than lose it; the
+  // client may see both. This test documents that limitation.
+  assert.deepEqual(
+    messages.map((message) => ({ kind: message.kind, content: message.content })),
+    [
+      { kind: 'stream_delta', content: 'Hel' },
+      { kind: 'text', content: 'World' },
+    ],
+  );
 });
 
 const isPidAlive = (pid) => {
@@ -1014,6 +1149,21 @@ const sseDeltaFrame = (id, text, sessionId = 'open-live-1', partId = 'prt_1') =>
   })}\n\n`;
 };
 
+// Production OpenCode /event frames carry the event identity in the JSON body.
+const sseJsonIdDeltaFrame = (id, text, sessionId = 'open-live-1', partId = 'prt_1') => {
+  return `data: ${JSON.stringify({
+    id,
+    type: 'message.part.delta',
+    properties: {
+      sessionID: sessionId,
+      messageID: 'msg_1',
+      partID: partId,
+      field: 'text',
+      delta: text,
+    },
+  })}\n\n`;
+};
+
 test('spawnOpenCode falls back to an ordinary run when the private serve cannot start', async () => {
   await withEnv({ CLI_DISABLE_SYSTEMD_RUN: '1', OPENCODE_FAKE_SERVE_FAIL: '1' }, async () => {
     await withFakeOpenCode(async (tempRoot, writer, messages) => {
@@ -1071,6 +1221,8 @@ test('spawnOpenCode resets a clean early SSE EOF and restores the completed text
 
         const deltas = messages.filter((message) => message.kind === 'stream_delta').map((message) => message.content);
         assert.deepEqual(deltas, ['Hel', 'lo']);
+        // The old bug suppressed the completed part and left only "Hel".
+        assert.equal(deltas.join(''), 'Hello');
         assert.equal(messages.filter((message) => message.kind === 'text' && message.content === 'Hello').length, 0);
       });
     }, buildFakeOpenCodeScript(`
@@ -1110,6 +1262,8 @@ test('spawnOpenCode resets a failed SSE stream and restores the completed text',
 
         const deltas = messages.filter((message) => message.kind === 'stream_delta').map((message) => message.content);
         assert.deepEqual(deltas, ['Hel', 'lo']);
+        // The old bug suppressed the completed part and left only "Hel".
+        assert.equal(deltas.join(''), 'Hello');
         assert.equal(messages.filter((message) => message.kind === 'text' && message.content === 'Hello').length, 0);
       });
     }, buildFakeOpenCodeScript(`
@@ -1163,7 +1317,7 @@ console.log(JSON.stringify({ type: 'step_finish', sessionID: 'open-live-1' }));
   });
 });
 
-test('spawnOpenCode suppresses replayed SSE event ids but keeps repeated chunks with different ids', async () => {
+test('spawnOpenCode suppresses replayed JSON event ids but keeps repeated chunks with different ids', async () => {
   await withEnv({ CLI_DISABLE_SYSTEMD_RUN: '1' }, async () => {
     await withFakeOpenCode(async (tempRoot, writer, messages) => {
       const runGo = path.join(tempRoot, 'run-go');
@@ -1173,11 +1327,11 @@ test('spawnOpenCode suppresses replayed SSE event ids but keeps repeated chunks 
       await withEnv({
         CLI_TURNS_DIR: path.join(tempRoot, 'turns'),
         OPENCODE_FAKE_SSE_FRAMES: JSON.stringify([
-          sseDeltaFrame('evt1', 'A'),
-          sseDeltaFrame('evt1', 'A'),
-          sseDeltaFrame('evt2', 'A'),
+          sseJsonIdDeltaFrame('evt1', 'A'),
+          sseJsonIdDeltaFrame('evt1', 'A'),
+          sseJsonIdDeltaFrame('evt2', 'A'),
           { waitFor: completed },
-          sseDeltaFrame('evt3', 'B'),
+          sseJsonIdDeltaFrame('evt3', 'B'),
         ]),
         OPENCODE_FAKE_SSE_SENT: sseSent,
         OPENCODE_RUN_GO: runGo,
@@ -1223,6 +1377,114 @@ test('spawnOpenCode suppresses replayed SSE event ids but keeps repeated chunks 
     }, buildFakeOpenCodeScript(`
 waitForFile(process.env.OPENCODE_RUN_GO, 5000);
 console.log(JSON.stringify({ type: 'text', sessionID: 'open-live-1', part: { id: 'prt_1', messageID: 'msg_1', type: 'text', text: 'AA' } }));
+fs.writeFileSync(process.env.OPENCODE_COMPLETED, '1');
+waitForFile(process.env.OPENCODE_RUN_DONE, 5000);
+`));
+  });
+});
+
+test('spawnOpenCode still suppresses replayed SSE id fields for compatibility', async () => {
+  await withEnv({ CLI_DISABLE_SYSTEMD_RUN: '1' }, async () => {
+    await withFakeOpenCode(async (tempRoot, writer, messages) => {
+      const runGo = path.join(tempRoot, 'run-go');
+      await withEnv({
+        CLI_TURNS_DIR: path.join(tempRoot, 'turns'),
+        OPENCODE_FAKE_SSE_FRAMES: JSON.stringify([
+          sseDeltaFrame('evt1', 'A'),
+          sseDeltaFrame('evt1', 'A'),
+          sseDeltaFrame('evt2', 'A'),
+        ]),
+        OPENCODE_RUN_GO: runGo,
+      }, async () => {
+        let deltaCount = 0;
+        let twoDeltas;
+        const twoDeltasPromise = new Promise((resolve) => { twoDeltas = resolve; });
+        const originalSend = writer.send.bind(writer);
+        writer.send = (message) => {
+          originalSend(message);
+          if (message.kind === 'stream_delta') {
+            deltaCount += 1;
+            if (deltaCount === 2) twoDeltas();
+          }
+        };
+
+        const runPromise = opencodeRuntime.run(
+          'Hi',
+          { cwd: tempRoot, sessionId: 'open-live-1' },
+          writer,
+          runtimeContext,
+        );
+        await twoDeltasPromise;
+        await writeFile(runGo, '1');
+        await runPromise;
+
+        const deltas = messages.filter((message) => message.kind === 'stream_delta').map((message) => message.content);
+        assert.deepEqual(deltas, ['A', 'A']);
+      });
+    }, buildFakeOpenCodeScript(`
+waitForFile(process.env.OPENCODE_RUN_GO, 5000);
+console.log(JSON.stringify({ type: 'text', sessionID: 'open-live-1', part: { id: 'prt_1', messageID: 'msg_1', type: 'text', text: 'AA' } }));
+console.log(JSON.stringify({ type: 'step_finish', sessionID: 'open-live-1' }));
+`));
+  });
+});
+
+test('spawnOpenCode does not flush buffered deltas after the root completion', async () => {
+  await withEnv({ CLI_DISABLE_SYSTEMD_RUN: '1' }, async () => {
+    await withFakeOpenCode(async (tempRoot, writer, messages) => {
+      const firstFrame = path.join(tempRoot, 'first-frame');
+      const runGo = path.join(tempRoot, 'run-go');
+      const completed = path.join(tempRoot, 'completed');
+      const runDone = path.join(tempRoot, 'run-done');
+      const sseSent = path.join(tempRoot, 'sse-sent');
+      await withEnv({
+        CLI_TURNS_DIR: path.join(tempRoot, 'turns'),
+        OPENCODE_FAKE_SSE_FRAMES: JSON.stringify([
+          sseJsonIdDeltaFrame('evt1', 'Hel'),
+          { marker: firstFrame },
+          { waitFor: completed },
+          sseJsonIdDeltaFrame('evt2', 'late'),
+        ]),
+        OPENCODE_FAKE_SSE_SENT: sseSent,
+        OPENCODE_RUN_GO: runGo,
+        OPENCODE_COMPLETED: completed,
+        OPENCODE_RUN_DONE: runDone,
+      }, async () => {
+        const runPromise = opencodeRuntime.run('Hi', { cwd: tempRoot }, writer, runtimeContext);
+        await eventually(async () => {
+          try {
+            await readFile(firstFrame, 'utf8');
+            return true;
+          } catch {
+            return false;
+          }
+        }, 'the first SSE frame to be sent');
+
+        // The delta is buffered because no root is known yet.
+        assert.equal(messages.filter((message) => message.kind === 'stream_delta').length, 0);
+        await writeFile(runGo, '1');
+        await eventually(async () => {
+          try {
+            await readFile(sseSent, 'utf8');
+            return true;
+          } catch {
+            return false;
+          }
+        }, 'the late SSE frame to be sent');
+        await writeFile(runDone, '1');
+        await runPromise;
+
+        // The completed part was already known when the buffer flushed, so
+        // neither the buffered prefix nor the late delta may be emitted.
+        assert.equal(messages.filter((message) => message.kind === 'stream_delta').length, 0);
+        assert.deepEqual(
+          messages.filter((message) => message.kind === 'text').map((message) => message.content),
+          ['Hello'],
+        );
+      });
+    }, buildFakeOpenCodeScript(`
+waitForFile(process.env.OPENCODE_RUN_GO, 5000);
+console.log(JSON.stringify({ type: 'text', sessionID: 'open-live-1', part: { id: 'prt_1', messageID: 'msg_1', type: 'text', text: 'Hello' } }));
 fs.writeFileSync(process.env.OPENCODE_COMPLETED, '1');
 waitForFile(process.env.OPENCODE_RUN_DONE, 5000);
 `));
