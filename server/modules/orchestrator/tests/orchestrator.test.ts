@@ -73,6 +73,19 @@ async function eventually(check: () => boolean, what: string): Promise<void> {
   assert.fail(`timed out waiting for ${what}`);
 }
 
+/** Awaits a promise, failing the test if it has not settled by `ms`; the timer never keeps the process alive. */
+async function settleWithin<T>(promise: Promise<T>, ms: number, what: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`timed out after ${ms} ms waiting for ${what}`)), ms);
+  });
+  try {
+    return await Promise.race([promise, deadline]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 /** A workspace with an origin, its main checkout, and an orchestrator wired to both. */
 async function withWorkspace(
   runTest: (ctx: {
@@ -802,6 +815,82 @@ test('tjob cancel through the jobs service withdraws a job from the queue', asyn
     assert.ok(readMergeStepHistory(ctx.job(id)).some((event) => event.step === 'cancelled' && event.by === 'tjob cancel'));
   });
 });
+
+for (const step of ['rebase', 'check'] as const) {
+  test(`tjob cancel then a rejected in-flight ${step} cannot resurrect the job`, async () => {
+    await withWorkspace(async (ctx) => {
+      const id = await finishedJob(ctx, (worktree) => commitFile(worktree, 'feature.txt', 'f\n', 'feature'));
+      const worktree = ctx.job(id).worktree_path;
+      const originBefore = git(ctx.repo, 'rev-parse', 'origin/main');
+      const turnsBefore = ctx.runtime.turns.length;
+
+      let rejectOperation!: (error: Error) => void;
+      const blocked = new Promise<CommandResult>((_, reject) => { rejectOperation = reject; });
+      let operationStarted!: () => void;
+      const started = new Promise<void>((resolve) => { operationStarted = resolve; });
+      // The deferred operation returns a promise and never calls options.onSpawn: by construction it has no child.
+      let afterCancel = false;
+      const postCancelSpawns: number[] = [];
+      const isBlocked = (command: string, args: string[]) =>
+        step === 'rebase'
+          ? command === 'git' && args[0] === 'rebase' && args[1] === 'origin/main'
+          : command === 'nice';
+      const run: typeof runCommand = (command, args, options) => {
+        if (isBlocked(command, args)) {
+          operationStarted();
+          return blocked;
+        }
+        if (!afterCancel) return runCommand(command, args, options);
+        // A command after cancellation must not leave a child behind: record it, kill it, and fail below.
+        return runCommand(command, args, {
+          ...options,
+          onSpawn: (pid) => {
+            postCancelSpawns.push(pid);
+            try { process.kill(pid, 'SIGKILL'); } catch { /* already gone */ }
+            options?.onSpawn?.(pid);
+          },
+        });
+      };
+      const queue = createMergeQueueService({ jobs: ctx.jobs, config: () => ctx.config, run });
+      if (step === 'rebase') {
+        await queue.tick();
+        assert.equal(ctx.job(id).merge_step, 'rebase');
+      } else {
+        await drain(queue, () => ctx.job(id), ['check']);
+        assert.equal(ctx.job(id).merge_step, 'check');
+      }
+
+      const ticking = queue.tick();
+      await started;
+      assert.equal(ctx.job(id).merge_step, step);
+
+      // The real orchestrator.module.ts wiring: jobs.cancel withdraws through the queue, then its own
+      // tick performs the automatic cleanup of the cancelled job's owned worktree.
+      const jobs = ctx.createJobs({ withdrawFromMergeQueue: (job) => queue.cancel(job) });
+      const view = await jobs.cancel(id);
+      assert.equal(view.state, 'cancelled');
+      assert.equal(view.merge_step, 'none');
+      assert.equal(existsSync(worktree), false, 'the owned worktree is removed before the operation rejects');
+
+      afterCancel = true;
+      rejectOperation(new Error(`injected ${step} rejection after cancellation`));
+      await settleWithin(ticking, 5_000, 'the queue tick to settle after the rejection');
+      // Later ticks must not advance the cancelled job to push or deploy.
+      await settleWithin(queue.tick(), 5_000, 'a later queue tick to settle');
+
+      const cancelled = ctx.job(id);
+      assert.equal(cancelled.state, 'cancelled');
+      assert.equal(cancelled.merge_step, 'none');
+      assert.equal(cancelled.pushed_sha, null);
+      assert.equal(git(ctx.repo, 'rev-parse', 'origin/main'), originBefore);
+      assert.equal(ctx.runtime.turns.length, turnsBefore, 'no new runtime turn or model notification');
+      assert.deepEqual(postCancelSpawns, [], 'no command after cancellation spawned a child');
+      // The rejection reaches the tick catch (merge-queue.service.ts:531-536), which records it as bookkeeping only.
+      assert.match(cancelled.last_error ?? '', new RegExp(`injected ${step} rejection after cancellation`));
+      assert.ok(readMergeStepHistory(cancelled).some((event) => event.step === 'cancelled' && event.by === 'tjob cancel'));
+    });
+  });
+}
 
 test('a restart between the push and recording it resumes at the deploy, without pushing twice', async () => {
   await withWorkspace(async (ctx) => {
