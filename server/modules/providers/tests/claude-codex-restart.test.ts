@@ -243,7 +243,7 @@ test('a relayed Claude turn survives a server kill: the relay answers the pendin
     assert.match(log, /tool deny/, 'the orphaned permission request was denied');
     assert.match(log, /part 2/);
     assert.match(log, /"type":"result"/);
-    await eventually(() => !isTurnAlive(unitName), 'the unit to be gone');
+    await eventually(async () => !(await isTurnAlive(unitName)), 'the unit to be gone');
   });
 });
 
@@ -255,7 +255,7 @@ test('reattach after a restart streams a live Claude turn through the Claude lin
       registerTextParser();
 
       const { unitName } = await startTurnThenKillServer(root, fakeClaude, 'session-reattach');
-      assert.ok(isTurnAlive(unitName), 'still running after the server died');
+      assert.ok(await isTurnAlive(unitName), 'still running after the server died');
 
       const received: NormalizedMessage[] = [];
       const writer = { send: (msg: NormalizedMessage) => received.push(msg) };
@@ -289,7 +289,7 @@ test('a Claude turn that finished while the server was down is finalized on star
     registerTextParser();
     sessionsDb.createAppSession('session-down', 'claude', root);
     const { unitName, logPath } = await startTurnThenKillServer(root, fakeClaude, 'session-down');
-    await eventually(() => readRelayExit(logPath) !== null && !isTurnAlive(unitName), 'the turn to end while down');
+    await eventually(async () => readRelayExit(logPath) !== null && !(await isTurnAlive(unitName)), 'the turn to end while down');
 
     const finalized: Array<{ unit: string; exitCode: number }> = [];
     await reattachActiveTurns({
@@ -388,7 +388,7 @@ test('a turn held open for background work keeps stdin open after the server die
       await eventually(() => readRelayExit(logPath) !== null, 'the CLI to exit once the background work is done', 15_000);
       assert.deepEqual(readRelayExit(logPath), { code: 0, signal: null });
       assert.match(readFileSync(logPath, 'utf8'), /background done/, 'the follow-up turn was not lost');
-      await eventually(() => !isTurnAlive(unitName), 'the unit to be gone');
+      await eventually(async () => !(await isTurnAlive(unitName)), 'the unit to be gone');
     } finally {
       delete process.env.FAKE_PID_FILE;
       delete process.env.FAKE_BG_MS;
@@ -430,7 +430,7 @@ test('a reattached Claude turn held for background work is complete for the clie
 
       await reattachActiveTurns({}); // the real chat run registry
       assert.equal(chatRunRegistry.getRun('session-hold')?.status, 'completed', 'the run is complete for the client');
-      assert.ok(isTurnAlive(unitName), 'while the unit is still held');
+      assert.ok(await isTurnAlive(unitName), 'while the unit is still held');
       const held = listClaudeSDKBackgroundWork().find((work) => work.sessionId === 'session-hold');
       assert.deepEqual(held?.tasks.map((task) => task.taskId), ['task-1'], 'the background task is tracked');
 
@@ -494,7 +494,7 @@ test('aborting a session stops every running turn it has, not just the first', {
       process.env.FAKE_PID_FILE = path.join(root, `${name}.pid`);
       const { unitName } = await startTurnThenKillServer(root, fakeClaude, 'session-many');
       pids.push(Number(readFileSync(process.env.FAKE_PID_FILE, 'utf8')));
-      assert.ok(isTurnAlive(unitName));
+      assert.ok(await isTurnAlive(unitName));
     }
     delete process.env.FAKE_PID_FILE;
     assert.equal(runningTurnsDb.listRunningTurns().filter((turn) => turn.session_id === 'session-many').length, 2);
@@ -527,7 +527,7 @@ test('superseding still retires the old process: by its unit when driven here, a
     assert.ok(pidAlive(leftPid));
     assert.equal(await retireDetachedSessionTurns('session-sup', 'claude'), 1);
     await eventually(() => !pidAlive(leftPid), 'the reattached CLI to be gone');
-    assert.equal(isTurnAlive(unitName), false);
+    assert.equal(await isTurnAlive(unitName), false);
     assert.equal(runningTurnsDb.getTurn(unitName)?.status, 'completed');
   });
 });
@@ -544,7 +544,7 @@ test('the Codex wrapper runs the CLI in a unit that outlives the wrapper', { ski
     run.stdout.on('data', (chunk) => { out += chunk; });
     run.stdin.end('hello codex');
     const code = await new Promise((resolve) => run.once('exit', resolve));
-    exec.complete();
+    await exec.complete();
     assert.equal(code, 0);
     assert.match(out, /echo hello codex exec --json/);
     assert.equal(runningTurnsDb.getTurn(exec.unitName)?.exit_code, 0);
@@ -560,7 +560,7 @@ test('the Codex wrapper runs the CLI in a unit that outlives the wrapper', { ski
     await eventually(() => readRelayExit(logPath) !== null, 'the CLI to finish without its wrapper');
     assert.match(readFileSync(logPath, 'utf8'), /echo second/);
     assert.deepEqual(readRelayExit(logPath), { code: 0, signal: null });
-    exec2.complete();
+    await exec2.complete();
 
     // Superseded while this server still drives it: the new turn stops the old unit.
     const exec3 = prepareDetachedExec({ command: fakeCodex, sessionId: 'session-codex', backend: 'codex' });
@@ -571,7 +571,7 @@ test('the Codex wrapper runs the CLI in a unit that outlives the wrapper', { ski
     await eventually(() => existsSync(logPath3) && readFileSync(logPath3, 'utf8').includes('thread.started'), 'the third turn to start');
     assert.equal(await retireDetachedSessionTurns('session-codex', 'codex'), 0, 'an attached unit is left alone by default');
     assert.equal(await retireDetachedSessionTurns('session-codex', 'codex', { includeAttached: true }), 1);
-    await eventually(() => !isTurnAlive(exec3.unitName), 'the superseded unit to be stopped');
+    await eventually(async () => !(await isTurnAlive(exec3.unitName)), 'the superseded unit to be stopped');
     if (run3.exitCode === null && run3.signalCode === null) await new Promise((resolve) => run3.once('exit', resolve));
     assert.doesNotMatch(readFileSync(logPath3, 'utf8'), /echo third/);
   });

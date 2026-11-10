@@ -1,5 +1,5 @@
 import { copyFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readlinkSync, symlinkSync, unlinkSync } from 'node:fs';
-import { execFileSync } from 'node:child_process';
+import { execFile } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -52,7 +52,7 @@ function link(target: string, at: string): void {
  * Creates or refreshes a shadow home for ZCode and returns its path. Idempotent: run before every spawn so
  * login files or home entries that appeared since the last turn are linked too. Never reads the credentials.
  */
-export function prepareZcodeHome(home: string, source: string = realHome()): string {
+export async function prepareZcodeHome(home: string, source: string = realHome()): Promise<string> {
   const v2 = path.join(home, '.zcode', 'v2');
   const cli = path.join(home, '.zcode', 'cli');
   mkdirSync(v2, { recursive: true, mode: 0o700 });
@@ -79,9 +79,12 @@ export function prepareZcodeHome(home: string, source: string = realHome()): str
     const target = path.join(source, '.zcode', 'cli', name);
     if (existsSync(target)) link(target, path.join(cli, name));
   }
-  apiKeyLogin(home, source);
+  await apiKeyLogin(home, source);
   return home;
 }
+
+/** In-flight logins per shadow home: concurrent turns on one home share one login. */
+const pendingApiKeyLogins = new Map<string, Promise<void>>();
 
 /**
  * A linked credentials.json is not enough for a Z.ai Coding Plan API-key login: ZCode keeps the "manual login"
@@ -90,7 +93,7 @@ export function prepareZcodeHome(home: string, source: string = realHome()): str
  * (it reads the key file itself and writes a private credentials.json, which link() then keeps).
  * Skipped under tests and when the script is absent; a failure leaves the shared link as before.
  */
-function apiKeyLogin(home: string, source: string): void {
+async function apiKeyLogin(home: string, source: string): Promise<void> {
   if (process.env.NODE_ENV === 'test') return;
   const creds = path.join(home, '.zcode', 'v2', 'credentials.json');
   try {
@@ -98,16 +101,32 @@ function apiKeyLogin(home: string, source: string): void {
   } catch { return; }
   const script = process.env.ZCODE_APIKEY_LOGIN_SCRIPT || path.join(source, '.local', 'share', 'zcode-login', 'login.cjs');
   if (!existsSync(script)) return;
-  // The login only takes when the home already has a provider_config.json (model selection only, no secrets):
-  // without it the manual-login state does not stick and the next turn 401s (verified 2026-11-08).
-  const config = path.join(home, '.zcode', 'v2', 'provider_config.json');
-  const sharedConfig = path.join(source, '.zcode', 'v2', 'provider_config.json');
-  if (!existsSync(config) && existsSync(sharedConfig)) copyFileSync(sharedConfig, config);
-  try {
-    execFileSync(process.execPath, [script], { env: { ...process.env, HOME: home }, timeout: 60_000, stdio: 'ignore' });
-  } catch (error) {
-    console.warn('[zcode] API-key login in a shadow home failed; keeping the shared credentials link', error instanceof Error ? error.message : error);
-  }
+
+  const existing = pendingApiKeyLogins.get(home);
+  if (existing) return existing;
+
+  const login = new Promise<void>((resolve) => {
+    // The login only takes when the home already has a provider_config.json (model selection only, no secrets):
+    // without it the manual-login state does not stick and the next turn 401s (verified 2026-11-08).
+    const config = path.join(home, '.zcode', 'v2', 'provider_config.json');
+    const sharedConfig = path.join(source, '.zcode', 'v2', 'provider_config.json');
+    if (!existsSync(config) && existsSync(sharedConfig)) copyFileSync(sharedConfig, config);
+    execFile(
+      process.execPath,
+      [script],
+      { env: { ...process.env, HOME: home }, timeout: 60_000 },
+      (error) => {
+        if (error) {
+          console.warn('[zcode] API-key login in a shadow home failed; keeping the shared credentials link', error.message);
+        }
+        resolve();
+      },
+    );
+  }).finally(() => {
+    pendingApiKeyLogins.delete(home);
+  });
+  pendingApiKeyLogins.set(home, login);
+  return login;
 }
 
 /** Mirrors a directory of the real home that contains the shadow home: a real dir whose other children are links. */
