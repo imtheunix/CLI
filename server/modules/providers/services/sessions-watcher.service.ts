@@ -63,6 +63,16 @@ const WATCHER_IGNORED_PATTERNS = [
 const PROJECTS_UPDATE_DEBOUNCE_MS = 1_000;
 const PROJECTS_UPDATE_MAX_WAIT_MS = 2_000;
 
+/**
+ * A failed session id is retried on its own, with exponential backoff, so one
+ * bad row (for example a database closed during shutdown) cannot suppress the
+ * good ids in the same batch. The attempt cap keeps a permanently failing id
+ * from spinning forever.
+ */
+const WATCHER_RETRY_BASE_DELAY_MS = 250;
+const WATCHER_RETRY_MAX_DELAY_MS = 2_000;
+const WATCHER_MAX_RETRY_ATTEMPTS = 5;
+
 const watchers: FSWatcher[] = [];
 
 type PendingWatcherUpdate = {
@@ -81,6 +91,32 @@ let pendingWatcherUpdateStartedAt: number | null = null;
 let pendingWatcherFlushTimer: ReturnType<typeof setTimeout> | null = null;
 let watcherRefreshInFlight = false;
 let watcherRescheduleAfterRefresh = false;
+
+/**
+ * Lifecycle guard. `closeSessionsWatcher` bumps the generation and marks the
+ * watcher closed; every async continuation captures the generation it started
+ * under and refuses to queue, schedule or broadcast once it no longer matches.
+ * Without this, a `synchronizeProviderFile` await that resolves after close
+ * would recreate pending state and emit a frame after shutdown.
+ */
+let watcherClosed = false;
+let watcherGeneration = 0;
+
+let pendingWatcherRetryIds: Set<string> | null = null;
+let pendingWatcherRetryAttempt = 0;
+let pendingWatcherRetryTimer: ReturnType<typeof setTimeout> | null = null;
+let watcherRetryRescheduleAfterRefresh = false;
+
+function isWatcherActive(generation: number): boolean {
+  return !watcherClosed && generation === watcherGeneration;
+}
+
+function clearPendingWatcherRetryTimer(): void {
+  if (pendingWatcherRetryTimer) {
+    clearTimeout(pendingWatcherRetryTimer);
+    pendingWatcherRetryTimer = null;
+  }
+}
 
 /**
  * Filters watcher events to provider-specific session artifact file types.
@@ -110,7 +146,7 @@ function clearPendingWatcherFlushTimer(): void {
 }
 
 function schedulePendingWatcherFlush(): void {
-  if (!pendingWatcherUpdate) {
+  if (watcherClosed || !pendingWatcherUpdate) {
     return;
   }
 
@@ -134,6 +170,10 @@ function queuePendingWatcherUpdate(
   provider: LLMProvider,
   updatedSessionId: string | null
 ): void {
+  if (watcherClosed) {
+    return;
+  }
+
   if (!pendingWatcherUpdate) {
     pendingWatcherUpdate = {
       providers: new Set<LLMProvider>(),
@@ -146,15 +186,149 @@ function queuePendingWatcherUpdate(
   pendingWatcherUpdate.changeTypes.add(eventType);
   if (updatedSessionId) {
     pendingWatcherUpdate.updatedSessionIds.add(updatedSessionId);
+
+    // A fresh event for an id already waiting on retry supersedes the retry:
+    // the normal flush will broadcast it once, so drop it from the retry set
+    // to avoid a duplicate frame.
+    if (pendingWatcherRetryIds?.delete(updatedSessionId) && pendingWatcherRetryIds.size === 0) {
+      pendingWatcherRetryIds = null;
+      pendingWatcherRetryAttempt = 0;
+      clearPendingWatcherRetryTimer();
+    }
   }
 
   schedulePendingWatcherFlush();
 }
 
+/**
+ * Broadcasts each id on its own so a throw while resolving one session cannot
+ * abort the rest of the batch. Returns the ids that failed and are eligible
+ * for retry.
+ */
+async function broadcastWatcherSessionIds(
+  sessionIds: Iterable<string>,
+  generation: number
+): Promise<Set<string>> {
+  const failedSessionIds = new Set<string>();
+
+  for (const sessionId of sessionIds) {
+    if (!isWatcherActive(generation)) {
+      return failedSessionIds;
+    }
+
+    try {
+      // Per-session deltas instead of full project snapshots: an upsert of one
+      // session can never clobber unrelated client state, so the frontend needs
+      // no "suppress updates while a run is active" protection logic.
+      await broadcastSessionUpsertedBatch([sessionId]);
+    } catch (error) {
+      failedSessionIds.add(sessionId);
+      const message = error instanceof Error ? error.message : String(error);
+      console.error('Session watcher refresh failed while broadcasting session_upserted', {
+        sessionId,
+        error: message,
+      });
+    }
+  }
+
+  return failedSessionIds;
+}
+
+function armPendingWatcherRetryTimer(): void {
+  if (watcherClosed || !pendingWatcherRetryIds || pendingWatcherRetryIds.size === 0) {
+    return;
+  }
+
+  const attempt = Math.max(1, pendingWatcherRetryAttempt);
+  const delay = Math.min(
+    WATCHER_RETRY_BASE_DELAY_MS * 2 ** (attempt - 1),
+    WATCHER_RETRY_MAX_DELAY_MS
+  );
+
+  clearPendingWatcherRetryTimer();
+  pendingWatcherRetryTimer = setTimeout(() => {
+    void flushPendingWatcherRetry();
+  }, delay);
+}
+
+function schedulePendingWatcherRetry(failedSessionIds: Set<string>): void {
+  if (watcherClosed) {
+    return;
+  }
+
+  if (!pendingWatcherRetryIds) {
+    pendingWatcherRetryIds = new Set<string>();
+  }
+  for (const sessionId of failedSessionIds) {
+    pendingWatcherRetryIds.add(sessionId);
+  }
+
+  pendingWatcherRetryAttempt += 1;
+  if (pendingWatcherRetryAttempt > WATCHER_MAX_RETRY_ATTEMPTS) {
+    console.error('Session watcher refresh retry limit reached; dropping pending session updates', {
+      sessionIds: [...pendingWatcherRetryIds],
+      attempts: WATCHER_MAX_RETRY_ATTEMPTS,
+    });
+    pendingWatcherRetryIds = null;
+    pendingWatcherRetryAttempt = 0;
+    clearPendingWatcherRetryTimer();
+    return;
+  }
+
+  armPendingWatcherRetryTimer();
+}
+
+async function flushPendingWatcherRetry(): Promise<void> {
+  clearPendingWatcherRetryTimer();
+
+  if (watcherClosed || !pendingWatcherRetryIds || pendingWatcherRetryIds.size === 0) {
+    return;
+  }
+
+  if (watcherRefreshInFlight) {
+    // Let the in-flight refresh re-arm the retry when it finishes instead of
+    // polling the timer while it runs.
+    watcherRetryRescheduleAfterRefresh = true;
+    return;
+  }
+
+  const generation = watcherGeneration;
+  const retrySessionIds = pendingWatcherRetryIds;
+  pendingWatcherRetryIds = null;
+  watcherRefreshInFlight = true;
+
+  let failedSessionIds = new Set<string>();
+  try {
+    failedSessionIds = await broadcastWatcherSessionIds(retrySessionIds, generation);
+  } finally {
+    if (generation === watcherGeneration) {
+      watcherRefreshInFlight = false;
+    }
+
+    if (isWatcherActive(generation)) {
+      if (failedSessionIds.size > 0) {
+        schedulePendingWatcherRetry(failedSessionIds);
+      } else {
+        pendingWatcherRetryAttempt = 0;
+      }
+
+      if (watcherRetryRescheduleAfterRefresh) {
+        watcherRetryRescheduleAfterRefresh = false;
+        armPendingWatcherRetryTimer();
+      }
+
+      if (pendingWatcherUpdate || watcherRescheduleAfterRefresh) {
+        watcherRescheduleAfterRefresh = false;
+        schedulePendingWatcherFlush();
+      }
+    }
+  }
+}
+
 async function flushPendingWatcherUpdate(): Promise<void> {
   clearPendingWatcherFlushTimer();
 
-  if (!pendingWatcherUpdate) {
+  if (watcherClosed || !pendingWatcherUpdate) {
     return;
   }
 
@@ -163,25 +337,34 @@ async function flushPendingWatcherUpdate(): Promise<void> {
     return;
   }
 
+  const generation = watcherGeneration;
   const queuedUpdate = pendingWatcherUpdate;
   pendingWatcherUpdate = null;
   pendingWatcherUpdateStartedAt = null;
   watcherRefreshInFlight = true;
 
+  let failedSessionIds = new Set<string>();
   try {
-    // Per-session deltas instead of full project snapshots: an upsert of one
-    // session can never clobber unrelated client state, so the frontend needs
-    // no "suppress updates while a run is active" protection logic.
-    await broadcastSessionUpsertedBatch(queuedUpdate.updatedSessionIds);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    console.error('Session watcher refresh failed while broadcasting session_upserted', { error: message });
+    failedSessionIds = await broadcastWatcherSessionIds(queuedUpdate.updatedSessionIds, generation);
   } finally {
-    watcherRefreshInFlight = false;
+    if (generation === watcherGeneration) {
+      watcherRefreshInFlight = false;
+    }
 
-    if (pendingWatcherUpdate || watcherRescheduleAfterRefresh) {
-      watcherRescheduleAfterRefresh = false;
-      schedulePendingWatcherFlush();
+    if (isWatcherActive(generation)) {
+      if (failedSessionIds.size > 0) {
+        schedulePendingWatcherRetry(failedSessionIds);
+      }
+
+      if (watcherRetryRescheduleAfterRefresh) {
+        watcherRetryRescheduleAfterRefresh = false;
+        armPendingWatcherRetryTimer();
+      }
+
+      if (pendingWatcherUpdate || watcherRescheduleAfterRefresh) {
+        watcherRescheduleAfterRefresh = false;
+        schedulePendingWatcherFlush();
+      }
     }
   }
 }
@@ -198,9 +381,11 @@ async function onUpdate(
     return;
   }
 
+  const generation = watcherGeneration;
+
   try {
     const result = await sessionSynchronizerService.synchronizeProviderFile(provider, filePath);
-    if (!result.indexed) {
+    if (!isWatcherActive(generation) || !result.indexed) {
       return;
     }
 
@@ -210,6 +395,10 @@ async function onUpdate(
     });
     queuePendingWatcherUpdate(eventType, provider, result.sessionId);
   } catch (error) {
+    if (!isWatcherActive(generation)) {
+      return;
+    }
+
     const message = error instanceof Error ? error.message : String(error);
     console.error(`Session watcher sync failed for provider "${provider}"`, {
       eventType,
@@ -223,9 +412,27 @@ async function onUpdate(
  * Starts provider filesystem watchers and performs initial DB synchronization.
  */
 export async function initializeSessionsWatcher(): Promise<void> {
+  watcherClosed = false;
+  watcherGeneration += 1;
+  const generation = watcherGeneration;
+
+  clearPendingWatcherFlushTimer();
+  clearPendingWatcherRetryTimer();
+  pendingWatcherUpdate = null;
+  pendingWatcherUpdateStartedAt = null;
+  pendingWatcherRetryIds = null;
+  pendingWatcherRetryAttempt = 0;
+  watcherRefreshInFlight = false;
+  watcherRescheduleAfterRefresh = false;
+  watcherRetryRescheduleAfterRefresh = false;
+
   console.log('Setting up session watchers');
 
   const initialSync = await sessionSynchronizerService.synchronizeSessions();
+  if (!isWatcherActive(generation)) {
+    return;
+  }
+
   console.log('Initial session synchronization complete', {
     processedByProvider: initialSync.processedByProvider,
     prunedOrphans: initialSync.prunedOrphans,
@@ -233,6 +440,10 @@ export async function initializeSessionsWatcher(): Promise<void> {
   });
 
   for (const { provider, rootPath } of PROVIDER_WATCH_PATHS) {
+    if (!isWatcherActive(generation)) {
+      return;
+    }
+
     try {
       await fsPromises.mkdir(rootPath, { recursive: true });
 
@@ -274,7 +485,18 @@ export async function initializeSessionsWatcher(): Promise<void> {
  * Stops all active provider session watchers.
  */
 export async function closeSessionsWatcher(): Promise<void> {
+  watcherClosed = true;
+  watcherGeneration += 1;
+
   clearPendingWatcherFlushTimer();
+  clearPendingWatcherRetryTimer();
+  pendingWatcherUpdate = null;
+  pendingWatcherUpdateStartedAt = null;
+  pendingWatcherRetryIds = null;
+  pendingWatcherRetryAttempt = 0;
+  watcherRefreshInFlight = false;
+  watcherRescheduleAfterRefresh = false;
+  watcherRetryRescheduleAfterRefresh = false;
 
   await Promise.all(
     watchers.map(async (watcher) => {
@@ -287,8 +509,4 @@ export async function closeSessionsWatcher(): Promise<void> {
     })
   );
   watchers.length = 0;
-  pendingWatcherUpdate = null;
-  pendingWatcherUpdateStartedAt = null;
-  watcherRefreshInFlight = false;
-  watcherRescheduleAfterRefresh = false;
 }
