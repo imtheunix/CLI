@@ -317,6 +317,24 @@ export function useChatSessionState({
   const isProcessing = sessionActivity !== null && !sessionActivity.background;
   const canAbortSession = isProcessing && sessionActivity.canInterrupt;
 
+  // A new turn starts with the previous turn's rate still attached to the
+  // budget; drop it so the composer shows the rate as unavailable until this
+  // turn's own usage event arrives, rather than presenting a stale rate live.
+  const wasProcessingRef = useRef(false);
+  useEffect(() => {
+    if (isProcessing && !wasProcessingRef.current) {
+      setTokenBudget((current) => {
+        if (!current || !('rate' in current)) {
+          return current;
+        }
+        const next = { ...current };
+        delete next.rate;
+        return next;
+      });
+    }
+    wasProcessingRef.current = isProcessing;
+  }, [isProcessing]);
+
   // Ref mirror so effects can read the latest map without re-running on
   // every activity transition.
   const processingSessionsRef = useRef(processingSessions);

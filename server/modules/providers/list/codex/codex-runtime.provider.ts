@@ -23,6 +23,7 @@ import {
 } from '@/shared/index.js';
 import { notifyRunFailed, notifyRunStopped } from '@/modules/notifications/index.js';
 import { getCodexPathOverride } from '@/modules/providers/list/codex/codex-cli-path.js';
+import { TurnTokenRateTracker, withTokenRate } from '@/modules/providers/services/token-rate.service.js';
 import { abortTurn, prepareDetachedExec, retireDetachedSessionTurns } from '@/modules/detached-turns/index.js';
 import type { LineHandler } from '@/modules/detached-turns/index.js';
 import type { AnyRecord, ProviderRuntimeContext, ProviderRuntimeWriter } from '@/shared/index.js';
@@ -368,6 +369,10 @@ async function queryCodex(
   let errorSurfaced = false;
   const abortController = options.abortController instanceof AbortController ? options.abortController : new AbortController();
   if (abortController.signal.aborted) return;
+  // Codex reports the turn's usage only at `turn.completed`, so this measures
+  // the turn's average output rate and the client labels it as the last rate.
+  const tokenRate = new TurnTokenRateTracker();
+  tokenRate.start();
   // Session-map key: the app session id when the caller supplied one, else
   // the provider-native thread id once captured (legacy/direct API callers).
   const sessionKey = () => sessionId || capturedSessionId || null;
@@ -515,7 +520,14 @@ async function queryCodex(
       if (event.type === 'turn.completed') {
         const tokenBudget = extractCodexTokenBudget(event);
         if (tokenBudget) {
-          sendMessage(ws, createNormalizedMessage({ kind: 'status', text: 'token_budget', tokenBudget, sessionId: capturedSessionId || sessionId || null, provider: 'codex' }));
+          const rate = tokenRate.setCumulativeOutputTokens(tokenBudget.outputTokens);
+          sendMessage(ws, createNormalizedMessage({
+            kind: 'status',
+            text: 'token_budget',
+            tokenBudget: withTokenRate(tokenBudget, rate, false),
+            sessionId: capturedSessionId || sessionId || null,
+            provider: 'codex',
+          }));
         }
       }
     }

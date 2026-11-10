@@ -4,6 +4,8 @@ import { useTranslation } from 'react-i18next';
 
 type TokenUsageSummaryProps = {
   usage: Record<string, unknown> | null;
+  /** Whether the viewed session is generating, so a live rate is not shown as last. */
+  isProcessing?: boolean;
   onClick?: () => void;
 };
 
@@ -32,11 +34,29 @@ const readUsageNumber = (value: unknown) => {
   return Number.isFinite(parsed) ? parsed : 0;
 };
 
+const readTokenRate = (usage: Record<string, unknown> | null) => {
+  const rate = usage?.rate;
+  if (!rate || typeof rate !== 'object') {
+    return null;
+  }
+  const record = rate as Record<string, unknown>;
+  const value = Number(record.outputTokensPerSecond);
+  if (!Number.isFinite(value) || value <= 0) {
+    return null;
+  }
+  return { value, live: record.live === true };
+};
+
+const formatTokenRate = (value: number) => (
+  value >= 100 ? Math.round(value).toString() : value.toFixed(1)
+);
+
 /**
- * Rendered by chat's ChatComposer to show the session's context-window usage
- * and open the detailed token breakdown on click.
+ * Rendered by chat's ChatComposer to show the session's context-window usage,
+ * the measured output-token rate while a turn generates, and open the detailed
+ * token breakdown on click.
  */
-function TokenUsageSummary({ usage, onClick }: TokenUsageSummaryProps) {
+function TokenUsageSummary({ usage, isProcessing = false, onClick }: TokenUsageSummaryProps) {
   const { t } = useTranslation();
   const breakdown =
     usage?.breakdown && typeof usage.breakdown === 'object'
@@ -45,6 +65,10 @@ function TokenUsageSummary({ usage, onClick }: TokenUsageSummaryProps) {
   const inputTokens = readUsageNumber(usage?.inputTokens ?? breakdown?.input);
   const outputTokens = readUsageNumber(usage?.outputTokens ?? breakdown?.output);
   const usedTokens = readUsageNumber(usage?.used) || inputTokens + outputTokens;
+  const rate = readTokenRate(usage);
+  const rateIsLive = Boolean(rate?.live && isProcessing);
+  const rateText = rate ? `${formatTokenRate(rate.value)} tok/s` : '— tok/s';
+  const rateLabel = rate && !rateIsLive ? `last ${rateText}` : rateText;
 
   return (
     <button
@@ -60,6 +84,9 @@ function TokenUsageSummary({ usage, onClick }: TokenUsageSummaryProps) {
       <span className="font-medium text-foreground">{formatTokenCount(usedTokens)}</span>
       <span className="hidden text-muted-foreground/70 sm:inline">
         {t('chat:misc.tokensLabel', { count: usedTokens })}
+      </span>
+      <span className="text-muted-foreground/70" data-testid="token-rate">
+        {rateLabel}
       </span>
     </button>
   );

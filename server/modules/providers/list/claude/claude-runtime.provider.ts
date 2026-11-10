@@ -46,6 +46,7 @@ import {
   getReportedClaudeContextWindow,
   rememberClaudeContextWindow
 } from '@/modules/providers/services/provider-token-usage.service.js';
+import { TurnTokenRateTracker, withTokenRate } from '@/modules/providers/services/token-rate.service.js';
 import { abortTurn, retireDetachedSessionTurns, spawnRelayedTurn } from '@/modules/detached-turns/index.js';
 import { createCompleteMessage, createNormalizedMessage } from '@/shared/utils.js';
 
@@ -1312,6 +1313,8 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
   let reportedContextWindow = getReportedClaudeContextWindow(providerSessionId) ?? null;
   let mainThreadModel = null;
   let lastSentTokenBudget = null;
+  // Measures this turn's output-token rate from the assistant usage events.
+  const tokenRate = new TurnTokenRateTracker();
 
   // A new turn supersedes any earlier process still registered for this
   // session, and only spawns once that one has been stopped and let go, so
@@ -1617,6 +1620,7 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
 
     // Process streaming messages
     console.log('Starting async generator loop for session:', capturedSessionId || 'NEW');
+    tokenRate.start();
     for await (const message of queryInstance) {
       // A superseded process is being wound down: nothing it says may reach
       // the client or this session's registry, which belong to its successor.
@@ -1629,6 +1633,8 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
       if (turnCompleteSent && resumesTurn(message)) {
         turnCompleteSent = false;
         resumedAfterResult = true;
+        tokenRate.reset();
+        tokenRate.start();
         ws.send(createTurnResumedMessage(capturedSessionId || sessionId || null));
       }
       // Capture session ID from first message
@@ -1708,6 +1714,18 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
       // report no per-assistant usage at all.
       let tokenBudgetData = extractTokenBudget(message, reportedContextWindow)
         || (assistantBudgetSent ? null : extractCumulativeTokenBudget(message, reportedContextWindow));
+      if (tokenBudgetData) {
+        if (message.type === 'assistant') {
+          assistantBudgetSent = true;
+          // Each assistant message reports its own request's output, so the
+          // turn's rate accumulates them over the generation window.
+          tokenBudgetData = withTokenRate(tokenBudgetData, tokenRate.addOutputTokens(tokenBudgetData.outputTokens), true);
+        } else if (message.type === 'result') {
+          // Only SDK builds with no per-assistant usage reach here; the
+          // result's output is the turn's total, so it is a last rate.
+          tokenBudgetData = withTokenRate(tokenBudgetData, tokenRate.setCumulativeOutputTokens(tokenBudgetData.outputTokens), false);
+        }
+      }
       if (
         !tokenBudgetData
         && turnContextWindow
@@ -1718,9 +1736,6 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
         tokenBudgetData = { ...lastSentTokenBudget, total: turnContextWindow };
       }
       if (tokenBudgetData) {
-        if (message.type === 'assistant') {
-          assistantBudgetSent = true;
-        }
         lastSentTokenBudget = tokenBudgetData;
         ws.send(createNormalizedMessage({ kind: 'status', text: 'token_budget', tokenBudget: tokenBudgetData, sessionId: capturedSessionId || sessionId || null, provider: 'claude' }));
       }
