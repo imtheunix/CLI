@@ -650,9 +650,12 @@ export async function runDetachedChatTurn(
     steerActiveRun?: boolean;
     /** Lets the queue dispatcher release its preparation lock after reservation. */
     onReserved?: () => void;
+    /** Automatic review timeout/cancel fences a detached turn before it can be dispatched late. */
+    signal?: AbortSignal;
   },
   dependencies: ChatWebSocketDependencies,
 ): Promise<{ started: boolean; error: string | null }> {
+  if (input.signal?.aborted) return { started: false, error: 'The detached turn was aborted.' };
   const session = sessionsDb.getSessionById(input.sessionId);
   if (!session) {
     return { started: false, error: 'The session no longer exists.' };
@@ -709,6 +712,7 @@ export async function runDetachedChatTurn(
   const previousSettlement = runtimeSettlements.get(input.sessionId);
   if (previousSettlement && activeRun && chatRunRegistry.getRun(input.sessionId) === activeRun
     && !dependencies.runtime.hasBackgroundWork(input.sessionId)) await previousSettlement;
+  if (input.signal?.aborted) return { started: false, error: 'The detached turn was aborted.' };
   return dispatchRun(
     null,
     input.userId,
