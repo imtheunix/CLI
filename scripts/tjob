@@ -30,7 +30,7 @@ token_file="${CLI_ORCHESTRATOR_TOKEN_FILE:-$HOME/.cloudcli/orchestrator.token}"
 api() {
   local method=$1 path=$2 body=${3:-}
   { printf 'header = "Authorization: Bearer %s"\n' "$(tr -d '\n' <"$token_file")"
-    [ -n "$body" ] && printf 'header = "Content-Type: application/json"\n'
+    if [ -n "$body" ]; then printf 'header = "Content-Type: application/json"\n'; fi
   } | curl -sS -X "$method" --config - ${body:+--data-binary "$body"} "$url/api/orchestrator$path"
 }
 
