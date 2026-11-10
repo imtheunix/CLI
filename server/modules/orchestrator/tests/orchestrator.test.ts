@@ -843,7 +843,7 @@ for (const step of ['rebase', 'check'] as const) {
         if (!afterCancel) return runCommand(command, args, options);
         // A command after cancellation must not leave a child behind: record it, kill it, and fail below.
         return runCommand(command, args, {
-          ...options,
+          ...(options ?? { cwd: process.cwd() }),
           onSpawn: (pid) => {
             postCancelSpawns.push(pid);
             try { process.kill(pid, 'SIGKILL'); } catch { /* already gone */ }
