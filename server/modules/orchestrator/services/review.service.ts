@@ -4,6 +4,7 @@ import { orchestratorJobsDb } from '@/modules/database/index.js';
 import type { OrchestratorJobRow, OrchestratorReviewDefect, OrchestratorReviewRisk } from '@/modules/database/index.js';
 
 import { appendHubEvent } from './hub-events.service.js';
+import { MAX_REFUTE_TIMEOUT_MS } from './orchestrator-config.service.js';
 import type { OrchestratorConfig, ReviewConfig } from './orchestrator-config.service.js';
 import { selectRefuteBackend } from './refute.service.js';
 import type { RefuteService } from './refute.service.js';
@@ -141,11 +142,18 @@ export function createReviewService(deps: {
         ...(failure.verdict ? { review_verdict: failure.verdict } : {}),
         last_error: null,
       }) as OrchestratorJobRow;
-      await deps.jobs.reopenWithMessage(reopened, [
+      const delivered = await deps.jobs.reopenWithMessage(reopened, [
         `Automatic review (${failure.kind === 'gate' ? 'touched-file gate' : 'refutation'}) found problems:`,
         failure.message,
         'Fix only these reproduced problems, commit, run the focused checks, and run tjob done again. This is the one automatic fix round.',
       ].join('\n\n'));
+      if (delivered) return;
+      const undelivered = orchestratorJobsDb.get(job.id);
+      const canPark = current(job)
+        || (undelivered?.state === 'active' && undelivered.merge_step === 'none');
+      if (!canPark) return; // a concurrent cancel/approve owns the job now
+      const parked = orchestratorJobsDb.update(job.id, { state: 'done', merge_step: 'review' }) as OrchestratorJobRow;
+      await needsHub(parked, `${summary}\nThe producer did not receive the only automatic fix message (session busy or authentication hold); inspect the evidence above.`);
       return;
     }
     await needsHub(latest, summary);
@@ -177,14 +185,34 @@ export function createReviewService(deps: {
   }
 
   async function stepRefute(job: OrchestratorJobRow): Promise<void> {
-    const cap = Math.max(1, deps.config().review.refuteCap);
+    const reviewConfig = deps.config().review;
+    const cap = Math.max(1, reviewConfig.refuteCap);
     if (runningRefutes.size >= cap) return;
     runningRefutes.add(job.id);
+    const timeoutMs = Math.min(MAX_REFUTE_TIMEOUT_MS, Math.max(1, reviewConfig.refuteTimeoutMs ?? MAX_REFUTE_TIMEOUT_MS));
+    const abortController = new AbortController();
+    let reviewSessionId = job.review_session_id;
+    let timedOut = false;
+    let timer: NodeJS.Timeout | null = null;
+    const timeout = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => {
+        timedOut = true;
+        abortController.abort();
+        try {
+          refute.abort?.(job, reviewSessionId);
+        } catch (error) {
+          console.warn(`[Review] Refutation cleanup failed for ${job.id}`, error);
+        }
+        reject(new Error(`Refutation timed out after ${timeoutMs} ms`));
+      }, timeoutMs);
+    });
     try {
       const backend = selectRefuteBackend(job, deps.config());
-      const verdict = await refute.refute(job, backend, job.review_session_id, (sessionId) => {
+      const verdict = await Promise.race([refute.refute(job, backend, reviewSessionId, (sessionId) => {
+        reviewSessionId = sessionId;
         if (current(job, job.review_head_sha ?? undefined)) orchestratorJobsDb.update(job.id, { review_session_id: sessionId });
-      });
+      }, { signal: abortController.signal }), timeout]);
+      if (timedOut) throw new Error(`Refutation timed out after ${timeoutMs} ms`);
       const latest = current(job, job.review_head_sha ?? undefined);
       if (!latest) return;
       if (await isDirty(job.worktree_path)) {
@@ -198,7 +226,14 @@ export function createReviewService(deps: {
         return;
       }
       orchestratorJobsDb.update(job.id, { review_step: 'policy', review_verdict: 'pass', last_error: null });
+    } catch (error) {
+      if (!timedOut) throw error;
+      const latest = current(job, job.review_head_sha ?? undefined);
+      if (latest) {
+        await needsHub(latest, `automatic refutation timed out after ${timeoutMs} ms; reviewer aborted and its session was archived; gate green`);
+      }
     } finally {
+      if (timer) clearTimeout(timer);
       runningRefutes.delete(job.id);
     }
   }

@@ -224,6 +224,8 @@ export function createJobsService(deps: {
   captureCheckpoint?: (job: { jobId: string; worktreePath: string }) => Promise<unknown>;
   /** Morph's usage meter: a new morph job starts only while the DeepSeek output window has headroom. */
   morphUsage?: MorphUsageService;
+  /** Cancellation also stops this job's slotless automatic reviewer, when one is running. */
+  abortRefutation?: (job: OrchestratorJobRow) => void;
 }) {
   const now = deps.now ?? (() => new Date());
   const morphUsage = deps.morphUsage ?? createMorphUsageService({ config: deps.config, now });
@@ -900,6 +902,12 @@ export function createJobsService(deps: {
         throw new AppError(`Job ${id} is already in the CI/CD queue (${job.merge_step})`, { code: 'JOB_MERGING', statusCode: 409 });
       }
       orchestratorJobsDb.update(id, { state: 'cancelled', merge_step: 'none', in_turn: 0 });
+      // Persist cancellation first: a late verdict is superseded even while the provider interrupt is in flight.
+      try {
+        deps.abortRefutation?.(job);
+      } catch (error) {
+        console.warn(`[Orchestrator] Abort of refutation for job ${id} failed`, error);
+      }
       if (job.session_id) {
         const sessionId = job.session_id;
         const provider = (sessionsDb.getSessionById(sessionId)?.provider as LLMProvider | undefined) ?? null;

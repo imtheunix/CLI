@@ -1,5 +1,5 @@
-// Refute-job f563c204 adversarial probes for the automatic review stage (commit 996d995b).
-// Evidence for docs/reports/automatic-review-refute-996d995b.md; this branch is not for merge.
+// Adversarial probes for automatic review, including the bounded-lifecycle fix round.
+// Evidence for docs/reports/automatic-review-refute-996d995b.md and the 2026-11-10 fix report.
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
@@ -7,8 +7,9 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-import { closeConnection, getConnection, initializeDatabase, orchestratorJobsDb } from '@/modules/database/index.js';
+import { closeConnection, getConnection, initializeDatabase, orchestratorJobsDb, sessionsDb } from '@/modules/database/index.js';
 import type { OrchestratorJobRow } from '@/modules/database/index.js';
+import { chatRunRegistry } from '@/modules/websocket/index.js';
 
 import { onHubEvent } from '../services/hub-events.service.js';
 import { createEffectOutbox } from '../services/effect-outbox.service.js';
@@ -18,7 +19,7 @@ import { parseHubEventLine } from '../services/hub-wake.service.js';
 import { loadOrchestratorConfig } from '../services/orchestrator-config.service.js';
 import type { OrchestratorConfig } from '../services/orchestrator-config.service.js';
 import type { RefuteService, RefuteVerdict } from '../services/refute.service.js';
-import { parseRefuteVerdict, selectRefuteBackend } from '../services/refute.service.js';
+import { createRefuteService, parseRefuteVerdict, selectRefuteBackend } from '../services/refute.service.js';
 import { createReviewService } from '../services/review.service.js';
 import { revParse } from '../services/workspace.service.js';
 import type { CommandResult } from '../services/workspace.service.js';
@@ -53,7 +54,11 @@ async function withReviewFixture(
     approvals: string[];
     fixes: string[];
     setDiff: (files: string[], lines?: number) => void;
-    service: (refuteImpl: RefuteService['refute']) => { tick: () => Promise<void>; refuteCalls: number };
+    setReopenResult: (delivered: boolean, activateProducer?: boolean) => void;
+    service: (
+      refuteImpl: RefuteService['refute'],
+      abortImpl?: NonNullable<RefuteService['abort']>,
+    ) => { tick: () => Promise<void>; refuteCalls: number };
   }) => Promise<void>,
 ): Promise<void> {
   const previous = process.env.DATABASE_PATH;
@@ -94,6 +99,8 @@ async function withReviewFixture(
   const hub = spyHubEvents();
   const approvals: string[] = [];
   const fixes: string[] = [];
+  let reopenDelivered = true;
+  let activateProducer = true;
   const jobs = {
     isSessionBusy: () => false,
     async approve(id: string) {
@@ -102,8 +109,8 @@ async function withReviewFixture(
     },
     async reopenWithMessage(current: OrchestratorJobRow, message: string) {
       fixes.push(message);
-      orchestratorJobsDb.update(current.id, { state: 'active', merge_step: 'none' });
-      return true;
+      if (activateProducer) orchestratorJobsDb.update(current.id, { state: 'active', merge_step: 'none' });
+      return reopenDelivered;
     },
   };
   let files = ['src/allowed.ts'];
@@ -124,14 +131,16 @@ async function withReviewFixture(
       approvals,
       fixes,
       setDiff: (nextFiles, nextLines = 10) => { files = nextFiles; lines = nextLines; },
-      service: (refuteImpl) => {
+      setReopenResult: (delivered, activate = true) => { reopenDelivered = delivered; activateProducer = activate; },
+      service: (refuteImpl, abortImpl) => {
         let refuteCalls = 0;
         const refuteService: RefuteService = {
-          refute: (jobRow, backend, sessionId, onSession) => {
+          refute: (jobRow, backend, sessionId, onSession, options) => {
             refuteCalls += 1;
             onSession(`refute-session-${refuteCalls}`);
-            return refuteImpl(jobRow, backend, sessionId, onSession);
+            return refuteImpl(jobRow, backend, sessionId, onSession, options);
           },
+          ...(abortImpl ? { abort: abortImpl } : {}),
         };
         const review = createReviewService({ jobs, config: () => config, refuteService, run: fakeRun, gate: async () => ({ ok: true, output: '', command: 'scoped', logPath: '/tmp/gate.log' }) });
         return { tick: () => review.tick(), get refuteCalls() { return refuteCalls; } };

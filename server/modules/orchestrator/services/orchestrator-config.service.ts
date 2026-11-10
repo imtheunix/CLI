@@ -30,11 +30,16 @@ export type MorphModelGroup = 'kimi' | 'deepseek';
 /** Morph Ultra's per-rolling-minute caps, uncached input and output (reasoning counts as output). */
 export type MorphCaps = Record<MorphModelGroup, { uncachedIn: number; out: number }>;
 
+/** Configuration and review services: the hard upper bound for one automatic refutation (20 minutes). */
+export const MAX_REFUTE_TIMEOUT_MS = 20 * 60_000;
+
 /** Automatic post-`tjob done` review: a touched-file gate, one slotless refutation, then the risk policy. */
 export type ReviewConfig = {
   enabled: boolean;
   /** Refutations have their own cap; they never consume producer job slots. */
   refuteCap: number;
+  /** Abort and park a refutation after this many ms; values above 20 minutes are rejected. */
+  refuteTimeoutMs: number;
   /** A diff at or above this many added + deleted lines needs the hub. */
   maxLines: number;
   /** Repository folder names (or absolute paths) whose main branch deploys to production. */
@@ -191,6 +196,7 @@ function defaults(): OrchestratorConfig {
     review: {
       enabled: true,
       refuteCap: 2,
+      refuteTimeoutMs: MAX_REFUTE_TIMEOUT_MS,
       maxLines: 400,
       protectedRepos: [],
       riskyPaths: ['infra', 'auth', 'secrets', 'ci', 'migrations', 'k8s', '.forgejo', '.github'],
@@ -277,6 +283,10 @@ export function loadOrchestratorConfig(file = path.join(os.homedir(), '.config/c
     if (typeof review.enabled === 'boolean') config.review.enabled = review.enabled;
     if (typeof review.refuteCap === 'number' && Number.isFinite(review.refuteCap) && review.refuteCap >= 1) {
       config.review.refuteCap = Math.floor(review.refuteCap);
+    }
+    if (typeof review.refuteTimeoutMs === 'number' && Number.isFinite(review.refuteTimeoutMs)
+      && review.refuteTimeoutMs >= 1 && review.refuteTimeoutMs <= MAX_REFUTE_TIMEOUT_MS) {
+      config.review.refuteTimeoutMs = Math.floor(review.refuteTimeoutMs);
     }
     if (typeof review.maxLines === 'number' && Number.isFinite(review.maxLines) && review.maxLines >= 1) {
       config.review.maxLines = Math.floor(review.maxLines);
