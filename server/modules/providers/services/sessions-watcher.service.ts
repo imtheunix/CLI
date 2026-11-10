@@ -10,11 +10,13 @@ import type { LLMProvider } from '@/shared/types.js';
 
 type WatcherEventType = 'add' | 'change';
 
+export type SessionsWatcherPath = { provider: LLMProvider; rootPath: string };
+
 /**
  * Root directory configuration watched for session updates for each supported provider.
  * Used by initializeSessionsWatcher and tests.
  */
-export const PROVIDER_WATCH_PATHS: Array<{ provider: LLMProvider; rootPath: string }> = [
+export const PROVIDER_WATCH_PATHS: SessionsWatcherPath[] = [
   {
     provider: 'claude',
     rootPath: path.join(os.homedir(), '.claude', 'projects'),
@@ -73,7 +75,19 @@ const WATCHER_RETRY_BASE_DELAY_MS = 250;
 const WATCHER_RETRY_MAX_DELAY_MS = 2_000;
 const WATCHER_MAX_RETRY_ATTEMPTS = 5;
 
+/**
+ * Chokidar's `ready` event is what tells us the initial directory scan has
+ * finished. The initial synchronizer scan starts only after that point, so a
+ * transcript written while the watcher is still registering is either seen by
+ * the scan (it existed at `ready`) or delivered as a native `add` event (it
+ * appeared afterwards). The timeout is a safety valve for a path that never
+ * becomes ready; it is not a polling interval.
+ */
+const WATCHER_READY_TIMEOUT_MS = 5_000;
+
 const watchers: FSWatcher[] = [];
+const watcherReadyWaiters = new Set<() => void>();
+let watcherClosePromise: Promise<void> | null = null;
 
 type PendingWatcherUpdate = {
   providers: Set<LLMProvider>;
@@ -109,6 +123,42 @@ let watcherRetryRescheduleAfterRefresh = false;
 
 function isWatcherActive(generation: number): boolean {
   return !watcherClosed && generation === watcherGeneration;
+}
+
+/**
+ * Resolves when chokidar has finished its initial scan, or after a bounded
+ * timeout. The returned promise is cancellable so `closeSessionsWatcher` can
+ * release a pending startup wait instead of leaving a timer behind.
+ */
+function waitForWatcherReady(watcher: FSWatcher, provider: LLMProvider): Promise<void> {
+  return new Promise((resolve) => {
+    let settled = false;
+
+    const finish = (): void => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timer);
+      if (typeof watcher.off === 'function') {
+        watcher.off('ready', finish);
+        watcher.off('error', finish);
+      }
+      watcherReadyWaiters.delete(finish);
+      resolve();
+    };
+
+    const timer = setTimeout(() => {
+      console.warn(
+        `Session watcher for provider "${provider}" did not become ready within ${WATCHER_READY_TIMEOUT_MS}ms; starting the initial scan anyway`
+      );
+      finish();
+    }, WATCHER_READY_TIMEOUT_MS);
+
+    watcherReadyWaiters.add(finish);
+    watcher.on('ready', finish);
+    watcher.on('error', finish);
+  });
 }
 
 function clearPendingWatcherRetryTimer(): void {
@@ -382,6 +432,9 @@ async function onUpdate(
   }
 
   const generation = watcherGeneration;
+  if (!isWatcherActive(generation)) {
+    return;
+  }
 
   try {
     const result = await sessionSynchronizerService.synchronizeProviderFile(provider, filePath);
@@ -410,8 +463,19 @@ async function onUpdate(
 
 /**
  * Starts provider filesystem watchers and performs initial DB synchronization.
+ *
+ * `watchPaths` is injectable so tests can point at isolated temporary
+ * directories, including paths outside the provider's usual home.
  */
-export async function initializeSessionsWatcher(): Promise<void> {
+export async function initializeSessionsWatcher(
+  watchPaths: ReadonlyArray<SessionsWatcherPath> = PROVIDER_WATCH_PATHS
+): Promise<void> {
+  // A close that is still awaiting chokidar must finish before a restart
+  // installs new watchers; otherwise the old close could clear the new array.
+  if (watcherClosePromise) {
+    await watcherClosePromise;
+  }
+
   watcherClosed = false;
   watcherGeneration += 1;
   const generation = watcherGeneration;
@@ -428,23 +492,33 @@ export async function initializeSessionsWatcher(): Promise<void> {
 
   console.log('Setting up session watchers');
 
-  for (const { provider, rootPath } of PROVIDER_WATCH_PATHS) {
+  const readyPromises: Promise<void>[] = [];
+
+  for (const { provider, rootPath } of watchPaths) {
     if (!isWatcherActive(generation)) {
       return;
     }
 
     try {
-      await fsPromises.mkdir(rootPath, { recursive: true });
+      // Create the parent, not the root itself: chokidar can watch a missing
+      // root whose parent exists and will emit `add`/`addDir` when the root
+      // appears. Creating the root here would hide that case.
+      await fsPromises.mkdir(path.dirname(rootPath), { recursive: true });
 
-      const watcher = chokidar.watch(rootPath, {
+      // Resolve a symlinked provider root to its real directory. Chokidar is
+      // configured with followSymlinks: false so symlinks *inside* a provider
+      // tree are not followed (data isolation), but a root that is itself a
+      // symlink should still be watched.
+      const watchRoot = await fsPromises.realpath(rootPath).catch(() => rootPath);
+
+      const watcher = chokidar.watch(watchRoot, {
         ignored: WATCHER_IGNORED_PATTERNS,
         persistent: true,
         ignoreInitial: true,
         followSymlinks: false,
         depth: 6,
-        usePolling: true,
-        interval: 6_000,
-        binaryInterval: 6_000,
+        // Native filesystem events. No usePolling/interval: a six-second poll
+        // is exactly the latency this watcher is meant to remove.
       });
 
       watcher
@@ -460,6 +534,7 @@ export async function initializeSessionsWatcher(): Promise<void> {
         });
 
       watchers.push(watcher);
+      readyPromises.push(waitForWatcherReady(watcher, provider));
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.error(`Failed to initialize session watcher for provider "${provider}"`, {
@@ -469,13 +544,19 @@ export async function initializeSessionsWatcher(): Promise<void> {
     }
   }
 
-  // Watchers are installed before the first scan so a transcript written
-  // during a long bootstrap is still seen. The scan itself is incremental and
-  // runs in the background: startup must not wait for a provider that is slow
-  // or unreachable, and the projects routes serve the existing index meanwhile.
-  void sessionSynchronizerService
-    .synchronizeSessions()
-    .then((initialSync) => {
+  // The initial scan starts only after every watcher has finished its own
+  // initial scan. A transcript written during registration is therefore either
+  // present for this scan or delivered as a native event afterwards; it cannot
+  // fall into the gap between the two. The scan itself is incremental and runs
+  // in the background so startup does not wait for a slow provider.
+  void (async () => {
+    await Promise.all(readyPromises);
+    if (!isWatcherActive(generation)) {
+      return;
+    }
+
+    try {
+      const initialSync = await sessionSynchronizerService.synchronizeSessions();
       if (!isWatcherActive(generation)) {
         return;
       }
@@ -484,17 +565,22 @@ export async function initializeSessionsWatcher(): Promise<void> {
         prunedOrphans: initialSync.prunedOrphans,
         failures: initialSync.failures,
       });
-    })
-    .catch((error) => {
+    } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.error('Initial session synchronization failed', { error: message });
-    });
+    }
+  })();
 }
 
 /**
- * Stops all active provider session watchers.
+ * Stops all active provider session watchers. Safe to call more than once and
+ * safe to call while another close is still running.
  */
 export async function closeSessionsWatcher(): Promise<void> {
+  if (watcherClosePromise) {
+    return watcherClosePromise;
+  }
+
   watcherClosed = true;
   watcherGeneration += 1;
 
@@ -508,8 +594,14 @@ export async function closeSessionsWatcher(): Promise<void> {
   watcherRescheduleAfterRefresh = false;
   watcherRetryRescheduleAfterRefresh = false;
 
-  await Promise.all(
-    watchers.map(async (watcher) => {
+  for (const cancelReadyWait of watcherReadyWaiters) {
+    cancelReadyWait();
+  }
+  watcherReadyWaiters.clear();
+
+  const activeWatchers = watchers.splice(0, watchers.length);
+  watcherClosePromise = Promise.all(
+    activeWatchers.map(async (watcher) => {
       try {
         await watcher.close();
       } catch (error) {
@@ -517,6 +609,11 @@ export async function closeSessionsWatcher(): Promise<void> {
         console.error('Failed to close session watcher', { error: message });
       }
     })
-  );
-  watchers.length = 0;
+  ).then(() => undefined);
+
+  try {
+    await watcherClosePromise;
+  } finally {
+    watcherClosePromise = null;
+  }
 }

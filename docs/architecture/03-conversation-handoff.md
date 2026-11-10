@@ -412,12 +412,15 @@ with the same REST refresh as the fallback.
 **RULE: the watcher discovers conversations independently of the app, and its rows are keyed
 by the provider id until the app claims them.**
 
-`sessions-watcher.service.ts` watches four provider directories with chokidar in polling mode
-(`usePolling`, a 6 s interval, `depth: 6`, `ignoreInitial`), keeps only `*.jsonl` files —
-`opencode.db` for OpenCode — and calls `sessionSynchronizerService.synchronizeProviderFile`.
-Indexed ids are queued and flushed with a 500 ms debounce and a 2 s maximum wait
-(`PROJECTS_UPDATE_DEBOUNCE_MS`, `PROJECTS_UPDATE_MAX_WAIT_MS`), then handed to
-`broadcastSessionUpsertedBatch`, which walks the client set once for the whole batch.
+`sessions-watcher.service.ts` watches the provider directories with chokidar using native
+filesystem events (no `usePolling`/interval), `depth: 6`, `ignoreInitial`, and
+`followSymlinks: false`; a provider root that is itself a symlink is resolved to its real
+directory first. It keeps only `*.jsonl` files — `opencode.db` for OpenCode — and calls
+`sessionSynchronizerService.synchronizeProviderFile`. The initial scan starts after every
+watcher reports `ready`, so a file written during registration is either in that scan or
+delivered as a native event. Indexed ids are queued and flushed with a 1 s debounce and a
+2 s maximum wait (`PROJECTS_UPDATE_DEBOUNCE_MS`, `PROJECTS_UPDATE_MAX_WAIT_MS`), then handed
+to `broadcastSessionUpsertedBatch`, which walks the client set once for the whole batch.
 
 How rows are claimed:
 
