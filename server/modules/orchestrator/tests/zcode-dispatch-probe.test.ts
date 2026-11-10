@@ -83,7 +83,13 @@ async function withFakeZcode(runTest: (ctx: {
   resetZcodeProbeCache();
   const previousDatabasePath = process.env.DATABASE_PATH;
   const previousPath = process.env.PATH;
+  const previousNodeEnv = process.env.NODE_ENV;
   const root = await mkdtemp(path.join(tmpdir(), 'zcode-probe-test-'));
+
+  // The probe is explicit, so it still runs the fake binary; NODE_ENV=test only
+  // keeps prepareZcodeHome from running the real API-key login against the
+  // developer's home (which would add seconds to every probe and time the test out).
+  process.env.NODE_ENV = 'test';
 
   closeConnection();
   process.env.DATABASE_PATH = path.join(root, 'auth.db');
@@ -190,6 +196,8 @@ if (mode === 'timeout') {
     else process.env.DATABASE_PATH = previousDatabasePath;
     if (previousPath === undefined) delete process.env.PATH;
     else process.env.PATH = previousPath;
+    if (previousNodeEnv === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = previousNodeEnv;
     await rm(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 }).catch(() => {});
   }
 }

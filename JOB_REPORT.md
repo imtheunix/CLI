@@ -50,3 +50,14 @@ no test double to update: the defect was in the live consumer.
   `runtime-cancellation.test.ts`, `detached-liveness.test.ts`,
   `detached-turns-restart.test.ts`: 20/20 pass.
 - `tsc --noEmit -p server/tsconfig.json`: clean.
+
+### CI follow-up — zcode dispatch probe isolation
+The full gate then failed 3 `zcode-dispatch-probe` tests. Root cause: the
+async `prepareZcodeHome` now awaits `apiKeyLogin`, whose test guard only checks
+`NODE_ENV === 'test'`. `npm test` runs under `node --test` (which sets
+`NODE_TEST_CONTEXT`, not `NODE_ENV`), so on a workstation with real ZCode
+credentials the probe ran the real ~3 s login for every probe and the 5 s
+`eventually` timeout expired. The test now sets `NODE_ENV=test` for its
+duration (the probe is `explicit: true`, so the fake binary still runs) and
+restores it. Verified with a deliberately slow login script: 3/3 pass; zcode
+dispatch/home/provider suites 19/19 pass; server typecheck clean.
