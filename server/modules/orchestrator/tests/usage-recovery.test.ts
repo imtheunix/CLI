@@ -106,6 +106,39 @@ test('morph: a transient 429 backs off in seconds, not on the usage-limit ladder
   assert.equal(armed.recovery.dueAt, '2026-11-10T12:01:30.000Z');
 });
 
+test('morph: a transient Retry-After 0 retries immediately instead of refusing', () => {
+  const now = new Date('2026-11-10T12:00:00Z');
+  const failure = classifyTurnFailure('morph', '429 too many requests, please retry after 0 seconds', now);
+  assert.equal(failure.failureClass, 'transient');
+  assert.equal(failure.resetAt?.toISOString(), now.toISOString());
+  const armed = armLimitRecovery({ jobId: 'j', turnId: 't1', failure: { ...failure, failureClass: 'transient' }, previous: null, now, random: () => 0 });
+  assert.equal(armed.status, 'armed');
+  assert.equal(armed.recovery.gaveUp, false);
+  assert.equal(armed.recovery.dueAt, now.toISOString());
+  assert.equal(dueLimitAction(armed.recovery, now), 'resume');
+});
+
+test('morph: future Retry-After resets advance the same bounded five-attempt chain', () => {
+  const start = new Date('2026-11-10T12:00:00Z');
+  let previous: LimitRecovery | null = null;
+  let at = start.getTime();
+  for (let turn = 1; turn <= 5; turn += 1) {
+    const now = new Date(at);
+    const failure = classifyTurnFailure('morph', '429 Too Many Requests (retry-after: 30 seconds)', now);
+    const result = armLimitRecovery({ jobId: 'j', turnId: `t${turn}`, failure: { ...failure, failureClass: 'transient' }, previous, now, random: () => 0 });
+    assert.equal(result.status, 'armed', `turn ${turn}`);
+    assert.equal(result.recovery.attempt, turn);
+    assert.equal(result.recovery.dueAt, new Date(now.getTime() + 30_000).toISOString());
+    previous = { ...result.recovery, delivered: true };
+    at = Date.parse(result.recovery.dueAt) + 1_000;
+  }
+  const now = new Date(at);
+  const failure = classifyTurnFailure('morph', '429 Too Many Requests (retry-after: 30 seconds)', now);
+  const sixth = armLimitRecovery({ jobId: 'j', turnId: 't6', failure: { ...failure, failureClass: 'transient' }, previous, now, random: () => 0 });
+  assert.equal(sixth.status, 'gave_up');
+  assert.equal(sixth.recovery.attempt, 6);
+});
+
 test('morph: login failures are auth_required, ordinary errors stay other', () => {
   const now = new Date();
   assert.equal(classifyTurnFailure('morph', 'Invalid API key', now).failureClass, 'auth_required');

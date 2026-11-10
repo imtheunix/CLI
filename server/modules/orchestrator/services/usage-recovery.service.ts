@@ -230,7 +230,8 @@ type ArmResult = {
  * Jobs service: arms a recovery for a usage_limit, transient or auth_required failure, idempotent by its key.
  * A stated reset already in the past is refused (no retry loop); a resume more than 24 h after the chain's first failure gives up;
  * without a reset the job backs off 15, 30, 60 min, then waits for the hub; a transient capacity error
- * backs off 30, 60, 120 s (up to five times); a login wait probes every 10 min and resumes at most three times.
+ * backs off 30, 60, 120 s (up to five times), honoring a stated Retry-After while still advancing that
+ * same five-attempt chain; a login wait probes every 10 min and resumes at most three times.
  */
 export function armLimitRecovery(input: {
   jobId: string;
@@ -259,12 +260,16 @@ export function armLimitRecovery(input: {
   if (failure.failureClass === 'auth_required') {
     attempt = (sameChain?.attempt ?? 0) + 1;
     dueMs = nowMs + AUTH_PROBE_MS;
+  } else if (transient) {
+    // A transient capacity error always advances the same bounded five-attempt chain, whether or not
+    // the provider stated a Retry-After. A stated reset in the past (Retry-After: 0) means retry now.
+    attempt = (sameChain?.attempt ?? 0) + 1;
+    dueMs = failure.resetAt
+      ? Math.max(nowMs, failure.resetAt.getTime()) + Math.floor(random() * TRANSIENT_JITTER_MS)
+      : nowMs + (TRANSIENT_BACKOFF_SECONDS[attempt - 1] ?? 0) * 1_000;
   } else if (failure.resetAt) {
     attempt = 0;
-    dueMs = failure.resetAt.getTime() + Math.floor(random() * (transient ? TRANSIENT_JITTER_MS : MAX_JITTER_MS));
-  } else if (transient) {
-    attempt = (sameChain && sameChain.resetAt === null ? sameChain.attempt : 0) + 1;
-    dueMs = nowMs + (TRANSIENT_BACKOFF_SECONDS[attempt - 1] ?? 0) * 1_000;
+    dueMs = failure.resetAt.getTime() + Math.floor(random() * MAX_JITTER_MS);
   } else {
     attempt = (sameChain && sameChain.resetAt === null ? sameChain.attempt : 0) + 1;
     dueMs = nowMs + (BACKOFF_MINUTES[attempt - 1] ?? 0) * 60_000;
@@ -274,7 +279,9 @@ export function armLimitRecovery(input: {
     key, kind: failure.failureClass, resetAt: failure.resetAt?.toISOString() ?? null, dueAt: new Date(dueMs).toISOString(),
     attempt, firstFailedAt, delivered: false, gaveUp: false, reason: failure.reason,
   };
-  if (failure.resetAt && failure.resetAt.getTime() <= nowMs) return { status: 'refused', recovery: { ...recovery, gaveUp: true } };
+  // A past stated reset is refused only for a usage limit, where it genuinely means no retry; a
+  // transient capacity error with Retry-After: 0 is retried immediately instead.
+  if (!transient && failure.resetAt && failure.resetAt.getTime() <= nowMs) return { status: 'refused', recovery: { ...recovery, gaveUp: true } };
   const maxAttempts = transient ? TRANSIENT_MAX_ATTEMPTS : MAX_ATTEMPTS;
   if (attempt > maxAttempts || dueMs - Date.parse(firstFailedAt) > GIVE_UP_MS) return { status: 'gave_up', recovery: { ...recovery, gaveUp: true } };
   return { status: 'armed', recovery };

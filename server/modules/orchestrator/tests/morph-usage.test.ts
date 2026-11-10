@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -72,7 +72,7 @@ test('the ledger fixture: 60 s window per group, reasoning as output, the two De
   }
 });
 
-test('the OpenCode DB fixture: uncached = input - cache.read, reasoning as output, assistant rows only', async () => {
+test('the OpenCode DB fixture: tokens.input is already uncached, reasoning as output, assistant rows only', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'morph-usage-opencode-'));
   const databasePath = path.join(root, 'opencode.db');
   const database = new Database(databasePath);
@@ -103,6 +103,11 @@ test('the OpenCode DB fixture: uncached = input - cache.read, reasoning as outpu
       role: 'assistant', providerID: 'morph', modelID: 'morph-kimik31',
       tokens: { input: 500, output: 20, reasoning: 0, cache: { read: 100, write: 0 } },
     });
+    // A heavy-cache turn: cache.read is larger than the uncached input and must not be subtracted.
+    message('e', 15, {
+      role: 'assistant', providerID: 'morph', modelID: 'morph-dsv41flash',
+      tokens: { input: 2_000, output: 0, reasoning: 0, cache: { read: 48_000, write: 0 } },
+    });
     // A user message with tokens is not usage.
     message('c', 5, { role: 'user', tokens: { input: 9_999, output: 9_999, reasoning: 0, cache: { read: 0 } } });
     // Older than 15 minutes: ignored.
@@ -123,10 +128,73 @@ test('the OpenCode DB fixture: uncached = input - cache.read, reasoning as outpu
     });
     const usage = service.usage();
     assert.equal(usage.source, 'opencode');
-    assert.equal(usage.groups.deepseek.uncachedIn, 600);
+    // 1,000 + 2,000: tokens.input is already uncached, so cache.read is not subtracted again.
+    assert.equal(usage.groups.deepseek.uncachedIn, 3_000);
     assert.equal(usage.groups.deepseek.out, 150);
-    assert.equal(usage.groups.kimi.uncachedIn, 400);
+    assert.equal(usage.groups.kimi.uncachedIn, 500);
     assert.equal(usage.groups.kimi.out, 20);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('the OpenCode fallback counts only Morph messages and uses completion time for the window', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'morph-usage-opencode-time-'));
+  const databasePath = path.join(root, 'opencode.db');
+  const database = new Database(databasePath);
+  try {
+    database.exec(`
+      CREATE TABLE session (
+        id TEXT PRIMARY KEY,
+        time_updated INTEGER NOT NULL
+      );
+      CREATE TABLE message (
+        id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        time_created INTEGER NOT NULL,
+        time_updated INTEGER NOT NULL,
+        data TEXT NOT NULL
+      );
+      CREATE INDEX message_session_time_created_id_idx ON message (session_id, time_created, id);
+    `);
+    database.prepare('INSERT INTO session (id, time_updated) VALUES (?, ?)').run('s', NOW.getTime());
+    const insert = database.prepare('INSERT INTO message (id, session_id, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?)');
+    const message = (id: string, createdAgo: number, data: Record<string, unknown>) =>
+      insert.run(id, 's', NOW.getTime() - createdAgo * 1_000, NOW.getTime() - createdAgo * 1_000, JSON.stringify(data));
+    // Created 90 s ago, completed 2 s ago: a long stream belongs to the window it actually loaded.
+    message('long', 90, {
+      role: 'assistant', providerID: 'morph', modelID: 'morph-dsv41flash',
+      time: { created: NOW.getTime() - 90_000, completed: NOW.getTime() - 2_000 },
+      tokens: { input: 1_000, output: 70_000, reasoning: 0, cache: { read: 0, write: 0 } },
+    });
+    // Another provider's assistant message with a Morph-looking model id is not Morph usage.
+    message('foreign', 2, {
+      role: 'assistant', providerID: 'zai', modelID: 'deepseek-v4',
+      time: { created: NOW.getTime() - 2_000, completed: NOW.getTime() - 2_000 },
+      tokens: { input: 9_999, output: 900, reasoning: 0, cache: { read: 0, write: 0 } },
+    });
+    // No completion time: falls back to creation time.
+    message('created', 3, {
+      role: 'assistant', providerID: 'morph', modelID: 'morph-dsv41flash',
+      tokens: { input: 10, output: 5, reasoning: 0, cache: { read: 0, write: 0 } },
+    });
+  } finally {
+    database.close();
+  }
+
+  try {
+    const service = createMorphUsageService({
+      config: () => configWith(),
+      now: () => NOW,
+      ledgerPath: path.join(root, 'missing.jsonl'),
+      databasePath,
+    });
+    const usage = service.usage();
+    assert.equal(usage.source, 'opencode');
+    assert.equal(usage.groups.deepseek.uncachedIn, 1_010);
+    assert.equal(usage.groups.deepseek.out, 70_005);
+    // The long stream is over the admission threshold, so admission holds.
+    assert.equal(service.admitted(), false);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -147,6 +215,56 @@ test('a stale ledger falls back to OpenCode; a missing one reports no source', a
     const usage = service.usage();
     assert.equal(usage.source, 'none');
     assert.equal(usage.groups.deepseek.uncachedIn, 0);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('admission fails closed when an existing input is unreadable or stale, but admits a fresh machine', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'morph-usage-none-'));
+  const ledgerPath = path.join(root, 'ledger.jsonl');
+  const databasePath = path.join(root, 'opencode.db');
+  const service = () => createMorphUsageService({
+    config: () => configWith(),
+    now: () => NOW,
+    ledgerPath,
+    databasePath,
+  });
+  try {
+    // Fresh machine: neither the ledger nor the OpenCode database exists.
+    assert.equal(service().usage().source, 'none');
+    assert.equal(service().admitted(), true);
+
+    // A stale ledger is an existing input: headroom is unknown, so admission holds.
+    await writeFile(ledgerPath, ledgerLine(11 * 60, 'morph/morph-dsv41flash', 1_000, 100));
+    assert.equal(service().usage().source, 'none');
+    assert.equal(service().admitted(), false);
+
+    // An unreadable ledger (a directory here) is a read failure, not a fresh machine.
+    await rm(ledgerPath, { force: true });
+    await mkdir(ledgerPath);
+    assert.equal(service().admitted(), false);
+    await rm(ledgerPath, { recursive: true, force: true });
+
+    // An unreadable OpenCode database (garbage, not SQLite) is a read failure too.
+    await writeFile(databasePath, 'not a sqlite database');
+    assert.equal(service().usage().source, 'none');
+    assert.equal(service().admitted(), false);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('nonfinite cap values from orchestrator.json are rejected', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'morph-usage-caps-'));
+  const file = path.join(root, 'orchestrator.json');
+  try {
+    // JSON has no Infinity literal, but 1e999 overflows to it.
+    await writeFile(file, '{"morph":{"caps":{"kimi":{"uncachedIn":1e999},"deepseek":{"out":1e999}}}}');
+    const config = loadOrchestratorConfig(file);
+    assert.equal(config.morph.caps.kimi.uncachedIn, 72_870);
+    assert.equal(config.morph.caps.deepseek.out, 76_559);
+    assert.equal(config.morph.admitBelow, 0.7);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

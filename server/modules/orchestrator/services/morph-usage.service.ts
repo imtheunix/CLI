@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -152,13 +152,17 @@ export function formatMorphTable(usage: MorphUsage): string {
   return lines.join('\n');
 }
 
-/** The morph-pacer ledger, one JSON line per request; null when the file is missing or unreadable. */
-function readLedgerEvents(ledgerPath: string): MorphUsageEvent[] | null {
+/** Whether an input could be read: 'absent' is a fresh machine, 'unreadable' is a real failure. */
+type ReadState = 'ok' | 'absent' | 'unreadable';
+type ReadResult = { state: ReadState; events: MorphUsageEvent[] };
+
+/** The morph-pacer ledger, one JSON line per request; `state` separates a missing file from a broken one. */
+function readLedgerEvents(ledgerPath: string): ReadResult {
   let text: string;
   try {
     text = readFileSync(ledgerPath, 'utf8');
-  } catch {
-    return null;
+  } catch (error) {
+    return { state: (error as NodeJS.ErrnoException).code === 'ENOENT' ? 'absent' : 'unreadable', events: [] };
   }
   const events: MorphUsageEvent[] = [];
   for (const line of text.split('\n')) {
@@ -178,53 +182,62 @@ function readLedgerEvents(ledgerPath: string): MorphUsageEvent[] | null {
       // A half-written line (the pacer appends while we read): skip it, keep the rest.
     }
   }
-  return events;
+  return { state: 'ok', events };
 }
 
 /**
- * OpenCode's own message table, read-only and tolerant of a lock: assistant messages carry
- * `tokens.input` (which includes `cache.read`), `tokens.output` and `tokens.reasoning`.
- * Null when the database is missing or unreadable.
+ * OpenCode's own message table, read-only and tolerant of a lock: assistant messages from the Morph
+ * provider carry `tokens.input` (already uncached: OpenCode stores `nonCachedInputTokens`, with
+ * `cache.read` and `cache.write` excluded), `tokens.output` and `tokens.reasoning`. The event time is
+ * the message's completion time (`time.completed`), falling back to its creation time. `state` is
+ * 'absent' when the database file does not exist (a fresh machine) and 'unreadable' when it exists
+ * but cannot be opened or queried.
  */
-function readOpenCodeEvents(databasePath: string, now: Date): MorphUsageEvent[] | null {
+function readOpenCodeEvents(databasePath: string, now: Date): ReadResult {
+  if (!existsSync(databasePath)) return { state: 'absent', events: [] };
   let database: Database.Database;
   try {
     database = new Database(databasePath, { readonly: true, fileMustExist: true, timeout: 1_000 });
   } catch {
-    return null;
+    return { state: 'unreadable', events: [] };
   }
   try {
     const since = now.getTime() - MINUTES * MINUTE_MS;
     // The message index leads with session_id, so narrow to sessions touched in the window first;
-    // a bare time_created filter would scan the whole (multi-GB) message table.
+    // a bare time filter would scan the whole (multi-GB) message table. A long stream is counted in
+    // the window it actually loaded, so filter and timestamp by completion time when it is present.
     const rows = database.prepare(`
       SELECT time_created, data FROM message
       WHERE session_id IN (SELECT id FROM session WHERE time_updated >= ?)
-        AND time_created >= ?
+        AND COALESCE(json_extract(data, '$.time.completed'), time_created) >= ?
     `).all(since, since) as Array<{ time_created: number; data: string }>;
     const events: MorphUsageEvent[] = [];
     for (const row of rows) {
       try {
         const data = JSON.parse(row.data) as {
           role?: string;
+          providerID?: string;
           modelID?: string;
-          tokens?: { input?: number; output?: number; reasoning?: number; cache?: { read?: number } };
+          time?: { completed?: number };
+          tokens?: { input?: number; output?: number; reasoning?: number; cache?: { read?: number; write?: number } };
         };
-        if (data.role !== 'assistant' || !data.tokens || !data.modelID) continue;
-        const cached = readNumber(data.tokens.cache?.read);
+        if (data.role !== 'assistant' || data.providerID !== 'morph' || !data.tokens || !data.modelID) continue;
+        const completed = typeof data.time?.completed === 'number' && Number.isFinite(data.time.completed)
+          ? data.time.completed
+          : row.time_created;
         events.push({
-          ts: row.time_created,
+          ts: completed,
           model: data.modelID,
-          uncachedIn: Math.max(0, readNumber(data.tokens.input) - cached),
+          uncachedIn: readNumber(data.tokens.input),
           out: readNumber(data.tokens.output) + readNumber(data.tokens.reasoning),
         });
       } catch {
         // A malformed message row is not usage.
       }
     }
-    return events;
+    return { state: 'ok', events };
   } catch {
-    return null;
+    return { state: 'unreadable', events: [] };
   } finally {
     database.close();
   }
@@ -244,19 +257,30 @@ export function createMorphUsageService(deps: {
   const ledgerPath = deps.ledgerPath ?? path.join(os.homedir(), '.local/state/morph-pacer/ledger.jsonl');
   const databasePath = deps.databasePath ?? getOpenCodeDatabasePath();
 
-  function usage(): MorphUsage {
+  function read(): { usage: MorphUsage; inputsAbsent: boolean } {
     const at = now();
     const caps = deps.config().morph.caps;
     const ledger = readLedgerEvents(ledgerPath);
-    if (ledger && ledger.some((event) => event.ts >= at.getTime() - LEDGER_FRESH_MS)) {
-      return computeMorphUsage(ledger, caps, at, 'ledger');
+    if (ledger.state === 'ok' && ledger.events.some((event) => event.ts >= at.getTime() - LEDGER_FRESH_MS)) {
+      return { usage: computeMorphUsage(ledger.events, caps, at, 'ledger'), inputsAbsent: false };
     }
     const opencode = readOpenCodeEvents(databasePath, at);
-    return computeMorphUsage(opencode ?? [], caps, at, opencode ? 'opencode' : 'none');
+    if (opencode.state === 'ok') {
+      return { usage: computeMorphUsage(opencode.events, caps, at, 'opencode'), inputsAbsent: false };
+    }
+    // No readable input. Only a genuinely fresh machine (both files absent) may admit deliberately;
+    // a stale ledger or an unreadable database means headroom is unknown, so admission fails closed.
+    const inputsAbsent = ledger.state === 'absent' && opencode.state === 'absent';
+    return { usage: computeMorphUsage([], caps, at, 'none'), inputsAbsent };
+  }
+
+  function usage(): MorphUsage {
+    return read().usage;
   }
 
   function admitted(): boolean {
-    const current = usage();
+    const { usage: current, inputsAbsent } = read();
+    if (current.source === 'none') return inputsAbsent;
     const cap = current.groups.deepseek.caps.out;
     return current.groups.deepseek.out < deps.config().morph.admitBelow * cap;
   }

@@ -241,8 +241,8 @@ export function loadOrchestratorConfig(file = path.join(os.homedir(), '.config/c
         const cap = caps[group];
         if (!cap || typeof cap !== 'object') continue;
         const values = cap as Record<string, unknown>;
-        if (typeof values.uncachedIn === 'number' && values.uncachedIn > 0) config.morph.caps[group].uncachedIn = values.uncachedIn;
-        if (typeof values.out === 'number' && values.out > 0) config.morph.caps[group].out = values.out;
+        if (typeof values.uncachedIn === 'number' && Number.isFinite(values.uncachedIn) && values.uncachedIn > 0) config.morph.caps[group].uncachedIn = values.uncachedIn;
+        if (typeof values.out === 'number' && Number.isFinite(values.out) && values.out > 0) config.morph.caps[group].out = values.out;
       }
     }
     if (typeof morph.admitBelow === 'number' && morph.admitBelow > 0 && morph.admitBelow <= 1) {
