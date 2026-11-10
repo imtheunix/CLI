@@ -56,6 +56,9 @@ export type OrchestratorBackendHandover = {
   pendingPrompt?: string | null;
 };
 
+/** One `tjob rename`: the title before and after, and when it changed. */
+export type OrchestratorTitleChange = { at: string; from: string; to: string };
+
 export type OrchestratorJobRow = {
   id: string;
   title: string;
@@ -93,6 +96,8 @@ export type OrchestratorJobRow = {
   limit_recovery: string | null;
   /** JSON array of OrchestratorBackendHandover; read it with `readBackendHandovers`. */
   backend_history: string | null;
+  /** JSON array of OrchestratorTitleChange; read it with `readTitleHistory`. */
+  title_history: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -101,13 +106,13 @@ type JobPatch = Partial<Pick<OrchestratorJobRow,
   'backend' | 'model' | 'session_id' | 'state' | 'in_turn' | 'merge_step' | 'merge_attempts'
   | 'pushed_sha' | 'deploy_waiting_since' | 'last_error' | 'base_branch'
   | 'review_step' | 'review_verdict' | 'review_risk' | 'review_tier' | 'review_round' | 'review_head_sha' | 'review_session_id'
-  | 'failure_class' | 'resume_at' | 'limit_recovery' | 'backend_history'>>;
+  | 'failure_class' | 'resume_at' | 'limit_recovery' | 'backend_history' | 'title' | 'title_history'>>;
 
 const PATCHABLE_COLUMNS: Array<keyof JobPatch> = [
   'backend', 'model', 'session_id', 'state', 'in_turn', 'merge_step', 'merge_attempts',
   'pushed_sha', 'deploy_waiting_since', 'last_error', 'base_branch',
   'review_step', 'review_verdict', 'review_risk', 'review_tier', 'review_round', 'review_head_sha', 'review_session_id',
-  'failure_class', 'resume_at', 'limit_recovery', 'backend_history',
+  'failure_class', 'resume_at', 'limit_recovery', 'backend_history', 'title', 'title_history',
 ];
 
 /** Used by the Orchestrator's views: a job's backend handovers, oldest first. */
@@ -115,6 +120,16 @@ export function readBackendHandovers(job: Pick<OrchestratorJobRow, 'backend_hist
   try {
     const parsed = JSON.parse(job.backend_history ?? '[]') as unknown;
     return Array.isArray(parsed) ? parsed as OrchestratorBackendHandover[] : [];
+  } catch {
+    return [];
+  }
+}
+
+/** Used by the Orchestrator's views: a job's title changes, oldest first. */
+export function readTitleHistory(job: Pick<OrchestratorJobRow, 'title_history'>): OrchestratorTitleChange[] {
+  try {
+    const parsed = JSON.parse(job.title_history ?? '[]') as unknown;
+    return Array.isArray(parsed) ? parsed as OrchestratorTitleChange[] : [];
   } catch {
     return [];
   }

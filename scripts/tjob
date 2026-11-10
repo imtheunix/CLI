@@ -7,6 +7,7 @@
 #   tjob meter [--watch]    Morph Ultra's rolling 60 s usage against its caps (--watch: refresh every 5 s)
 #   tjob status [--md]      goals, jobs, capacity, hub and efficiency in one place (--md: markdown, e.g. > file)
 #   tjob show <id>
+#   tjob rename <id> "<new title>"  give a job a plain-outcome title (the old title stays in its history)
 #   tjob done <id>          the agent's code is complete and committed: it waits at review for the orchestrating session
 #   tjob approve <id>       the orchestrating session (the hub) reviewed the branch: hand it to the CI/CD queue
 #   tjob retry <id>         a blocked merge goes on from where it stopped
@@ -117,7 +118,8 @@ elif mode == "status":
         if j.get("ageMs") is not None: extra = " (%s)" % dur(j["ageMs"])
         elif j.get("waitingMs") is not None: extra = " (waiting %s)" % dur(j["waitingMs"])
         elif j.get("at"): extra = " (%s)" % j["at"][:16].replace("T", " ")
-        return "  %s  %-6s %-14s %-12s%s  %s" % (j["id"], j.get("backend") or "-", (j.get("model") or "-").split("/")[-1], where, extra, j["title"])
+        health = ("  ! " + ", ".join(j["health"])) if j.get("health") else ""
+        return "  %s  %-6s %-14s %-12s%s  %s%s" % (j["id"], j.get("backend") or "-", (j.get("model") or "-").split("/")[-1], where, extra, j["title"], health)
     print("\nJobs:")
     for label in ("running", "review", "queue"):
         jobs = s["jobs"][label]
@@ -253,6 +255,12 @@ case "$cmd" in
       api GET "/status" | render status
     fi ;;
   show) api GET "/${1:?id}" | render show ;;
+  rename)
+    usage="usage: tjob rename <id> \"<new title>\""
+    id=${1:?$usage}; shift
+    title=${1:?$usage}; shift
+    [ $# -eq 0 ] || { echo "$usage" >&2; exit 2; }
+    api POST "/$id/rename" "$(json_body title "$title")" | render rename ;;
   done|approve|retry|resume|cancel) api POST "/${1:?id}/$cmd" '{}' | render "$cmd" ;;
   rollback)
     usage="usage: tjob rollback <id> <turn> [--discard-untracked]"

@@ -190,6 +190,11 @@ export function createOrchestratorRouter(services: {
     res.set('Cache-Control', 'no-store').json(createApiSuccessResponse({ job }));
   }));
 
+  router.post('/:id/rename', asyncHandler(async (req, res) => {
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    res.json(createApiSuccessResponse({ job: await services.jobs.rename(String(req.params.id), readString(body.title, 'title', true)) }));
+  }));
+
   router.post('/:id/done', asyncHandler(async (req, res) => {
     res.json(createApiSuccessResponse({ job: await services.jobs.markDone(String(req.params.id)) }));
   }));

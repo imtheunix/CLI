@@ -9,6 +9,7 @@ import type { OrchestratorBackend, OrchestratorJobRow } from '@/modules/database
 import { providerTokenUsageService } from '@/modules/providers/index.js';
 import { getOpenCodeDatabasePath } from '@/shared/utils.js';
 
+import type { HealthService } from './health.service.js';
 import type { HubService, HubStatus } from './hub.service.js';
 import type { MorphUsage, MorphUsageService } from './morph-usage.service.js';
 import type { OrchestratorConfig } from './orchestrator-config.service.js';
@@ -45,6 +46,8 @@ export type StatusJob = {
   at: string | null;
   /** Why the person is needed, when this job is in `needsYou.jobs`. */
   reason: string | null;
+  /** Current health flags, e.g. `no commit 47m`, `over 30m`, `holding slot 25m`. */
+  health: string[];
 };
 
 /** What the person has to decide or do, gathered from goals and jobs. */
@@ -285,7 +288,7 @@ function jobNeedsPerson(job: OrchestratorJobRow): string | null {
   return null;
 }
 
-function toStatusJob(job: OrchestratorJobRow, nowMs: number, reason: string | null = null): StatusJob {
+function toStatusJob(job: OrchestratorJobRow, nowMs: number, reason: string | null = null, health: string[] = []): StatusJob {
   const created = parseTimestamp(job.created_at);
   const updated = parseTimestamp(job.updated_at);
   const merged = mergedAt(job);
@@ -304,6 +307,7 @@ function toStatusJob(job: OrchestratorJobRow, nowMs: number, reason: string | nu
       ? isoOrNull(job.updated_at)
       : merged === null ? null : new Date(merged).toISOString(),
     reason,
+    health,
   };
 }
 
@@ -806,7 +810,8 @@ export function formatStatusMarkdown(snapshot: StatusSnapshot): string {
     const where = job.step ? `ci:${job.step}` : job.mergeStep !== 'none' ? `ci:${job.mergeStep}` : job.state;
     const tier = job.tier ? ` tier:${job.tier}` : '';
     const extra = job.ageMs !== null ? ` (${formatDuration(job.ageMs)})` : job.waitingMs !== null ? ` (waiting ${formatDuration(job.waitingMs)})` : job.at ? ` (${job.at.slice(0, 16).replace('T', ' ')})` : '';
-    return `${job.id}  ${backend}  ${model}  ${where}${tier}${extra}  ${job.title}`;
+    const health = job.health.length > 0 ? `  ! ${job.health.join(', ')}` : '';
+    return `${job.id}  ${backend}  ${model}  ${where}${tier}${extra}  ${job.title}${health}`;
   };
 
   lines.push('## Jobs now', '```');
@@ -882,6 +887,8 @@ export function createStatusService(deps: {
   };
   morphUsage: MorphUsageService;
   hub: HubService;
+  /** Current job health flags; absent in tests that do not exercise them. */
+  health?: Pick<HealthService, 'flags'>;
   now?: () => Date;
   goalsPath?: string;
   databasePath?: string;
@@ -915,6 +922,8 @@ export function createStatusService(deps: {
     const config = deps.config();
     const rows = deps.jobs.list();
     const goals = readGoals();
+    const healthFlags = deps.health?.flags() ?? new Map<string, Array<{ label: string }>>();
+    const healthFor = (job: OrchestratorJobRow): string[] => (healthFlags.get(job.id) ?? []).map((flag) => flag.label);
 
     const needsYou: StatusNeedsYou = {
       goals: goals.map((goal) => goal.needs).filter((need): need is string => need !== null),
@@ -924,16 +933,16 @@ export function createStatusService(deps: {
         .map(({ job, reason }) => ({ id: job.id, title: job.title, reason })),
     };
 
-    const running = rows.filter((job) => job.state === 'preparing' || job.state === 'active').map((job) => toStatusJob(job, nowMs));
-    const review = rows.filter((job) => job.state === 'done' && job.merge_step === 'review').map((job) => toStatusJob(job, nowMs));
-    const queue = rows.filter((job) => QUEUE_STEPS.has(job.merge_step)).map((job) => toStatusJob(job, nowMs));
+    const running = rows.filter((job) => job.state === 'preparing' || job.state === 'active').map((job) => toStatusJob(job, nowMs, null, healthFor(job)));
+    const review = rows.filter((job) => job.state === 'done' && job.merge_step === 'review').map((job) => toStatusJob(job, nowMs, null, healthFor(job)));
+    const queue = rows.filter((job) => QUEUE_STEPS.has(job.merge_step)).map((job) => toStatusJob(job, nowMs, null, healthFor(job)));
     const merged = rows
       .filter((job) => job.merge_step === 'merged' && (mergedAt(job) ?? 0) >= nowMs - DAY_MS)
-      .map((job) => toStatusJob(job, nowMs))
+      .map((job) => toStatusJob(job, nowMs, null, healthFor(job)))
       .sort((a, b) => (b.at ?? '').localeCompare(a.at ?? ''));
     const failed = rows
       .filter((job) => (job.state === 'failed' || job.merge_step === 'blocked') && (parseTimestamp(job.updated_at) ?? 0) >= nowMs - DAY_MS)
-      .map((job) => toStatusJob(job, nowMs, jobNeedsPerson(job)))
+      .map((job) => toStatusJob(job, nowMs, jobNeedsPerson(job), healthFor(job)))
       .sort((a, b) => (b.at ?? '').localeCompare(a.at ?? ''));
 
     const quota: Record<string, string | null> = Object.fromEntries(BACKENDS.map((backend) => [backend, null]));

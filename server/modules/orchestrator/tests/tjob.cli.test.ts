@@ -212,6 +212,24 @@ test('tjob show displays review details alongside existing fields', () => {
   assert.match(result.stdout, /^  review_tier: deep$/m);
 });
 
+test('tjob rename posts the new title and prints the renamed job', () => {
+  const body = JSON.stringify({
+    success: true,
+    data: { job: { id: 'j1', title: 'Plain outcome', state: 'active', merge_step: 'none' } },
+  });
+  const result = runTjob(['rename', 'j1', 'Plain outcome'], { body });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Plain outcome/);
+});
+
+test('tjob status shows health flags per job', () => {
+  const body = JSON.parse(statusBody);
+  body.data.status.jobs.running[0].health = ['no commit 47m', 'over 30m'];
+  const result = runTjob(['status'], { body: JSON.stringify(body) });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Running job.*! no commit 47m, over 30m/);
+});
+
 test('tjob hub exits nonzero when the API reports failure', () => {
   const result = runTjob(['hub'], { body: apiFailureBody });
   assert.notEqual(result.status, 0);

@@ -108,6 +108,7 @@ test('orchestrator job view attaches usage from transcript with notional USD', a
           tiers: { gateMaxLines: 50, docsGlobs: ['**/*.md'], testGlobs: ['**/*.test.ts'] },
           refuteBackendFor: {},
         },
+        health: { enabled: true, noCommitMin: 45, maxRunMin: 30, deadSlotMin: 20 },
       }),
     });
 

@@ -8,6 +8,7 @@ import {
   projectsDb,
   readBackendHandovers,
   readMergeStepHistory,
+  readTitleHistory,
   sessionsDb,
   userDb,
 } from '@/modules/database/index.js';
@@ -17,6 +18,7 @@ import type {
   OrchestratorEffectRow,
   OrchestratorJobRow,
   OrchestratorMergeStepEvent,
+  OrchestratorTitleChange,
 } from '@/modules/database/index.js';
 import { abortTurn } from '@/modules/detached-turns/index.js';
 import {
@@ -894,6 +896,24 @@ export function createJobsService(deps: {
     },
 
     /**
+     * `tjob rename <id> "<new title>"`: the hub gives a job a plain-outcome title. The old title is kept in the
+     * job's title history, so `tjob show` and later readers can still see what it was called.
+     */
+    async rename(id: string, title: string): Promise<OrchestratorJobView> {
+      const job = orchestratorJobsDb.get(id);
+      if (!job) throw new AppError(`Job ${id} was not found`, { code: 'JOB_NOT_FOUND', statusCode: 404 });
+      const next = title.trim();
+      if (!next) throw new AppError('title is required', { code: 'INVALID_REQUEST_BODY', statusCode: 400 });
+      if (next === job.title) return view(job);
+      const change: OrchestratorTitleChange = { at: now().toISOString(), from: job.title, to: next };
+      orchestratorJobsDb.update(id, {
+        title: next,
+        title_history: JSON.stringify([...readTitleHistory(job), change]),
+      });
+      return view(orchestratorJobsDb.get(id) as OrchestratorJobRow);
+    },
+
+    /**
      * `tjob cancel`: the person said they do not want the job anymore (in
      * its session, where its agent runs this, or from a shell). It frees its
      * slot and leaves the CI/CD queue; branch and session are kept; a clean worktree is removed after the session stops.
@@ -1074,6 +1094,8 @@ export function createJobsService(deps: {
         // A turn that did not stop on a limit or login ends the streak.
         ...(job.limit_recovery && !completion.aborted ? { failure_class: null, resume_at: null, limit_recovery: null } : {}),
         ...(completion.exitCode !== 0 && !completion.aborted ? { last_error: `The last turn ended with exit code ${completion.exitCode}` } : {}),
+        // A later successful turn clears the previous turn's error, so health's dead-slot check sees the last turn.
+        ...(completion.exitCode === 0 && !completion.aborted && job.last_error?.startsWith('The last turn ended with exit code') ? { last_error: null } : {}),
       });
       if (job.state === 'active') {
         appendHubEvent({
