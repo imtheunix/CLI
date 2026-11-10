@@ -1,0 +1,14 @@
+[Unit]
+Description=Incrementally index local code and knowledge for tribeira-recall
+Documentation=file://%h/Tribeira/tribeiracli/docs/recall.md
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/Tribeira/tribeiracli/tribeira-recall
+Environment=FASTEMBED_CACHE_PATH=%h/.cache/tribeira/fastembed
+Environment=RECALL_ONNX_THREADS=8
+ExecStart=%h/Tribeira/tribeiracli/tribeira-recall/.venv/bin/python -m tribeira_recall index --root %h/Tribeira
+
+# Optional Mem0 source (read-only); set these in an override, never credentials in the unit:
+# Environment=RECALL_MEMORY_MCP_COMMAND=/absolute/path/to/tribeira-memory-mcp
+# Environment=RECALL_MEMORY_SCOPES=reasoning:*,claude:global,codex:global,opencode:global
