@@ -13,6 +13,7 @@ import {
   SESSION_DRAFTS_TABLE_SCHEMA_SQL,
   SUPERSEDED_PROVIDER_SESSIONS_TABLE_SCHEMA_SQL,
   SCHEDULED_MESSAGES_TABLE_SCHEMA_SQL,
+  SESSIONS_PROJECT_ARCHIVED_INDEX_SQL,
   SESSIONS_TABLE_SCHEMA_SQL,
   USER_PREFERENCES_TABLE_SCHEMA_SQL,
   USER_NOTIFICATION_PREFERENCES_TABLE_SCHEMA_SQL,
@@ -655,6 +656,9 @@ export const runMigrations = (db: Database) => {
     db.exec('CREATE INDEX IF NOT EXISTS idx_session_ids_lookup ON sessions(session_id)');
     db.exec('CREATE INDEX IF NOT EXISTS idx_sessions_provider_session_id ON sessions(provider_session_id)');
     db.exec('CREATE INDEX IF NOT EXISTS idx_sessions_project_path ON sessions(project_path)');
+    // The sidebar's per-project page and count queries filter on both columns;
+    // without this SQLite scans all sessions for every project.
+    db.exec(SESSIONS_PROJECT_ARCHIVED_INDEX_SQL);
     db.exec('CREATE INDEX IF NOT EXISTS idx_sessions_forked_from ON sessions(forked_from_session_id)');
     db.exec('CREATE INDEX IF NOT EXISTS idx_sessions_spawned_by ON sessions(spawned_by_session_id)');
     // The due-message poll runs on a timer; without this it table-scans.

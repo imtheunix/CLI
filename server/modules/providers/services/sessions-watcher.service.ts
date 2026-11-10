@@ -53,7 +53,14 @@ const WATCHER_IGNORED_PATTERNS = [
   '**/.DS_Store',
 ];
 
-const PROJECTS_UPDATE_DEBOUNCE_MS = 500;
+/**
+ * Trailing debounce for the sidebar's session/project broadcast. A streaming
+ * OpenCode job rewrites its database every few seconds, and each rewrite used
+ * to fan out into its own broadcast; coalescing them keeps the event loop free
+ * for the sidebar's own reads. The max wait bounds the delay under a constant
+ * stream of changes.
+ */
+const PROJECTS_UPDATE_DEBOUNCE_MS = 1_000;
 const PROJECTS_UPDATE_MAX_WAIT_MS = 2_000;
 
 const watchers: FSWatcher[] = [];

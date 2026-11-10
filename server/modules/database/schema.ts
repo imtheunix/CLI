@@ -210,6 +210,18 @@ CREATE TABLE IF NOT EXISTS sessions (
 );
 `;
 
+/**
+ * The sidebar reads one project's sessions at a time, filtering on both
+ * `project_path` and `isArchived`. Without this composite index SQLite picks
+ * `idx_sessions_is_archived` and scans every session row for each project
+ * (68k rows x 562 projects on a real install). It is created by migrations
+ * after the sessions table is rebuilt to include `project_path`, so it is
+ * safe on upgraded databases as well as fresh ones.
+ */
+export const SESSIONS_PROJECT_ARCHIVED_INDEX_SQL = `
+CREATE INDEX IF NOT EXISTS idx_sessions_project_archived ON sessions(project_path, isArchived);
+`;
+
 export const LAST_SCANNED_AT_SQL = `
 CREATE TABLE IF NOT EXISTS scan_state (
   id INTEGER PRIMARY KEY CHECK (id = 1),
