@@ -108,7 +108,7 @@ async function withWorkspace(runTest: (ctx: Ctx) => Promise<void>): Promise<void
   config.checks = { demo: 'true' };
   config.forgejo.tokenFile = path.join(root, 'no-token');
   config.glmPeakHours.avoid = false;
-  config.review = false;
+  config.review.enabled = false;
   const runtime = createRuntime();
   let unsubscribe = null as (() => void) | null;
   const boot: Ctx['boot'] = (boundary, run) => {

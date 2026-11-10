@@ -145,6 +145,53 @@ test('tjob status --md prints the markdown rendering', () => {
   assert.equal(result.stdout, markdown);
 });
 
+test('tjob ls shows the review substep and preserves ci:review for legacy rows', () => {
+  const body = JSON.stringify({
+    success: true,
+    data: {
+      loads: {},
+      caps: {},
+      jobs: [
+        { id: 'current', state: 'running', merge_step: 'review', review_step: 'judge', title: 'Current review' },
+        { id: 'no-step', state: 'running', merge_step: 'review', review_step: 'none', title: 'No review substep' },
+        { id: 'legacy', state: 'running', merge_step: 'review', title: 'Legacy review' },
+      ],
+    },
+  });
+  const result = runTjob(['ls'], { body });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /current[^\n]*rv:judge/);
+  assert.doesNotMatch(result.stdout, /current[^\n]*ci:review/);
+  assert.match(result.stdout, /no-step[^\n]*ci:review/);
+  assert.match(result.stdout, /legacy[^\n]*ci:review/);
+});
+
+test('tjob show displays review details alongside existing fields', () => {
+  const body = JSON.stringify({
+    success: true,
+    data: {
+      job: {
+        id: 'review-1',
+        state: 'running',
+        merge_step: 'review',
+        review_step: 'judge',
+        review_verdict: 'approved',
+        review_risk: 'low',
+        title: 'Review details',
+        repo_path: '/repo',
+      },
+    },
+  });
+  const result = runTjob(['show', 'review-1'], { body });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /^  repo_path: \/repo$/m);
+  assert.match(result.stdout, /^  review_step: judge$/m);
+  assert.match(result.stdout, /^  review_verdict: approved$/m);
+  assert.match(result.stdout, /^  review_risk: low$/m);
+});
+
 test('tjob hub exits nonzero when the API reports failure', () => {
   const result = runTjob(['hub'], { body: apiFailureBody });
   assert.notEqual(result.status, 0);

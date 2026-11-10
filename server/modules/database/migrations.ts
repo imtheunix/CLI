@@ -515,6 +515,17 @@ const addOrchestratorJobBackendHistoryColumn = (db: Database): void => {
   addColumnToTableIfNotExists(db, 'orchestrator_jobs', columnNames, 'backend_history', 'TEXT');
 };
 
+/** Jobs from before automatic review have not started one; nullable results stay NULL. */
+const addOrchestratorJobReviewColumns = (db: Database): void => {
+  const columnNames = getTableInfo(db, 'orchestrator_jobs').map((column) => column.name);
+  addColumnToTableIfNotExists(db, 'orchestrator_jobs', columnNames, 'review_step', "TEXT NOT NULL DEFAULT 'none'");
+  addColumnToTableIfNotExists(db, 'orchestrator_jobs', columnNames, 'review_verdict', 'TEXT');
+  addColumnToTableIfNotExists(db, 'orchestrator_jobs', columnNames, 'review_risk', 'TEXT');
+  addColumnToTableIfNotExists(db, 'orchestrator_jobs', columnNames, 'review_round', 'INTEGER NOT NULL DEFAULT 0');
+  addColumnToTableIfNotExists(db, 'orchestrator_jobs', columnNames, 'review_head_sha', 'TEXT');
+  addColumnToTableIfNotExists(db, 'orchestrator_jobs', columnNames, 'review_session_id', 'TEXT');
+};
+
 /**
  * Adds the reasoning-effort metadata columns to the custom-model library.
  *
@@ -648,6 +659,7 @@ export const runMigrations = (db: Database) => {
     addOrchestratorJobMergeStepHistoryColumn(db);
     addOrchestratorJobLimitRecoveryColumns(db);
     addOrchestratorJobBackendHistoryColumn(db);
+    addOrchestratorJobReviewColumns(db);
     db.exec(RUNNING_TURNS_TABLE_SCHEMA_SQL);
     db.exec(ORCHESTRATOR_EFFECTS_TABLE_SCHEMA_SQL);
     db.exec('CREATE INDEX IF NOT EXISTS idx_running_turns_status ON running_turns(status)');

@@ -148,13 +148,20 @@ CREATE TABLE IF NOT EXISTS orchestrator_jobs (
     -- 1 while the session has a turn going; a restart finds it set and sends
     -- the session a "continue" turn instead of losing it.
     in_turn INTEGER NOT NULL DEFAULT 0,
-    -- none | queued | rebase | check | push | deploy | merged | blocked
+    -- none | review | queued | rebase | check | push | deploy | merged | blocked
     merge_step TEXT NOT NULL DEFAULT 'none',
     merge_attempts INTEGER NOT NULL DEFAULT 0,
     pushed_sha TEXT,
     deploy_waiting_since DATETIME,
     -- JSON [{step, at}]: when each CI/CD queue step began ("check:run" when a check slot was free).
     merge_step_history TEXT,
+    -- Automatic-review progress and result; defaults mean no review has run.
+    review_step TEXT NOT NULL DEFAULT 'none',
+    review_verdict TEXT,
+    review_risk TEXT,
+    review_round INTEGER NOT NULL DEFAULT 0,
+    review_head_sha TEXT,
+    review_session_id TEXT,
     last_error TEXT,
     -- usage_limit | auth_required | transient (NULL: the last turn did not fail on the provider's limit, capacity or login).
     failure_class TEXT,
