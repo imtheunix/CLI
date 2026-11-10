@@ -34,6 +34,11 @@ export interface PacerConfig {
   cacheTtl: string;
   /** Models that get a `run_id` derived from the session header when the client did not set one. */
   runIdModels: string[];
+  /**
+   * Client-facing model aliases: the request is rewritten to `model` and `body` fields the client did not set are added,
+   * before pacing (so the alias counts against the real model's budget). E.g. Kimi with thinking switched off.
+   */
+  modelAliases: Record<string, { model: string; body: Record<string, unknown> }>;
   groups: Record<string, GroupConfig>;
 }
 
@@ -62,6 +67,11 @@ export const DEFAULT_CONFIG: PacerConfig = {
   ledgerMaxBytes: 50 * 1024 * 1024,
   cacheTtl: '1h',
   runIdModels: ['morph-kimik31', 'kimi-latest'],
+  // Measured 2026-11-10: Morph ignores reasoning_effort for Kimi K3.1, but chat_template_kwargs.thinking=false turns
+  // thinking off (0 reasoning tokens, 3/3 correct on a probe).
+  modelAliases: {
+    'morph-kimik31-nothink': { model: 'morph-kimik31', body: { chat_template_kwargs: { thinking: false } } },
+  },
   groups: DEFAULT_GROUPS,
 };
 

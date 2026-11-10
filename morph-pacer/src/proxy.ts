@@ -167,7 +167,8 @@ export function createProxyServer(options: ProxyOptions): http.Server {
 
     const rawBody = await readBody(request);
     const parsed = parseRequestJson(rawBody);
-    const model = typeof parsed?.model === 'string' ? parsed.model : 'unknown';
+    let model = typeof parsed?.model === 'string' ? parsed.model : 'unknown';
+    let alias: string | null = null;
     const requestedStream = parsed?.stream === true;
     const isChatCompletions =
       request.method === 'POST' && url.pathname === '/v1/chat/completions';
@@ -177,6 +178,17 @@ export function createProxyServer(options: ProxyOptions): http.Server {
     let runIdSet = false;
     if (parsed) {
       let changed = false;
+
+      const aliasTarget = config.modelAliases?.[model];
+      if (aliasTarget) {
+        alias = model;
+        model = aliasTarget.model;
+        parsed.model = model;
+        for (const [key, value] of Object.entries(aliasTarget.body ?? {})) {
+          if (parsed[key] === undefined) parsed[key] = value;
+        }
+        changed = true;
+      }
 
       if (isChatCompletions) {
         if (parsed.cache_ttl === undefined && config.cacheTtl !== '') {
@@ -237,6 +249,7 @@ export function createProxyServer(options: ProxyOptions): http.Server {
         stream,
         cache_ttl: cacheTtl,
         run_id_set: runIdSet,
+        alias,
       };
       try {
         await ledger.append(entry);

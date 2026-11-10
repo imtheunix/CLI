@@ -14,6 +14,8 @@ export interface LedgerEntry {
   stream: boolean;
   cache_ttl: string | null;
   run_id_set: boolean;
+  /** The client-facing alias that was rewritten to `model`, if any. */
+  alias?: string | null;
 }
 
 export class Ledger {
