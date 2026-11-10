@@ -40,7 +40,7 @@ export const DEFAULT_GROUPS: Record<string, GroupConfig> = {
 
 export const DEFAULT_CONFIG: PacerConfig = {
   host: '127.0.0.1',
-  port: 8197,
+  port: 8198,
   upstream: 'https://api.morphllm.com/v1',
   apiKeyFile: '~/.config/morph/api_key',
   headroom: 0.95,
@@ -69,12 +69,70 @@ function readJson(path: string): Partial<PacerConfig> {
   }
 }
 
+function mergeGroups(
+  overrides: Record<string, Partial<GroupConfig>> | undefined,
+): Record<string, GroupConfig> {
+  const merged: Record<string, GroupConfig> = {};
+  for (const [key, defaults] of Object.entries(DEFAULT_GROUPS)) {
+    const override = overrides?.[key];
+    merged[key] = {
+      models: override?.models ?? defaults.models,
+      caps: { ...defaults.caps, ...(override?.caps ?? {}) },
+    };
+  }
+  for (const [key, override] of Object.entries(overrides ?? {})) {
+    if (merged[key]) continue;
+    merged[key] = {
+      models: override.models ?? [],
+      caps: {
+        uncachedIn: override.caps?.uncachedIn ?? Number.NaN,
+        out: override.caps?.out ?? Number.NaN,
+      },
+    };
+  }
+  return merged;
+}
+
+function validateGroups(groups: Record<string, GroupConfig>): void {
+  for (const [key, group] of Object.entries(groups)) {
+    if (
+      !Array.isArray(group.models) ||
+      group.models.length === 0 ||
+      group.models.some((model) => typeof model !== 'string' || model.length === 0)
+    ) {
+      throw new Error(`morph-pacer: group ${key} must have a non-empty models array`);
+    }
+    for (const cap of ['uncachedIn', 'out'] as const) {
+      const value = group.caps?.[cap];
+      if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
+        throw new Error(
+          `morph-pacer: group ${key} cap ${cap} must be a finite positive number`,
+        );
+      }
+    }
+  }
+}
+
+function validateUpstream(upstream: string): void {
+  let parsed: URL;
+  try {
+    parsed = new URL(upstream);
+  } catch {
+    throw new Error(`morph-pacer: upstream must be an absolute URL, got ${upstream}`);
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    throw new Error(
+      `morph-pacer: upstream must use http or https, got ${parsed.protocol}`,
+    );
+  }
+}
+
 export function loadConfig(path = '~/.config/morph-pacer/config.json'): PacerConfig {
   const file = readJson(expandHome(path));
   const config: PacerConfig = {
     ...DEFAULT_CONFIG,
     ...file,
-    groups: { ...DEFAULT_GROUPS, ...(file.groups ?? {}) },
+    groups: mergeGroups(file.groups as Record<string, Partial<GroupConfig>> | undefined),
   };
 
   if (process.env.MORPH_PACER_HOST) config.host = process.env.MORPH_PACER_HOST;
@@ -86,6 +144,9 @@ export function loadConfig(path = '~/.config/morph-pacer/config.json'): PacerCon
 
   config.apiKeyFile = expandHome(config.apiKeyFile);
   config.ledgerPath = expandHome(config.ledgerPath);
+
+  validateUpstream(config.upstream);
+  validateGroups(config.groups);
 
   if (!config.apiKey) {
     try {

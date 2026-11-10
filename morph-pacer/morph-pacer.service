@@ -13,7 +13,7 @@ Restart=on-failure
 RestartSec=2
 
 # Reads ~/.config/morph/api_key and writes ~/.local/state/morph-pacer/.
-# Binds 127.0.0.1:8197 only; it is not reachable from the network.
+# Binds 127.0.0.1:8198 only; it is not reachable from the network.
 
 [Install]
 WantedBy=default.target

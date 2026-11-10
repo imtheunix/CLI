@@ -2,7 +2,7 @@
 
 A small local proxy in front of Morph's OpenAI-compatible API. It keeps our agents inside Morph Ultra's per-minute token caps, so they use the capacity fully without getting a 429 from going over it.
 
-It listens on `127.0.0.1:8197`, forwards `/v1/*` to `https://api.morphllm.com/v1/*`, and injects the key from `~/.config/morph/api_key`. Client `Authorization` headers are ignored. Streaming responses pass through unbuffered; for streams it adds `stream_options.include_usage=true` when the request does not set it.
+It listens on `127.0.0.1:8198`, forwards `/v1/*` to `https://api.morphllm.com/v1/*`, and injects the key from `~/.config/morph/api_key`. Client `Authorization` headers are ignored. Streaming responses pass through unbuffered; for streams it adds `stream_options.include_usage=true` when the request does not set it.
 
 ## Run it
 
@@ -21,14 +21,14 @@ In `~/.config/opencode/opencode.jsonc`, change the Morph provider's `baseURL` fr
   "npm": "@ai-sdk/openai-compatible",
   "name": "Morph",
   "options": {
-    "baseURL": "http://127.0.0.1:8197/v1",
+    "baseURL": "http://127.0.0.1:8198/v1",
     "apiKey": "{file:~/.config/morph/api_key}"
   },
   "models": { /* unchanged */ }
 }
 ```
 
-The proxy reads the key itself, so the `apiKey` option can stay as it is. Do not point anything else at port 8197; it is a local-only listener.
+The proxy reads the key itself, so the `apiKey` option can stay as it is. Do not point anything else at port 8198; it is a local-only listener.
 
 ## Caps and config
 
@@ -45,7 +45,7 @@ Override anything in `~/.config/morph-pacer/config.json`:
 
 ```json
 {
-  "port": 8197,
+  "port": 8198,
   "upstream": "https://api.morphllm.com/v1",
   "apiKeyFile": "~/.config/morph/api_key",
   "headroom": 0.95,
@@ -70,7 +70,7 @@ Override anything in `~/.config/morph-pacer/config.json`:
 
 ## Admission
 
-Before forwarding, the proxy reserves an estimated output for the request: the per-model rolling p75 of recent completions, at least 256 tokens. Requests wait in FIFO order per model group until the 60-second window plus reservations fits under `cap * headroom`. When the response ends, the reservation is replaced by the real usage. If the uncached-input window is over its limit, new requests wait for it to decay.
+Before forwarding, the proxy reserves both an estimated uncached input and an estimated output for the request. The input estimate is conservative: `ceil(bodyBytes / 4)`, at least 512 tokens, so a burst of large prompts cannot all pass admission at once. The output estimate is the per-model rolling p75 of recent completions, at least 256 tokens. Requests wait in FIFO order per model group until the 60-second window plus reservations fits under `cap * headroom`. When the response ends, the reservation is replaced by the real usage. If the upstream began but the response carries no usage (or the client aborts mid-stream), the reserved estimate is kept in the window instead of accounting zero, so the next admission stays conservative.
 
 Upstream `429` and `503` responses are retried transparently up to six times. `Retry-After` is honored; otherwise the delay is exponential with jitter, between 1 and 60 seconds.
 
@@ -84,7 +84,7 @@ Every completed request appends one JSON line to `~/.local/state/morph-pacer/led
 
 The file rotates to `ledger.jsonl.1` at 50 MB.
 
-`GET http://127.0.0.1:8197/pacer/usage` returns the current 60-second window, caps, reservations, queue length and 429s in the last hour for each model group.
+`GET http://127.0.0.1:8198/pacer/usage` returns the current 60-second window, caps, reservations, queue length and 429s in the last hour for each model group.
 
 ## systemd user unit
 
@@ -97,4 +97,4 @@ systemctl --user daemon-reload
 systemctl --user enable --now morph-pacer
 ```
 
-Check it with `systemctl --user status morph-pacer` and `curl http://127.0.0.1:8197/pacer/usage`.
+Check it with `systemctl --user status morph-pacer` and `curl http://127.0.0.1:8198/pacer/usage`.

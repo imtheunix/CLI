@@ -15,6 +15,13 @@ export interface Admission {
   model: string;
   reservationId: number;
   waitMs: number;
+  reservedInput: number;
+  reservedOutput: number;
+}
+
+interface Reservation {
+  input: number;
+  output: number;
 }
 
 export interface GroupUsageSnapshot {
@@ -32,20 +39,25 @@ interface GroupState {
   models: string[];
   caps: Caps;
   window: RollingWindow;
-  reservations: Map<number, number>;
+  reservations: Map<number, Reservation>;
   queueTail: Promise<void>;
   queueLength: number;
   rateLimits: number[];
 }
 
 const MIN_ESTIMATE = 256;
+const MIN_INPUT_ESTIMATE = 512;
 const COMPLETION_HISTORY = 50;
 const RATE_LIMIT_WINDOW_MS = 3_600_000;
 
-function sumReservations(state: GroupState): number {
+function sumReservations(state: GroupState, field: keyof Reservation): number {
   let total = 0;
-  for (const value of state.reservations.values()) total += value;
+  for (const value of state.reservations.values()) total += value[field];
   return total;
+}
+
+export function estimateInput(bodyBytes: number): number {
+  return Math.max(MIN_INPUT_ESTIMATE, Math.ceil(Math.max(0, bodyBytes) / 4));
 }
 
 export class Pacer {
@@ -102,7 +114,7 @@ export class Pacer {
     return Math.max(MIN_ESTIMATE, sorted[index]);
   }
 
-  async admit(model: string): Promise<Admission> {
+  async admit(model: string, bodyBytes = 0): Promise<Admission> {
     const state = this.groupFor(model);
     const previous = state.queueTail;
     let release!: () => void;
@@ -114,17 +126,19 @@ export class Pacer {
 
     const started = this.clock.now();
     try {
-      const estimated = this.estimateOutput(model);
+      const estimatedOut = this.estimateOutput(model);
+      const estimatedIn = estimateInput(bodyBytes);
       const deadline = started + this.config.maxWaitMs;
 
       for (;;) {
         const now = this.clock.now();
         const totals = state.window.totals(now);
-        const reserved = sumReservations(state);
+        const reservedIn = sumReservations(state, 'input');
+        const reservedOut = sumReservations(state, 'output');
         const inputLimit = state.caps.uncachedIn * this.config.headroom;
         const outLimit = state.caps.out * this.config.headroom;
-        const inputOver = totals.uncachedIn >= inputLimit;
-        const outOver = totals.out + reserved + estimated > outLimit;
+        const inputOver = totals.uncachedIn + reservedIn + estimatedIn > inputLimit;
+        const outOver = totals.out + reservedOut + estimatedOut > outLimit;
 
         if (!inputOver && !outOver) break;
         if (now >= deadline) {
@@ -134,17 +148,26 @@ export class Pacer {
           break;
         }
 
-        const wait = this.computeWait(state, now, estimated, inputOver, outOver);
+        const wait = this.computeWait(
+          state,
+          now,
+          estimatedIn,
+          estimatedOut,
+          inputOver,
+          outOver,
+        );
         await this.clock.sleep(Math.max(1, Math.min(wait, deadline - now)));
       }
 
       const reservationId = this.nextReservationId++;
-      state.reservations.set(reservationId, estimated);
+      state.reservations.set(reservationId, { input: estimatedIn, output: estimatedOut });
       return {
         groupKey: state.key,
         model,
         reservationId,
         waitMs: this.clock.now() - started,
+        reservedInput: estimatedIn,
+        reservedOutput: estimatedOut,
       };
     } finally {
       state.queueLength -= 1;
@@ -155,7 +178,8 @@ export class Pacer {
   private computeWait(
     state: GroupState,
     now: number,
-    estimated: number,
+    estimatedIn: number,
+    estimatedOut: number,
     inputOver: boolean,
     outOver: boolean,
   ): number {
@@ -164,14 +188,22 @@ export class Pacer {
     const waits: number[] = [];
 
     if (inputOver) {
+      const reservedIn = sumReservations(state, 'input');
       const limit = state.caps.uncachedIn * this.config.headroom;
-      waits.push(this.decayWait(events, now, 'uncachedIn', totals.uncachedIn - limit + 1));
+      const available = limit - reservedIn - estimatedIn;
+      if (available < 0) {
+        waits.push(this.config.pollMs);
+      } else {
+        waits.push(
+          this.decayWait(events, now, 'uncachedIn', totals.uncachedIn - available + 1),
+        );
+      }
     }
 
     if (outOver) {
-      const reserved = sumReservations(state);
+      const reservedOut = sumReservations(state, 'output');
       const limit = state.caps.out * this.config.headroom;
-      const available = limit - reserved - estimated;
+      const available = limit - reservedOut - estimatedOut;
       if (available < 0) {
         waits.push(this.config.pollMs);
       } else {
@@ -196,19 +228,30 @@ export class Pacer {
     return this.config.pollMs;
   }
 
-  complete(admission: Admission, usage: Usage | null): void {
+  complete(admission: Admission, usage: Usage | null, consumed = false): void {
     const state = this.groups.get(admission.groupKey);
     if (!state) return;
+    const reservation = state.reservations.get(admission.reservationId);
     state.reservations.delete(admission.reservationId);
-    if (!usage) return;
 
-    const uncachedIn = Math.max(0, usage.promptTokens - usage.cachedTokens);
-    state.window.add({ t: this.clock.now(), uncachedIn, out: usage.completionTokens });
+    if (usage) {
+      const uncachedIn = Math.max(0, usage.promptTokens - usage.cachedTokens);
+      state.window.add({ t: this.clock.now(), uncachedIn, out: usage.completionTokens });
 
-    const history = this.completions.get(admission.model) ?? [];
-    history.push(usage.completionTokens);
-    if (history.length > COMPLETION_HISTORY) history.shift();
-    this.completions.set(admission.model, history);
+      const history = this.completions.get(admission.model) ?? [];
+      history.push(usage.completionTokens);
+      if (history.length > COMPLETION_HISTORY) history.shift();
+      this.completions.set(admission.model, history);
+      return;
+    }
+
+    if (consumed && reservation) {
+      state.window.add({
+        t: this.clock.now(),
+        uncachedIn: reservation.input,
+        out: reservation.output,
+      });
+    }
   }
 
   recordRateLimit(groupKey: string): void {
@@ -230,7 +273,7 @@ export class Pacer {
         window: { uncached_in: totals.uncachedIn, out: totals.out },
         caps: { uncached_in: state.caps.uncachedIn, out: state.caps.out },
         headroom: this.config.headroom,
-        reservations: sumReservations(state),
+        reservations: sumReservations(state, 'output'),
         queue: state.queueLength,
         rate_limits_last_hour: state.rateLimits.length,
       };

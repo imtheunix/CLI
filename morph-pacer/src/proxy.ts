@@ -178,50 +178,19 @@ export function createProxyServer(options: ProxyOptions): http.Server {
       body = Buffer.from(JSON.stringify(parsed), 'utf8');
     }
 
-    const admission = await pacer.admit(model);
-    if (response.destroyed) {
-      pacer.complete(admission, null);
-      return;
-    }
-
-    const base = config.upstream.replace(/\/+$/, '');
-    const suffix = (request.url ?? '/v1').replace(/^\/v1/, '');
-    const upstreamUrl = new URL(base + suffix);
-    const headers = upstreamHeaders(request, config, upstreamUrl, body.length);
-
-    let retries = 0;
-    let upstream: http.IncomingMessage | null = null;
-    let networkError: Error | null = null;
-
-    for (;;) {
-      try {
-        upstream = await sendUpstream(upstreamUrl, request.method ?? 'POST', headers, body);
-      } catch (error) {
-        networkError = error as Error;
-        break;
-      }
-
-      const status = upstream.statusCode ?? 0;
-      if (status !== 429 && status !== 503) break;
-      if (status === 429) pacer.recordRateLimit(admission.groupKey);
-      if (retries >= config.maxRetries) break;
-
-      const delay = retryDelay(upstream.headers['retry-after'], retries, clock);
-      upstream.resume();
-      upstream = null;
-      await clock.sleep(delay);
-      retries += 1;
-    }
-
+    const admission = await pacer.admit(model, body.length);
     let finished = false;
+    let retries = 0;
+
     const finish = async (
       usage: Usage | null,
       status: number,
       stream: boolean,
+      consumed: boolean,
     ): Promise<void> => {
       if (finished) return;
       finished = true;
-      pacer.complete(admission, usage);
+      pacer.complete(admission, usage, consumed);
       const entry: LedgerEntry = {
         ts: new Date(clock.now()).toISOString(),
         model,
@@ -241,60 +210,107 @@ export function createProxyServer(options: ProxyOptions): http.Server {
       }
     };
 
-    if (!upstream) {
-      const message = networkError?.message ?? 'upstream request failed';
-      logger.error(`morph-pacer: ${message}`);
-      await finish(null, 502, requestedStream);
-      response.writeHead(502, { 'content-type': 'application/json' });
-      response.end(JSON.stringify({ error: { message: `morph-pacer: ${message}` } }));
-      return;
-    }
-
-    const status = upstream.statusCode ?? 502;
-    const contentType = String(upstream.headers['content-type'] ?? '').toLowerCase();
-    const isSse = contentType.includes('text/event-stream');
-
-    response.on('close', () => {
-      if (!finished) {
-        upstream?.destroy();
-        void finish(null, 499, requestedStream);
+    try {
+      if (response.destroyed) {
+        await finish(null, 499, requestedStream, false);
+        return;
       }
-    });
 
-    if (isSse) {
-      response.writeHead(status, responseHeaders(upstream));
-      const parser = new SseUsageParser();
-      upstream.on('data', (chunk: Buffer) => {
-        response.write(chunk);
-        parser.push(chunk);
+      const base = config.upstream.replace(/\/+$/, '');
+      const suffix = (request.url ?? '/v1').replace(/^\/v1/, '');
+      const upstreamUrl = new URL(base + suffix);
+      const headers = upstreamHeaders(request, config, upstreamUrl, body.length);
+
+      let upstream: http.IncomingMessage | null = null;
+      let networkError: Error | null = null;
+
+      for (;;) {
+        try {
+          upstream = await sendUpstream(upstreamUrl, request.method ?? 'POST', headers, body);
+        } catch (error) {
+          networkError = error as Error;
+          break;
+        }
+
+        const status = upstream.statusCode ?? 0;
+        if (status !== 429 && status !== 503) break;
+        if (status === 429) pacer.recordRateLimit(admission.groupKey);
+        if (retries >= config.maxRetries) break;
+
+        const delay = retryDelay(upstream.headers['retry-after'], retries, clock);
+        upstream.resume();
+        upstream = null;
+        await clock.sleep(delay);
+        retries += 1;
+      }
+
+      if (!upstream) {
+        const message = networkError?.message ?? 'upstream request failed';
+        logger.error(`morph-pacer: ${message}`);
+        await finish(null, 502, requestedStream, false);
+        response.writeHead(502, { 'content-type': 'application/json' });
+        response.end(JSON.stringify({ error: { message: `morph-pacer: ${message}` } }));
+        return;
+      }
+
+      if (response.destroyed) {
+        upstream.destroy();
+        await finish(null, 499, requestedStream, true);
+        return;
+      }
+
+      const status = upstream.statusCode ?? 502;
+      const contentType = String(upstream.headers['content-type'] ?? '').toLowerCase();
+      const isSse = contentType.includes('text/event-stream');
+
+      response.on('close', () => {
+        if (!finished) {
+          upstream?.destroy();
+          void finish(null, 499, requestedStream, true);
+        }
       });
+
+      if (isSse) {
+        response.writeHead(status, responseHeaders(upstream));
+        const parser = new SseUsageParser();
+        upstream.on('data', (chunk: Buffer) => {
+          response.write(chunk);
+          parser.push(chunk);
+        });
+        upstream.on('end', () => {
+          parser.flush();
+          void finish(parser.usage, status, requestedStream, status >= 200 && status < 300).then(() => {
+            if (!response.destroyed) response.end();
+          });
+        });
+        upstream.on('error', (error) => {
+          logger.error(`morph-pacer: upstream stream failed: ${error.message}`);
+          response.destroy(error);
+        });
+        return;
+      }
+
+      const chunks: Buffer[] = [];
+      upstream.on('data', (chunk: Buffer) => chunks.push(chunk));
       upstream.on('end', () => {
-        parser.flush();
-        void finish(parser.usage, status, requestedStream).then(() => {
-          if (!response.destroyed) response.end();
+        const responseBody = Buffer.concat(chunks);
+        const usage = parseJsonUsage(responseBody);
+        void finish(usage, status, requestedStream, status >= 200 && status < 300).then(() => {
+          if (response.destroyed) return;
+          response.writeHead(status, responseHeaders(upstream, responseBody.length));
+          response.end(responseBody);
         });
       });
       upstream.on('error', (error) => {
-        logger.error(`morph-pacer: upstream stream failed: ${error.message}`);
+        logger.error(`morph-pacer: upstream response failed: ${error.message}`);
         response.destroy(error);
       });
-      return;
+    } catch (error) {
+      if (!finished) {
+        finished = true;
+        pacer.complete(admission, null, false);
+      }
+      throw error;
     }
-
-    const chunks: Buffer[] = [];
-    upstream.on('data', (chunk: Buffer) => chunks.push(chunk));
-    upstream.on('end', () => {
-      const responseBody = Buffer.concat(chunks);
-      const usage = parseJsonUsage(responseBody);
-      void finish(usage, status, requestedStream).then(() => {
-        if (response.destroyed) return;
-        response.writeHead(status, responseHeaders(upstream, responseBody.length));
-        response.end(responseBody);
-      });
-    });
-    upstream.on('error', (error) => {
-      logger.error(`morph-pacer: upstream response failed: ${error.message}`);
-      response.destroy(error);
-    });
   }
 }
