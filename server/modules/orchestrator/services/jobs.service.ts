@@ -999,11 +999,17 @@ export function createJobsService(deps: {
       if (!job) throw new AppError(`Job ${id} was not found`, { code: 'JOB_NOT_FOUND', statusCode: 404 });
       if (['queued', 'rebase', 'check', 'push', 'deploy', 'merged'].includes(job.merge_step)) {
         const withdrawn = await deps.withdrawFromMergeQueue?.(job);
-        if (!withdrawn?.cancelled) {
-          throw new AppError(
-            withdrawn?.reason ?? `Job ${id} is already in the CI/CD queue (${job.merge_step})`,
-            { code: 'JOB_MERGING', statusCode: 409 },
-          );
+        if (withdrawn) {
+          if (!withdrawn.cancelled) {
+            throw new AppError(withdrawn.reason ?? `Job ${id} is already in the CI/CD queue (${job.merge_step})`, { code: 'JOB_MERGING', statusCode: 409 });
+          }
+        } else if (['push', 'deploy', 'merged'].includes(job.merge_step)) {
+          throw new AppError(`Job ${id} is already pushing; it will merge`, { code: 'JOB_MERGING', statusCode: 409 });
+        } else {
+          // No queue wired (a service used on its own): a job before the push has no process to stop.
+          orchestratorJobsDb.update(id, { state: 'cancelled', merge_step: 'none', in_turn: 0 });
+          orchestratorJobsDb.recordMergeStep(id, 'cancelled', now().toISOString(), 'tjob cancel');
+          appendHubEvent({ jobId: id, state: 'cancelled', title: job.title, reason: `cancelled from the CI/CD queue at ${job.merge_step}; branch kept` });
         }
       } else {
         orchestratorJobsDb.update(id, { state: 'cancelled', merge_step: 'none', in_turn: 0 });
