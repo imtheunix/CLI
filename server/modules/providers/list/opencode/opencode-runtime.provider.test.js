@@ -7,6 +7,7 @@ import test from 'node:test';
 import { getConnection } from '../../../database/index.js';
 
 import {
+  createOpenCodeTurnLineParser,
   opencodeRuntime,
   resolveOpenCodePermissionOptions,
 } from './opencode-runtime.provider.js';
@@ -24,9 +25,7 @@ const runtimeContext = {
 const findEnvKey = (name) =>
   Object.keys(process.env).find((key) => key.toLowerCase() === name.toLowerCase()) || name;
 
-async function createFakeOpenCodeExecutable(binDir) {
-  const scriptPath = path.join(binDir, 'opencode.js');
-  await writeFile(scriptPath, `
+const DEFAULT_FAKE_OPENCODE_SCRIPT = `
 const capturePath = process.env.OPENCODE_ARGS_CAPTURE;
 if (capturePath) {
   require('node:fs').writeFileSync(capturePath, JSON.stringify({
@@ -43,7 +42,11 @@ const events = [
 for (const event of events) {
   console.log(JSON.stringify(event));
 }
-`, 'utf8');
+`;
+
+async function createFakeOpenCodeExecutable(binDir, script = DEFAULT_FAKE_OPENCODE_SCRIPT) {
+  const scriptPath = path.join(binDir, 'opencode.js');
+  await writeFile(scriptPath, script, 'utf8');
 
   if (process.platform === 'win32') {
     const commandPath = path.join(binDir, 'opencode.cmd');
@@ -184,7 +187,7 @@ test('resolveOpenCodePermissionOptions maps UI permission modes onto OpenCode co
 });
 
 /** Shared harness for the CLI-argument tests: a fake `opencode` plus a capturing writer. */
-async function withFakeOpenCode(run) {
+async function withFakeOpenCode(run, script = DEFAULT_FAKE_OPENCODE_SCRIPT) {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'opencode-cli-args-'));
   const pathKey = findEnvKey('PATH');
   const pathExtKey = findEnvKey('PATHEXT');
@@ -204,7 +207,7 @@ async function withFakeOpenCode(run) {
   };
 
   try {
-    await createFakeOpenCodeExecutable(tempRoot);
+    await createFakeOpenCodeExecutable(tempRoot, script);
     process.env[pathKey] = `${tempRoot}${path.delimiter}${previousPath || ''}`;
     if (process.platform === 'win32') {
       process.env[pathExtKey] = previousPathExt?.toUpperCase().includes('.CMD')
@@ -411,4 +414,146 @@ test('spawnOpenCode passes permission mode flags and env to the CLI', async () =
 
     await rm(tempRoot, { recursive: true, force: true });
   }
+});
+
+const INCREMENTAL_OPENCODE_SCRIPT = `
+const fs = require('node:fs');
+const say = (event) => process.stdout.write(JSON.stringify(event) + '\\n');
+const part = { id: 'prt_1', messageID: 'msg_1', sessionID: 'open-live-1', type: 'text' };
+say({ type: 'text', sessionID: 'open-live-1', part: { ...part }, delta: 'Hel' });
+const marker = process.env.OPENCODE_FIRST_DELTA_MARKER;
+const deadline = Date.now() + 3000;
+while (!fs.existsSync(marker) && Date.now() < deadline) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
+}
+if (fs.existsSync(marker)) {
+  say({ type: 'text', sessionID: 'open-live-1', part: { ...part }, delta: 'lo' });
+  say({ type: 'text', sessionID: 'open-live-1', part: { ...part, text: 'Hello' } });
+  say({ type: 'step_finish', sessionID: 'open-live-1' });
+}
+fs.writeFileSync(process.env.OPENCODE_EXIT_MARKER, String(Date.now()));
+`;
+
+const DELTA_LESS_OPENCODE_SCRIPT = `
+const say = (event) => process.stdout.write(JSON.stringify(event) + '\\n');
+say({
+  type: 'text',
+  sessionID: 'open-live-1',
+  part: { id: 'prt_1', messageID: 'msg_1', sessionID: 'open-live-1', type: 'text', text: 'Hello' },
+});
+say({ type: 'step_finish', sessionID: 'open-live-1' });
+`;
+
+test('spawnOpenCode streams the first text delta before the child exits and does not repeat the completed part', async () => {
+  const previousDisableSystemd = process.env.CLI_DISABLE_SYSTEMD_RUN;
+  const previousTurnsDir = process.env.CLI_TURNS_DIR;
+  const previousFirstDeltaMarker = process.env.OPENCODE_FIRST_DELTA_MARKER;
+  const previousExitMarker = process.env.OPENCODE_EXIT_MARKER;
+  process.env.CLI_DISABLE_SYSTEMD_RUN = '1';
+
+  try {
+    await withFakeOpenCode(async (tempRoot, writer, messages) => {
+      process.env.CLI_TURNS_DIR = path.join(tempRoot, 'turns');
+      const firstDeltaMarker = path.join(tempRoot, 'first-delta');
+      const exitMarker = path.join(tempRoot, 'child-exit');
+      process.env.OPENCODE_FIRST_DELTA_MARKER = firstDeltaMarker;
+      process.env.OPENCODE_EXIT_MARKER = exitMarker;
+
+      let firstDeltaAt = null;
+      const originalSend = writer.send.bind(writer);
+      writer.send = (message) => {
+        if (message.kind === 'stream_delta' && firstDeltaAt === null) {
+          firstDeltaAt = Date.now();
+          void writeFile(firstDeltaMarker, String(firstDeltaAt));
+        }
+        originalSend(message);
+      };
+
+      await opencodeRuntime.run('Hi', { cwd: tempRoot }, writer, runtimeContext);
+
+      const exitAt = Number(await readFile(exitMarker, 'utf8'));
+      assert.notEqual(firstDeltaAt, null);
+      assert.ok(
+        firstDeltaAt <= exitAt,
+        `first stream_delta (${firstDeltaAt}) must reach the writer before the child exits (${exitAt})`,
+      );
+
+      const deltas = messages.filter((message) => message.kind === 'stream_delta');
+      assert.deepEqual(deltas.map((message) => message.content), ['Hel', 'lo']);
+      // The completed part repeats the streamed text; it must not be sent again.
+      assert.equal(messages.filter((message) => message.kind === 'text' && message.content === 'Hello').length, 0);
+      assert.equal(messages.filter((message) => message.kind === 'stream_end').length, 1);
+      assert.equal(messages.filter((message) => message.kind === 'complete').length, 1);
+    }, INCREMENTAL_OPENCODE_SCRIPT);
+  } finally {
+    if (previousDisableSystemd === undefined) delete process.env.CLI_DISABLE_SYSTEMD_RUN;
+    else process.env.CLI_DISABLE_SYSTEMD_RUN = previousDisableSystemd;
+    if (previousTurnsDir === undefined) delete process.env.CLI_TURNS_DIR;
+    else process.env.CLI_TURNS_DIR = previousTurnsDir;
+    if (previousFirstDeltaMarker === undefined) delete process.env.OPENCODE_FIRST_DELTA_MARKER;
+    else process.env.OPENCODE_FIRST_DELTA_MARKER = previousFirstDeltaMarker;
+    if (previousExitMarker === undefined) delete process.env.OPENCODE_EXIT_MARKER;
+    else process.env.OPENCODE_EXIT_MARKER = previousExitMarker;
+  }
+});
+
+test('spawnOpenCode falls back to the completed part when the producer sent no deltas', async () => {
+  const previousDisableSystemd = process.env.CLI_DISABLE_SYSTEMD_RUN;
+  const previousTurnsDir = process.env.CLI_TURNS_DIR;
+  process.env.CLI_DISABLE_SYSTEMD_RUN = '1';
+
+  try {
+    await withFakeOpenCode(async (tempRoot, writer, messages) => {
+      process.env.CLI_TURNS_DIR = path.join(tempRoot, 'turns');
+      await opencodeRuntime.run('Hi', { cwd: tempRoot }, writer, runtimeContext);
+
+      const text = messages.filter((message) => message.kind === 'text');
+      assert.deepEqual(text.map((message) => message.content), ['Hello']);
+      assert.equal(messages.filter((message) => message.kind === 'stream_delta').length, 0);
+      assert.equal(messages.filter((message) => message.kind === 'stream_end').length, 1);
+      assert.equal(messages.filter((message) => message.kind === 'complete').length, 1);
+    }, DELTA_LESS_OPENCODE_SCRIPT);
+  } finally {
+    if (previousDisableSystemd === undefined) delete process.env.CLI_DISABLE_SYSTEMD_RUN;
+    else process.env.CLI_DISABLE_SYSTEMD_RUN = previousDisableSystemd;
+    if (previousTurnsDir === undefined) delete process.env.CLI_TURNS_DIR;
+    else process.env.CLI_TURNS_DIR = previousTurnsDir;
+  }
+});
+
+test('OpenCode turn line parser primes streamed part ids so a reattached completed part is not repeated', () => {
+  const parser = createOpenCodeTurnLineParser((raw, sessionId) => sessionsProvider.normalizeMessage(raw, sessionId));
+  const messages = [];
+  const writer = {
+    send(message) {
+      messages.push(message);
+    },
+    setSessionId() {},
+    getSessionId: () => 'open-live-1',
+  };
+  const deltaLine = JSON.stringify({
+    type: 'text',
+    sessionID: 'open-live-1',
+    part: { id: 'prt_1', messageID: 'msg_1', type: 'text' },
+    delta: 'Hel',
+  });
+  const completedLine = JSON.stringify({
+    type: 'text',
+    sessionID: 'open-live-1',
+    part: { id: 'prt_1', messageID: 'msg_1', type: 'text', text: 'Hello' },
+  });
+
+  // The pre-restart log only re-establishes state; it is not sent again.
+  parser.prime([deltaLine], writer, 'app-session');
+  assert.deepEqual(messages, []);
+
+  parser(completedLine, writer, 'app-session');
+  assert.deepEqual(messages, []);
+
+  // A finished turn drops its tracking, so a later turn's completed part is a fallback again.
+  parser.finish();
+  parser(completedLine, writer, 'app-session');
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0].kind, 'text');
+  assert.equal(messages[0].content, 'Hello');
 });

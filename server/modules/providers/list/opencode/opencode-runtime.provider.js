@@ -124,6 +124,114 @@ function readOpenCodeTokenUsage(sessionId) {
   }
 }
 
+/**
+ * Per-turn line parser for `opencode run --format json` output.
+ *
+ * Used by the live runtime and by detached-turn reattachment (registered in
+ * opencode.provider.ts) so both paths normalize identically. It tracks the
+ * part ids whose text already reached the client as `stream_delta` events:
+ * OpenCode can follow those deltas with the same part completed, and emitting
+ * that completed text again would duplicate the assistant message. A part
+ * that never streamed still falls back to its completed text.
+ *
+ * @param {(raw: unknown, sessionId: string | null) => Array<object>} normalizeMessage
+ */
+export function createOpenCodeTurnLineParser(normalizeMessage) {
+  let capturedSessionId = null;
+  // Part ids whose text was already delivered incrementally.
+  const streamedPartIds = new Set();
+
+  const parse = (line) => {
+    try {
+      const event = JSON.parse(line);
+      return event && typeof event === 'object' ? event : null;
+    } catch {
+      return null;
+    }
+  };
+
+  const readPart = (event) => (event.part && typeof event.part === 'object' ? event.part : null);
+
+  const captureSession = (event, writer) => {
+    const nextSessionId = event.sessionID || event.sessionId;
+    if (typeof nextSessionId !== 'string' || !nextSessionId || capturedSessionId) {
+      return;
+    }
+
+    capturedSessionId = nextSessionId;
+    // A brand-new session has no provider id on its writer yet. Writers that
+    // cannot report their id (legacy callers) are left to the live runtime.
+    const isNewSession = typeof writer?.getSessionId === 'function' && !writer.getSessionId();
+    writer?.setSessionId?.(nextSessionId);
+    if (isNewSession) {
+      writer?.send(createNormalizedMessage({
+        kind: 'session_created',
+        newSessionId: nextSessionId,
+        sessionId: nextSessionId,
+        provider: 'opencode',
+      }));
+    }
+  };
+
+  const handleLine = (line, writer, sessionId) => {
+    const event = parse(line);
+    if (!event) {
+      return;
+    }
+
+    captureSession(event, writer);
+    const sid = capturedSessionId || writer?.getSessionId?.() || sessionId || null;
+    const type = event.type || event.event;
+    const part = readPart(event);
+    const partId = typeof part?.id === 'string' ? part.id : null;
+
+    if (type === 'text') {
+      // A nested `part.text` is the completed part; flat `delta`/`text` is a
+      // live increment. Suppress the completion when its deltas already went out.
+      const isCompletedPart = typeof part?.text === 'string';
+      if (isCompletedPart && partId && streamedPartIds.has(partId)) {
+        return;
+      }
+
+      for (const message of normalizeMessage(event, sid)) {
+        if (message.kind === 'stream_delta' && partId) {
+          streamedPartIds.add(partId);
+        }
+        writer?.send(message);
+      }
+      return;
+    }
+
+    for (const message of normalizeMessage(event, sid)) {
+      writer?.send(message);
+    }
+  };
+
+  // The part of the log delivered before a restart: re-establish the session
+  // id and which parts already streamed, without sending any of it again.
+  handleLine.prime = (lines, writer, sessionId) => {
+    for (const line of lines) {
+      const event = parse(line);
+      if (!event) {
+        continue;
+      }
+      captureSession(event, writer);
+      const type = event.type || event.event;
+      const part = readPart(event);
+      const partId = typeof part?.id === 'string' ? part.id : null;
+      if (type === 'text' && partId && typeof part?.text !== 'string') {
+        streamedPartIds.add(partId);
+      }
+    }
+  };
+
+  handleLine.finish = () => {
+    streamedPartIds.clear();
+  };
+
+  return handleLine;
+}
+
 async function spawnOpenCode(command, options = {}, ws, context) {
   return new Promise((resolve, reject) => {
     const {
@@ -153,6 +261,8 @@ async function spawnOpenCode(command, options = {}, ws, context) {
     // Unified lifecycle contract: exactly one terminal `complete` per run
     // (close and error handlers can both fire for spawn failures).
     let completeSent = false;
+    // One parser per turn: it remembers which text parts already streamed.
+    const lineParser = createOpenCodeTurnLineParser(context.normalizeMessage);
 
     const notifyTerminalState = ({ code = null, error = null } = {}) => {
       if (terminalNotificationSent) {
@@ -233,10 +343,7 @@ async function spawnOpenCode(command, options = {}, ws, context) {
 
       try {
         registerSession(readOpenCodeSessionId(response));
-        const normalized = context.normalizeMessage(response, capturedSessionId || sessionId || null);
-        for (const msg of normalized) {
-          ws.send(msg);
-        }
+        lineParser(line, ws, capturedSessionId || sessionId || null);
       } catch (error) {
         const errorContent = error instanceof Error ? error.message : String(error);
         console.error('[OpenCode] Failed to process JSON output:', errorContent);
