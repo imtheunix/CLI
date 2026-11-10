@@ -178,6 +178,7 @@ test('tjob show displays review details alongside existing fields', () => {
         review_step: 'judge',
         review_verdict: 'approved',
         review_risk: 'low',
+        review_tier: 'deep',
         title: 'Review details',
         repo_path: '/repo',
       },
@@ -190,6 +191,7 @@ test('tjob show displays review details alongside existing fields', () => {
   assert.match(result.stdout, /^  review_step: judge$/m);
   assert.match(result.stdout, /^  review_verdict: approved$/m);
   assert.match(result.stdout, /^  review_risk: low$/m);
+  assert.match(result.stdout, /^  review_tier: deep$/m);
 });
 
 test('tjob hub exits nonzero when the API reports failure', () => {

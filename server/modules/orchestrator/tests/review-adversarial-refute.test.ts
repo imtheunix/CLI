@@ -114,12 +114,13 @@ async function withReviewFixture(
     },
   };
   let files = ['src/allowed.ts'];
-  let lines = 10;
+  let lines = 60;
   const fakeRun = async (_command: string, args: string[]): Promise<CommandResult> => {
     assert.equal(args[0], 'diff');
     const result: CommandResult = { code: 0, stdout: '', stderr: '' };
     if (args[1] === '--name-only') result.stdout = `${files.join('\n')}\n`;
     else if (args[1] === '--numstat') result.stdout = files.map((file) => `${Math.floor(lines / 2)}\t${lines - Math.floor(lines / 2)}\t${file}`).join('\n');
+    else if (args[1] === '--unified=0') result.stdout = '';
     else result.stdout = ' 1 file changed';
     return result;
   };
@@ -299,7 +300,7 @@ test('probe: an auth reopen refusal before activation cannot strand the job at f
 
 test('probe: a never-settling refutation is aborted, parked at the hub with its exact reason, and never retried', async () => {
   await withReviewFixture(async ({ job, config, service, hub, approvals }) => {
-    orchestratorJobsDb.update(job.id, { review_step: 'refute' });
+    orchestratorJobsDb.update(job.id, { review_step: 'refute', review_tier: 'refute' });
     config.review.refuteTimeoutMs = 25;
     const never = new Promise<RefuteVerdict>(() => undefined);
     const aborted: Array<{ jobId: string; sessionId: string | null | undefined }> = [];
@@ -310,12 +311,13 @@ test('probe: a never-settling refutation is aborted, parked at the hub with its 
     const parked = orchestratorJobsDb.get(job.id)!;
     assert.equal(parked.review_step, 'hub');
     assert.equal(parked.review_risk, 'high');
+    assert.equal(parked.review_verdict, 'timeout');
     assert.deepEqual(aborted, [{ jobId: job.id, sessionId: 'refute-session-1' }]);
     assert.deepEqual(approvals, []);
     assert.equal(hub.events.length, 1);
-    assert.equal(
+    assert.match(
       hub.events[0].reason,
-      'review needed: automatic refutation timed out after 25 ms; reviewer aborted and its session was archived; gate green',
+      /^review needed: automatic refutation timed out after 25 ms; reviewer aborted and its session was archived; gate green\n1 file changed$/,
     );
     // The timeout released inFlight, and hub is terminal rather than a retry loop.
     await review.tick();
@@ -573,7 +575,10 @@ test('probe: malformed review config falls back to defaults and drops hostile va
     const stringSection = loadOrchestratorConfig(await write('{"review": "yes"}'));
     assert.equal(stringSection.review.enabled, true);
     assert.equal(stringSection.review.refuteCap, 2);
-    assert.equal(stringSection.review.refuteTimeoutMs, 20 * 60_000);
+    assert.equal(stringSection.review.refuteTimeoutMs, 10 * 60_000);
+    assert.equal(stringSection.review.refuteTimeoutMin, 10);
+    assert.deepEqual(stringSection.review.deepPaths, []);
+    assert.equal(stringSection.review.tiers.gateMaxLines, 50);
     assert.equal(stringSection.review.maxLines, 400);
     // Hostile values: negatives, zero, wrong types, identity or unknown refuter mappings.
     const hostile = loadOrchestratorConfig(await write(JSON.stringify({
@@ -588,7 +593,7 @@ test('probe: malformed review config falls back to defaults and drops hostile va
       },
     })));
     assert.equal(hostile.review.refuteCap, 2, 'a cap below 1 is dropped');
-    assert.equal(hostile.review.refuteTimeoutMs, 20 * 60_000, 'a timeout above 20 minutes is dropped, so no run can approach 30 minutes');
+    assert.equal(hostile.review.refuteTimeoutMs, 10 * 60_000, 'a timeout above 20 minutes is dropped, so no run can approach 30 minutes');
     assert.equal(hostile.review.maxLines, 400, 'a maxLines below 1 is dropped');
     assert.deepEqual(hostile.review.riskyPaths, ['infra', 'auth', 'secrets', 'ci', 'migrations', 'k8s', '.forgejo', '.github'], 'a non-array riskyPaths is dropped');
     assert.deepEqual(hostile.review.protectedRepos, ['demo'], 'non-string entries are filtered');

@@ -37,6 +37,7 @@ export function assembleLivePrompt(setup: HarnessCaseSetup): AssembledCasePrompt
     review_step: setup.job.review_step ?? 'none',
     review_verdict: setup.job.review_verdict ?? null,
     review_risk: setup.job.review_risk ?? null,
+    review_tier: setup.job.review_tier ?? null,
     review_round: setup.job.review_round ?? 0,
     review_head_sha: setup.job.review_head_sha ?? null,
     review_session_id: setup.job.review_session_id ?? null,

@@ -33,6 +33,16 @@ export type MorphCaps = Record<MorphModelGroup, { uncachedIn: number; out: numbe
 /** Configuration and review services: the hard upper bound for one automatic refutation (20 minutes). */
 export const MAX_REFUTE_TIMEOUT_MS = 20 * 60_000;
 
+/** The diff shapes that skip refutation: docs/reports only, tests only, or a small low-risk change. */
+export type ReviewTierConfig = {
+  /** A diff below this many added + deleted lines is `gate` when it touches no risky path. */
+  gateMaxLines: number;
+  /** Glob patterns (repo-relative) whose files are documentation or reports. */
+  docsGlobs: string[];
+  /** Glob patterns (repo-relative) whose files are tests. */
+  testGlobs: string[];
+};
+
 /** Automatic post-`tjob done` review: a touched-file gate, one slotless refutation, then the risk policy. */
 export type ReviewConfig = {
   enabled: boolean;
@@ -40,12 +50,18 @@ export type ReviewConfig = {
   refuteCap: number;
   /** Abort and park a refutation after this many ms; values above 20 minutes are rejected. */
   refuteTimeoutMs: number;
+  /** The `refute` tier's time box in minutes; `deep` always gets the 20-minute maximum. */
+  refuteTimeoutMin: number;
   /** A diff at or above this many added + deleted lines needs the hub. */
   maxLines: number;
   /** Repository folder names (or absolute paths) whose main branch deploys to production. */
   protectedRepos: string[];
   /** Path segments that always need the hub, matched case-insensitively. */
   riskyPaths: string[];
+  /** Path prefixes (repo-relative) that always get the `deep` tier, e.g. a kernel crate. */
+  deepPaths: string[];
+  /** The diff shapes that skip refutation. */
+  tiers: ReviewTierConfig;
   /** Which model family refutes each producer backend. */
   refuteBackendFor: Partial<Record<OrchestratorBackend, OrchestratorBackend>>;
 };
@@ -196,10 +212,17 @@ function defaults(): OrchestratorConfig {
     review: {
       enabled: true,
       refuteCap: 2,
-      refuteTimeoutMs: MAX_REFUTE_TIMEOUT_MS,
+      refuteTimeoutMs: 10 * 60_000,
+      refuteTimeoutMin: 10,
       maxLines: 400,
       protectedRepos: [],
       riskyPaths: ['infra', 'auth', 'secrets', 'ci', 'migrations', 'k8s', '.forgejo', '.github'],
+      deepPaths: [],
+      tiers: {
+        gateMaxLines: 50,
+        docsGlobs: ['**/*.md', 'docs/**', 'reports/**'],
+        testGlobs: ['**/*.test.ts', '**/*.test.tsx', '**/*.spec.ts', '**/*.spec.tsx', '**/tests/**', '**/__tests__/**'],
+      },
       refuteBackendFor: { morph: 'glm', glm: 'morph', zcode: 'morph', claude: 'glm', codex: 'glm', agy: 'glm' },
     },
   };
@@ -288,6 +311,11 @@ export function loadOrchestratorConfig(file = path.join(os.homedir(), '.config/c
       && review.refuteTimeoutMs >= 1 && review.refuteTimeoutMs <= MAX_REFUTE_TIMEOUT_MS) {
       config.review.refuteTimeoutMs = Math.floor(review.refuteTimeoutMs);
     }
+    if (typeof review.refuteTimeoutMin === 'number' && Number.isFinite(review.refuteTimeoutMin)
+      && review.refuteTimeoutMin > 0 && review.refuteTimeoutMin <= MAX_REFUTE_TIMEOUT_MS / 60_000) {
+      config.review.refuteTimeoutMin = review.refuteTimeoutMin;
+      config.review.refuteTimeoutMs = Math.min(MAX_REFUTE_TIMEOUT_MS, Math.max(1, Math.round(review.refuteTimeoutMin * 60_000)));
+    }
     if (typeof review.maxLines === 'number' && Number.isFinite(review.maxLines) && review.maxLines >= 1) {
       config.review.maxLines = Math.floor(review.maxLines);
     }
@@ -296,6 +324,21 @@ export function loadOrchestratorConfig(file = path.join(os.homedir(), '.config/c
     }
     if (Array.isArray(review.riskyPaths)) {
       config.review.riskyPaths = review.riskyPaths.filter((entry): entry is string => typeof entry === 'string' && Boolean(entry.trim()));
+    }
+    if (Array.isArray(review.deepPaths)) {
+      config.review.deepPaths = review.deepPaths.filter((entry): entry is string => typeof entry === 'string' && Boolean(entry.trim()));
+    }
+    if (review.tiers && typeof review.tiers === 'object' && !Array.isArray(review.tiers)) {
+      const tiers = review.tiers as Record<string, unknown>;
+      if (typeof tiers.gateMaxLines === 'number' && Number.isFinite(tiers.gateMaxLines) && tiers.gateMaxLines >= 1) {
+        config.review.tiers.gateMaxLines = Math.floor(tiers.gateMaxLines);
+      }
+      if (Array.isArray(tiers.docsGlobs)) {
+        config.review.tiers.docsGlobs = tiers.docsGlobs.filter((entry): entry is string => typeof entry === 'string' && Boolean(entry.trim()));
+      }
+      if (Array.isArray(tiers.testGlobs)) {
+        config.review.tiers.testGlobs = tiers.testGlobs.filter((entry): entry is string => typeof entry === 'string' && Boolean(entry.trim()));
+      }
     }
     if (review.refuteBackendFor && typeof review.refuteBackendFor === 'object' && !Array.isArray(review.refuteBackendFor)) {
       for (const [producer, refuter] of Object.entries(review.refuteBackendFor as Record<string, unknown>)) {

@@ -18,11 +18,11 @@ const SNAPSHOT = {
   needsYou: { goals: ['the restart'], jobs: [{ id: 'j6', title: 'Failed job', reason: 'boom' }] },
   goals: [{ title: 'Goal A', status: 'running', updated: '2026-11-10', now: 'doing A', next: 'do B', jobs: ['j1'], needs: 'the restart' }],
   jobs: {
-    running: [{ id: 'j1', title: 'Running job', backend: 'morph', model: 'morph/morph-dsv41flash', state: 'active', mergeStep: 'none', ageMs: 7_200_000, waitingMs: null, step: null, at: null, reason: null }],
+    running: [{ id: 'j1', title: 'Running job', backend: 'morph', model: 'morph/morph-dsv41flash', state: 'active', mergeStep: 'none', tier: null, ageMs: 7_200_000, waitingMs: null, step: null, at: null, reason: null }],
     review: [],
     queue: [],
     merged: [],
-    failed: [{ id: 'j6', title: 'Failed job', backend: 'claude', model: 'claude-opus-5-5', state: 'failed', mergeStep: 'none', ageMs: null, waitingMs: null, step: null, at: '2026-11-10T11:00:00.000Z', reason: 'boom' }],
+    failed: [{ id: 'j6', title: 'Failed job', backend: 'claude', model: 'claude-opus-5-5', state: 'failed', mergeStep: 'none', tier: null, ageMs: null, waitingMs: null, step: null, at: '2026-11-10T11:00:00.000Z', reason: 'boom' }],
   },
   capacity: {
     morph: {
@@ -42,14 +42,14 @@ const SNAPSHOT = {
       windowMs: 3_600_000,
       deepseek: { capUseAvg: 0.15, capUseP90: 0.2, activeMinutes: 2, slotOccupancy: 0.5 },
       kimi: { outputByRole: { hub: 150, planner: 300, jobs: 50, compaction: 100 }, reasoningShare: 0.316, cacheHit: 0.655, uncachedInputPerHubCall: 1_000 },
-      flow: { leadTimeMedianMs: 7_200_000, reviewWaitMedianMs: 600_000, reviewWaitMaxMs: 600_000, fixRoundRate: 1, mergedPerHour: 1, tokensPerMergedJob: 5_000 },
+      flow: { leadTimeMedianMs: 7_200_000, reviewWaitMedianMs: 600_000, reviewWaitMaxMs: 600_000, fixRoundRate: 1, reviewTiers: { gate: 0, refute: 1, deep: 0 }, mergedPerHour: 1, tokensPerMergedJob: 5_000 },
       waste: { compactionTokens: 500, cancelledJobs: 1, pacerWaitMs: 1_000, retries429: 1 },
     },
     day: {
       windowMs: 86_400_000,
       deepseek: { capUseAvg: 0.26, capUseP90: 0.5, activeMinutes: 3, slotOccupancy: 0.06 },
       kimi: { outputByRole: { hub: 450, planner: 300, jobs: 50, compaction: 100 }, reasoningShare: 0.32, cacheHit: 0.49, uncachedInputPerHubCall: 1_500 },
-      flow: { leadTimeMedianMs: 7_200_000, reviewWaitMedianMs: 600_000, reviewWaitMaxMs: 600_000, fixRoundRate: 1, mergedPerHour: 0.04, tokensPerMergedJob: 5_000 },
+      flow: { leadTimeMedianMs: 7_200_000, reviewWaitMedianMs: 600_000, reviewWaitMaxMs: 600_000, fixRoundRate: 1, reviewTiers: { gate: 0, refute: 1, deep: 0 }, mergedPerHour: 0.04, tokensPerMergedJob: 5_000 },
       waste: { compactionTokens: 500, cancelledJobs: 1, pacerWaitMs: 3_000, retries429: 3 },
     },
   },

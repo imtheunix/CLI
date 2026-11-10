@@ -521,6 +521,7 @@ const addOrchestratorJobReviewColumns = (db: Database): void => {
   addColumnToTableIfNotExists(db, 'orchestrator_jobs', columnNames, 'review_step', "TEXT NOT NULL DEFAULT 'none'");
   addColumnToTableIfNotExists(db, 'orchestrator_jobs', columnNames, 'review_verdict', 'TEXT');
   addColumnToTableIfNotExists(db, 'orchestrator_jobs', columnNames, 'review_risk', 'TEXT');
+  addColumnToTableIfNotExists(db, 'orchestrator_jobs', columnNames, 'review_tier', 'TEXT');
   addColumnToTableIfNotExists(db, 'orchestrator_jobs', columnNames, 'review_round', 'INTEGER NOT NULL DEFAULT 0');
   addColumnToTableIfNotExists(db, 'orchestrator_jobs', columnNames, 'review_head_sha', 'TEXT');
   addColumnToTableIfNotExists(db, 'orchestrator_jobs', columnNames, 'review_session_id', 'TEXT');

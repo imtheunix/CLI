@@ -155,8 +155,10 @@ elif mode == "status":
         print("  kimi: out hub %s planner %s jobs %s compaction %s | reasoning %s | cache hit %s | uncached/hub call %s" % (
             tok(r["hub"]), tok(r["planner"]), tok(r["jobs"]), tok(r["compaction"]), pct(k["reasoningShare"]), pct(k["cacheHit"]), tok(k["uncachedInputPerHubCall"])))
         f = w["flow"]
-        print("  flow: lead %s | review wait %s (max %s) | fix rounds %s | merged/h %.2f | tokens/merged %s" % (
-            dur(f["leadTimeMedianMs"]), dur(f["reviewWaitMedianMs"]), dur(f["reviewWaitMaxMs"]), pct(f["fixRoundRate"]), f["mergedPerHour"], tok(f["tokensPerMergedJob"])))
+        tiers = f.get("reviewTiers") or {}
+        print("  flow: lead %s | review wait %s (max %s) | fix rounds %s | tiers gate %d refute %d deep %d | merged/h %.2f | tokens/merged %s" % (
+            dur(f["leadTimeMedianMs"]), dur(f["reviewWaitMedianMs"]), dur(f["reviewWaitMaxMs"]), pct(f["fixRoundRate"]),
+            tiers.get("gate", 0), tiers.get("refute", 0), tiers.get("deep", 0), f["mergedPerHour"], tok(f["tokensPerMergedJob"])))
         wa = w["waste"]
         print("  waste: compaction %s | cancelled %d | pacer wait %s | 429 retries %d" % (
             tok(wa["compactionTokens"]), wa["cancelledJobs"], dur(wa["pacerWaitMs"]), wa["retries429"]))
@@ -166,7 +168,7 @@ else:
     j = data["job"]
     print(line(j))
     if mode == "show":
-        for k in ("repo_path", "base_branch", "branch", "worktree_path", "session_id", "model", "pushed_sha", "checkLogPath", "last_error", "review_step", "review_verdict", "review_risk"):
+        for k in ("repo_path", "base_branch", "branch", "worktree_path", "session_id", "model", "pushed_sha", "checkLogPath", "last_error", "review_step", "review_verdict", "review_risk", "review_tier"):
             if j.get(k): print("  %s: %s" % (k, j[k]))
         u = j.get("usage")
         if u:
