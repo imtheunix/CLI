@@ -5,7 +5,7 @@ import type { OrchestratorBackend } from '@/modules/database/index.js';
 import type { JobCheckpointRollbackResult } from '@/shared/types.js';
 import { AppError, asyncHandler, createApiSuccessResponse } from '@/shared/utils.js';
 
-import { JOB_KINDS, type JobsService, type OrchestratorJobKind } from './services/jobs.service.js';
+import { describeWorktree, JOB_KINDS, type JobsService, type OrchestratorJobKind } from './services/jobs.service.js';
 import { formatMorphLine, formatMorphTable } from './services/morph-usage.service.js';
 import type { MorphUsageService } from './services/morph-usage.service.js';
 import type { StatusService } from './services/status.service.js';
@@ -187,7 +187,8 @@ export function createOrchestratorRouter(services: {
   router.get('/:id', asyncHandler(async (req, res) => {
     const job = services.jobs.get(String(req.params.id));
     if (!job) throw new AppError('Job not found', { code: 'JOB_NOT_FOUND', statusCode: 404 });
-    res.set('Cache-Control', 'no-store').json(createApiSuccessResponse({ job }));
+    const worktree = await describeWorktree(job);
+    res.set('Cache-Control', 'no-store').json(createApiSuccessResponse({ job: { ...job, worktree } }));
   }));
 
   router.post('/:id/rename', asyncHandler(async (req, res) => {

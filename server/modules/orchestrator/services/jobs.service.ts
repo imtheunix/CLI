@@ -100,6 +100,47 @@ export type OrchestratorJobView = OrchestratorJobRow & {
 export const HANDOVER_CONTINUE = 'Continue where the previous agent stopped.';
 
 /**
+ * `tjob show`: whether the job's worktree is still on disk, and where its code went when it is not.
+ * A removed worktree keeps its pushed/merged sha; a cancelled job also says whether its branch
+ * still exists locally or on origin, so the hub does not grep a dead path.
+ */
+export type OrchestratorWorktreeStatus = {
+  exists: boolean;
+  pushedSha: string | null;
+  branch: string;
+  /** For a cancelled job whose worktree is gone: the branch still exists in the repo; null when not checked. */
+  branchLocal: boolean | null;
+  /** For a cancelled job whose worktree is gone: the branch still exists on origin; null when not checked. */
+  branchOrigin: boolean | null;
+};
+
+async function branchExists(repoPath: string, ref: string): Promise<boolean> {
+  try {
+    await runGitCommand(['show-ref', '--verify', '--quiet', ref], repoPath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function describeWorktree(
+  job: Pick<OrchestratorJobRow, 'worktree_path' | 'repo_path' | 'branch' | 'state' | 'pushed_sha'>,
+): Promise<OrchestratorWorktreeStatus> {
+  const exists = existsSync(job.worktree_path);
+  const status: OrchestratorWorktreeStatus = {
+    exists,
+    pushedSha: job.pushed_sha,
+    branch: job.branch,
+    branchLocal: null,
+    branchOrigin: null,
+  };
+  if (exists || job.state !== 'cancelled') return status;
+  status.branchLocal = await branchExists(job.repo_path, `refs/heads/${job.branch}`);
+  status.branchOrigin = await branchExists(job.repo_path, `refs/remotes/origin/${job.branch}`);
+  return status;
+}
+
+/**
  * Jobs service: the handover note of a job moved to another backend at its quota: who stopped and why, the
  * previous agent's last message, the branch's commits since its base and the worktree's status.
  */

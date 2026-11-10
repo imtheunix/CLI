@@ -186,6 +186,28 @@ else:
     if mode == "show":
         for k in ("repo_path", "base_branch", "branch", "worktree_path", "session_id", "model", "pushed_sha", "checkLogPath", "last_error", "review_step", "review_verdict", "review_risk", "review_tier"):
             if j.get(k): print("  %s: %s" % (k, j[k]))
+        wt = j.get("worktree")
+        if wt and not wt.get("exists"):
+            sha = wt.get("pushedSha") or j.get("pushed_sha")
+            branch = wt.get("branch") or j.get("branch")
+            repo = j.get("repo_path")
+            if sha:
+                how = "merged" if j.get("merge_step") == "merged" else "pushed"
+                print("  worktree: removed (%s as %s; read it with git -C %s show %s)" % (how, sha, repo, sha))
+            elif j.get("state") == "cancelled":
+                local = wt.get("branchLocal")
+                origin = wt.get("branchOrigin")
+                if local and origin:
+                    where = "still exists locally and on origin"
+                elif local:
+                    where = "still exists locally"
+                elif origin:
+                    where = "still exists on origin"
+                else:
+                    where = "no longer exists locally or on origin"
+                print("  worktree: removed (branch %s %s)" % (branch, where))
+            else:
+                print("  worktree: removed")
         u = j.get("usage")
         if u:
             cost = u.get("notionalCostUsd")
