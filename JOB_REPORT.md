@@ -24,3 +24,29 @@
 ## Residual risk
 - `getUnitExitCode` still uses `spawnSync` but only runs once at turn finalization, not in the hot poll.
 - `execFile` for the login pipes output instead of ignoring it; a very chatty login script could hit the default 1 MB buffer and be treated as a failed login (shared link kept).
+
+## Job 751ce082 — merge fix: async OpenCode turn test doubles
+
+### Finding (production defect, not a stub-only contract)
+The merge of 62f97f9d made `spawnDetachedTurn` async, but the OpenCode runtime
+still called it without `await` and then read `turnExecution.promise`. The
+value was a `Promise<DetachedTurnExecution>`, so `.promise` was `undefined` and
+every OpenCode turn failed at `opencode-runtime.provider.js:330` with
+`Cannot destructure property 'exitCode' of '(intermediate value)' as it is undefined`.
+The failing tests use real fake CLI executables, not module mocks, so there was
+no test double to update: the defect was in the live consumer.
+
+### Change
+- `opencode-runtime.provider.js`: `await spawnDetachedTurn(...)`, matching the
+  already-async `agy.provider` call site. The async production API and full
+  tail/abort/completion behavior are preserved.
+- `opencode-runtime.provider.test.js`: one contract regression that runs a fake
+  CLI exiting with code 3 and asserts the runtime awaits the execution, rejects
+  with `exited with code 3`, and sends `complete.exitCode === 3`. A missing
+  `await` fails this test with the original destructuring error.
+
+### Verification
+- `opencode-runtime.provider.test.js`, `opencode-effort.test.ts`,
+  `runtime-cancellation.test.ts`, `detached-liveness.test.ts`,
+  `detached-turns-restart.test.ts`: 20/20 pass.
+- `tsc --noEmit -p server/tsconfig.json`: clean.

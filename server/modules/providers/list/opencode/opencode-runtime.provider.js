@@ -298,7 +298,7 @@ async function spawnOpenCode(command, options = {}, ws, context) {
 
       if (options.abortController?.signal.aborted) { resolve(); return; }
 
-      const turnExecution = spawnDetachedTurn({
+      const turnExecution = await spawnDetachedTurn({
         command: 'opencode',
         args,
         cwd: workingDir,

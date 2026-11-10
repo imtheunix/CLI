@@ -412,3 +412,68 @@ test('spawnOpenCode passes permission mode flags and env to the CLI', async () =
     await rm(tempRoot, { recursive: true, force: true });
   }
 });
+
+test('spawnOpenCode awaits the detached execution and reports the CLI exit code', async () => {
+  // Regression (2026-11-10): spawnDetachedTurn became async. The runtime must
+  // await it before reading `.promise`; otherwise every turn dies destructuring
+  // undefined instead of reporting the CLI's real exit code.
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'opencode-cli-exit-'));
+  const pathKey = findEnvKey('PATH');
+  const pathExtKey = findEnvKey('PATHEXT');
+  const previousPath = process.env[pathKey];
+  const previousPathExt = process.env[pathExtKey];
+  const messages = [];
+  const writer = {
+    userId: null,
+    sessionId: null,
+    send(message) {
+      messages.push(message);
+    },
+    setSessionId(sessionId) {
+      this.sessionId = sessionId;
+    },
+  };
+
+  try {
+    const scriptPath = path.join(tempRoot, 'opencode.js');
+    await writeFile(scriptPath, `
+console.log(JSON.stringify({ type: 'text', sessionID: 'open-exit-1', text: 'bye' }));
+process.exit(3);
+`, 'utf8');
+
+    if (process.platform === 'win32') {
+      await writeFile(path.join(tempRoot, 'opencode.cmd'), '@echo off\r\nnode "%~dp0opencode.js" %*\r\n', 'utf8');
+      process.env[pathExtKey] = previousPathExt?.toUpperCase().includes('.CMD')
+        ? previousPathExt
+        : `.COM;.EXE;.BAT;.CMD${previousPathExt ? `;${previousPathExt}` : ''}`;
+    } else {
+      const commandPath = path.join(tempRoot, 'opencode');
+      await writeFile(commandPath, '#!/bin/sh\nnode "$(dirname "$0")/opencode.js" "$@"\n', 'utf8');
+      await chmod(commandPath, 0o755);
+    }
+
+    process.env[pathKey] = `${tempRoot}${path.delimiter}${previousPath || ''}`;
+
+    await assert.rejects(
+      opencodeRuntime.run('Hi', { cwd: tempRoot }, writer, runtimeContext),
+      /exited with code 3/,
+    );
+
+    const complete = messages.find((message) => message.kind === 'complete');
+    assert.equal(complete?.exitCode, 3);
+  } finally {
+    if (previousPath === undefined) {
+      delete process.env[pathKey];
+    } else {
+      process.env[pathKey] = previousPath;
+    }
+
+    if (previousPathExt === undefined) {
+      delete process.env[pathExtKey];
+    } else {
+      process.env[pathExtKey] = previousPathExt;
+    }
+
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
