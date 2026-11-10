@@ -27,11 +27,17 @@ JOBS = {"d6a7b815": "5922b497", "20450fe0": "ae3260fd", "a018c56e": "b8c37511"}
 EXPECTED = {"d6a7b815": 6, "20450fe0": 4, "a018c56e": 18}
 MODEL = "morph/morph-dsv41flash-1017"
 ARMS = ("without_mcp", "with_mcp")
-RUN_SIGNATURE = hashlib.sha256(
+PROMPT_GUIDANCE = (
+    "Tool usage: if the tribeira-recall MCP is available, start unfamiliar-code exploration with one recall "
+    "call (or symbol when you already know the exact symbol), before find/grep or broad file reads. Use the "
+    "returned locations for focused reads; do not repeat searches that did not help.\n\n"
+)
+SOURCE_SIGNATURE = hashlib.sha256(
     json.dumps({"jobs": JOBS, "model": MODEL, "arms": ARMS}, sort_keys=True).encode()
     + b"".join(path.read_bytes() for path in sorted(PACKAGE.glob("src/tribeira_recall/*.py")))
     + (PACKAGE / "pyproject.toml").read_bytes()
 ).hexdigest()
+RUN_SIGNATURE = hashlib.sha256(SOURCE_SIGNATURE.encode() + PROMPT_GUIDANCE.encode()).hexdigest()
 ports = itertools.count(9400)
 
 
@@ -61,7 +67,7 @@ def prepare_indexes():
         template = ROOT / f"index-{job}.db"
         manifest_path = ROOT / f"index-{job}.manifest.json"
         base = sh(f"git rev-parse {sha}^", cwd=REPO).stdout.strip()
-        manifest = {"job": job, "base": base, "signature": RUN_SIGNATURE}
+        manifest = {"job": job, "base": base, "signature": SOURCE_SIGNATURE}
         if template.exists() and manifest_path.exists() and json.loads(manifest_path.read_text()) == manifest:
             continue
         for candidate in ROOT.glob(f"index-{job}.db*"):
@@ -86,6 +92,25 @@ def prepare_indexes():
         print(result.stdout.strip(), flush=True)
 
 
+def recall_tool_calls(worktree):
+    db_path = Path(HOME) / ".local/share/opencode/opencode.db"
+    db = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    try:
+        session = db.execute(
+            "SELECT id FROM session WHERE directory=? ORDER BY time_created DESC LIMIT 1", (str(worktree),)
+        ).fetchone()
+        if not session:
+            return 0
+        return db.execute(
+            """SELECT count(*) FROM part WHERE session_id=?
+               AND json_extract(data, '$.type')='tool'
+               AND json_extract(data, '$.tool') LIKE 'tribeira-recall%'""",
+            (session[0],),
+        ).fetchone()[0]
+    finally:
+        db.close()
+
+
 def one(job, sha, arm, rep):
     tag = f"{job}-{arm}-{rep}"
     wt = ROOT / tag
@@ -99,7 +124,8 @@ def one(job, sha, arm, rep):
     prompt = (
         f"You are working in the git worktree {wt}, a throwaway copy for a benchmark. Do the task below fully: "
         "implement it, add or update tests for what you change, run only the tests you touched, and commit with a "
-        "descriptive message. Never run `tjob`: there is no job id here.\n\nTask:\n\n" + brief(job)
+        "descriptive message. Never run `tjob`: there is no job id here.\n\n"
+        + PROMPT_GUIDANCE + "Task:\n\n" + brief(job)
     )
     pacer = subprocess.Popen(
         [f"{APP}/node_modules/.bin/tsx", "morph-pacer/src/index.ts"], cwd=APP,
@@ -187,6 +213,7 @@ def one(job, sha, arm, rep):
         job=job, arm=arm, rep=rep, signature=RUN_SIGNATURE, valid=True, rc=rc, wall_s=wall, commits=commits,
         hidden_pass=hidden_pass, hidden_fail=hidden_fail, passed=passed, turns=turns,
         uncached=uncached, cache_hit=round(cached / max(1, cached + uncached), 3),
+        recall_tool_calls=recall_tool_calls(wt),
         recall_log_mentions=log.count("tribeira-recall"), per_model=per_model,
     )
     with open(ROOT / "results.jsonl", "a") as output:
@@ -205,6 +232,8 @@ def summarize(rows):
             "uncached_mean": round(statistics.mean(row["uncached"] for row in selected), 2) if selected else None,
             "wall_s_mean": round(statistics.mean(row["wall_s"] for row in selected), 2) if selected else None,
             "wall_s_total": sum(row["wall_s"] for row in selected),
+            "recall_calls_mean": round(statistics.mean(row.get("recall_tool_calls", 0) for row in selected), 2) if selected else None,
+            "runs_using_recall": sum(row.get("recall_tool_calls", 0) > 0 for row in selected),
         }
     (ROOT / "summary.json").write_text(json.dumps(result, indent=2) + "\n")
     return result

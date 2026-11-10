@@ -59,6 +59,10 @@ tribeira-recall/.venv/bin/python -m tribeira_recall cleanup --days 30
 
 Do not store secrets even though the common-pattern filter exists.
 
+MCP server instructions are not necessarily added to the model's context. Add this line to the OpenCode project's instructions when you want agents to prefer the retrieval workflow:
+
+> If `tribeira-recall` is available, start unfamiliar-code exploration with one `recall` call (or `symbol` when the exact symbol is known), before `find`/`grep` or broad file reads. Use the returned locations for focused reads; do not repeat searches that did not help.
+
 ## Indexed sources and incremental behavior
 
 - Every repository below `~/Tribeira` with `.git`: TypeScript/TSX, Python, and Rust declarations (tree-sitter), `docs/**`, and all `AGENTS.md` files.
@@ -81,3 +85,18 @@ tribeira-recall/.venv/bin/python tribeira-recall/evals/recall_bakeoff.py
 The bake-off is copied/adapted from `~/.cache/ab/bake2.py`; the original is untouched. It runs DeepSeek 1017 on `d6a7b815`, `20450fe0`, and `a018c56e`, three repetitions per arm. Every “with MCP” run receives a fresh database built solely from that replay's base revision (no jobs, Mem0, experiments, or global docs), preventing future-code and cross-repetition leakage. Raw logs, ledgers, results, and summary are in `/tmp/tribeira-recall-mcp-ab/`. `RECALL_BAKE_WORKERS` controls concurrency (default 3).
 
 Keep the MCP only if hidden-test pass rate holds and model calls or uncached input falls. Calls are completed upstream model requests (including title/compaction/subagents), not a claim about human conversational turns.
+
+## Measurement report (2026-11-10)
+
+The focused suite passes 11/11 tests. The real index covers 151 repositories and 27,479 files: 222,350 documents (189,416 symbols, 25,302 documentation chunks, 7,006 exports, 537 jobs, and 89 experiment rows). The full index took 7,604.71 s; an immediate incremental re-index with every file unchanged took 2.57 s wall time (2,450.66 ms inside the indexer). In the idle 50-query benchmark, query p50 was 204.61 ms, p95 was 308.62 ms, maximum was 312.48 ms, and embedding p95 was 2.38 ms. **The 50 ms query-p95 criterion failed**; sqlite-vec scanning, not local embedding, dominates latency.
+
+The final bake used DeepSeek 1017, three jobs and three repetitions per arm, run signature `52c4bc2a62d1dd6cfe7672a84057c267629f3a83c2078a3e190c6f54cd745d37`. Both arms received the same conditional usage instruction quoted above. The harness reads OpenCode tool-part rows to count actual recall calls; all nine with-MCP runs used recall once. An earlier exposure-only attempt was discarded because none of its with-MCP runs called a recall tool.
+
+| Arm | Hidden-test pass rate | Mean model calls | Mean uncached input | Mean wall time | Runs using recall |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Without MCP | 9/9 (100%) | 28.56 | 56,240.44 | 254.44 s | 0/9 |
+| With MCP | 8/9 (88.89%) | 27.89 | 62,533.56 | 248.11 s | 9/9 |
+
+With MCP, calls fell 2.3% and mean wall time fell 2.5%, but uncached input rose 11.2% and pass rate fell. **The keep criterion failed.** The failing `a018c56e` repetition passed 17/18 hidden tests and made no commit; its transcript ends at an external-directory permission refusal. The original `~/.cache/ab/bake2.py` remains unchanged (SHA-256 `044e4e29f7475bca8dc289bbe307f86f2e84876ebcf3cee90bcef235c4f3cdf6`). Raw results are in `/tmp/tribeira-recall-mcp-ab/`.
+
+No OpenCode user configuration was changed and no systemd unit was installed or enabled. The implementation remains on its experimental branch for the person's retain/discard decision; it was not marked done.
