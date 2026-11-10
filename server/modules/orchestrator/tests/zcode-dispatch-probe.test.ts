@@ -134,7 +134,7 @@ if (mode === 'timeout') {
   config.workspacesRoot = workspaces;
   config.worktreesRoot = path.join(workspaces, '.jobs');
   config.checks = { demo: 'true' };
-  config.review = false;
+  config.review.enabled = false;
   config.glmProvider = 'zcode';
   config.backends.glm.provider = 'zcode';
   config.backends.glm.model = 'GLM-5.3-Flash';
