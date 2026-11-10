@@ -22,7 +22,8 @@
     "shell": "Shell",
     "tasks": "Tarefas",
     "browser": "Navegador",
-    "computer": "Computador"
+    "computer": "Computador",
+    "status": "Status"
   },
   "status": {
     "loading": "Carregando...",
@@ -221,7 +222,8 @@
     "navTasks": "Ir para tarefas",
     "settingsItem": "Configurações: {{label}}",
     "browseAllSessions": "Navegar todas as sessões ({{count}})",
-    "switchTo": "Alternar para: {{name}}"
+    "switchTo": "Alternar para: {{name}}",
+    "navStatus": "Go to Status"
   },
   "folderBrowser": {
     "title": "Selecionar pasta",

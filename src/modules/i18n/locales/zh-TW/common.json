@@ -22,7 +22,8 @@
     "shell": "終端機",
     "tasks": "任務",
     "browser": "瀏覽器",
-    "computer": "電腦"
+    "computer": "電腦",
+    "status": "Status"
   },
   "status": {
     "loading": "載入中...",

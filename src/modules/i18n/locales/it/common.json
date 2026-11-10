@@ -22,7 +22,8 @@
     "shell": "Terminale",
     "tasks": "Attività",
     "browser": "Browser",
-    "computer": "Computer"
+    "computer": "Computer",
+    "status": "Status"
   },
   "status": {
     "loading": "Caricamento...",

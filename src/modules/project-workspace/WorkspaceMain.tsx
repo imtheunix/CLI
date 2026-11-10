@@ -4,6 +4,7 @@ import { ChatInterface } from '@/modules/chat';
 import { StandaloneShell } from '@/modules/standalone-shell';
 import { PluginTabContent } from '@/modules/plugins';
 import { BrowserUsePanel, useBrowserUseEnabled } from '@/modules/browser-use';
+import { StatusView } from '@/modules/status';
 import { usePaletteOpsRegister } from '@/modules/command-palette';
 import { TaskMasterPanel, useTaskMasterProjectSync, useTasksSettings } from '@/modules/task-master';
 import type { AppTab, Project, ProjectSession, SessionEstablishedContext, SessionNavigationOptions, SettingsMainTab } from '@/shared/types';
@@ -179,6 +180,12 @@ function WorkspaceMain({
             </div>
           )}
 
+
+          {activeTab === 'status' && (
+            <div className="h-full overflow-hidden">
+              <StatusView />
+            </div>
+          )}
 
           {shouldShowTasksTab && <TaskMasterPanel isVisible={activeTab === 'tasks'} />}
 

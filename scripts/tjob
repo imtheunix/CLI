@@ -5,6 +5,7 @@
 #                           --model: one the backend offers; GLM runs glm-5.3-flash unless asked for glm-5.3; with --backend auto, the model picks the backend
 #   tjob ls                 every job: backend, state, what its session is doing, where it is in the CI/CD queue
 #   tjob meter [--watch]    Morph Ultra's rolling 60 s usage against its caps (--watch: refresh every 5 s)
+#   tjob status [--md]      goals, jobs, capacity, hub and efficiency in one place (--md: markdown, e.g. > file)
 #   tjob show <id>
 #   tjob done <id>          the agent's code is complete and committed: it waits at review for the orchestrating session
 #   tjob approve <id>       the orchestrating session (the hub) reviewed the branch: hand it to the CI/CD queue
@@ -84,6 +85,79 @@ elif mode == "hub":
             if h.get(k): print("%s: %s" % (k, h[k]))
         if h.get("customName"): print("name: %s" % h["customName"])
         print("wake: %s" % ("on" if h.get("wake") else "off"))
+elif mode == "status":
+    s = data["status"]
+    def dur(ms):
+        if ms is None: return "-"
+        m = int(ms) // 60000
+        return ("%dm" % m) if m < 60 else ("%dh%02dm" % (m // 60, m % 60))
+    def pct(v): return "%.1f%%" % (v * 100)
+    def tok(v):
+        if v >= 1000000: return "%.1fM" % (v / 1000000)
+        if v >= 1000: return "%.1fk" % (v / 1000)
+        return str(int(round(v)))
+    print("Needs you:")
+    needs = ["- " + g for g in s["needsYou"]["goals"]]
+    needs += ["- %s %s: %s" % (j["id"], j["title"], j["reason"]) for j in s["needsYou"]["jobs"]]
+    print("\n".join(needs) if needs else "  (nothing)")
+    print("\nGoals:")
+    for g in s["goals"]:
+        print("  %s  [%s]  updated %s" % (g["title"], g["status"], g["updated"] or "-"))
+        if g.get("now"): print("    now: " + g["now"])
+        if g.get("next"): print("    next: " + g["next"])
+        print("    jobs: " + (" ".join(g["jobs"]) if g["jobs"] else "none"))
+        if g.get("needs"): print("    needs: " + g["needs"])
+    def jobline(j):
+        where = ("ci:" + j["step"]) if j.get("step") else (j["mergeStep"] if j["mergeStep"] != "none" else j["state"])
+        extra = ""
+        if j.get("ageMs") is not None: extra = " (%s)" % dur(j["ageMs"])
+        elif j.get("waitingMs") is not None: extra = " (waiting %s)" % dur(j["waitingMs"])
+        elif j.get("at"): extra = " (%s)" % j["at"][:16].replace("T", " ")
+        return "  %s  %-6s %-14s %-12s%s  %s" % (j["id"], j.get("backend") or "-", (j.get("model") or "-").split("/")[-1], where, extra, j["title"])
+    print("\nJobs:")
+    for label in ("running", "review", "queue"):
+        jobs = s["jobs"][label]
+        print("  %s: %s" % (label, "none" if not jobs else ""))
+        for j in jobs: print(jobline(j))
+    print("  merged (24h):")
+    for j in s["jobs"]["merged"]: print(jobline(j))
+    print("  failed (24h):")
+    for j in s["jobs"]["failed"]: print(jobline(j))
+    print("\nCapacity:")
+    c = s["capacity"]
+    print("  " + "  ".join("%s: %s/%s" % (b, c["loads"].get(b, 0), c["caps"].get(b, 0)) for b in ("claude", "codex", "glm", "agy", "zcode", "morph")))
+    m = c["morph"]
+    print("  morph: kimi out %s/%s in %s/%s | deepseek out %s/%s in %s/%s" % (
+        tok(m["groups"]["kimi"]["out"]), tok(m["groups"]["kimi"]["caps"]["out"]),
+        tok(m["groups"]["kimi"]["uncachedIn"]), tok(m["groups"]["kimi"]["caps"]["uncachedIn"]),
+        tok(m["groups"]["deepseek"]["out"]), tok(m["groups"]["deepseek"]["caps"]["out"]),
+        tok(m["groups"]["deepseek"]["uncachedIn"]), tok(m["groups"]["deepseek"]["caps"]["uncachedIn"])))
+    for b, until in c["quota"].items():
+        if until: print("  %s: quota-exhausted until %s" % (b, until))
+    print("\nHub:")
+    h = s["hub"]
+    if not h.get("sessionId"):
+        print("  no hub session configured")
+    else:
+        print("  session: %s" % h["sessionId"])
+        for k in ("provider", "model", "effort", "agent"):
+            if h.get(k): print("  %s: %s" % (k, h[k]))
+        print("  last wake: %s" % (h.get("lastWakeAt") or "never"))
+    def eff(label, w):
+        print("\nEfficiency (%s):" % label)
+        d = w["deepseek"]
+        print("  deepseek: cap use avg %s p90 %s over %d active min | slots %s" % (pct(d["capUseAvg"]), pct(d["capUseP90"]), d["activeMinutes"], pct(d["slotOccupancy"])))
+        k = w["kimi"]; r = k["outputByRole"]
+        print("  kimi: out hub %s planner %s jobs %s compaction %s | reasoning %s | cache hit %s | uncached/hub call %s" % (
+            tok(r["hub"]), tok(r["planner"]), tok(r["jobs"]), tok(r["compaction"]), pct(k["reasoningShare"]), pct(k["cacheHit"]), tok(k["uncachedInputPerHubCall"])))
+        f = w["flow"]
+        print("  flow: lead %s | review wait %s (max %s) | fix rounds %s | merged/h %.2f | tokens/merged %s" % (
+            dur(f["leadTimeMedianMs"]), dur(f["reviewWaitMedianMs"]), dur(f["reviewWaitMaxMs"]), pct(f["fixRoundRate"]), f["mergedPerHour"], tok(f["tokensPerMergedJob"])))
+        wa = w["waste"]
+        print("  waste: compaction %s | cancelled %d | pacer wait %s | 429 retries %d" % (
+            tok(wa["compactionTokens"]), wa["cancelledJobs"], dur(wa["pacerWaitMs"]), wa["retries429"]))
+    eff("1h", s["efficiency"]["hour"])
+    eff("24h", s["efficiency"]["day"])
 else:
     j = data["job"]
     print(line(j))
@@ -148,6 +222,15 @@ case "$cmd" in
       done
     else
       api GET "/meter" | render meter
+    fi ;;
+  status)
+    if [ "${1:-}" = "--md" ]; then
+      shift
+      [ $# -eq 0 ] || { echo "usage: tjob status [--md]" >&2; exit 2; }
+      api GET "/status.md"
+    else
+      [ $# -eq 0 ] || { echo "usage: tjob status [--md]" >&2; exit 2; }
+      api GET "/status" | render status
     fi ;;
   show) api GET "/${1:?id}" | render show ;;
   done|approve|retry|resume|cancel) api POST "/${1:?id}/$cmd" '{}' | render "$cmd" ;;

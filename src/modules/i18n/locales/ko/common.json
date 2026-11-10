@@ -22,7 +22,8 @@
     "shell": "Shell",
     "tasks": "작업",
     "browser": "Browser",
-    "computer": "Computer"
+    "computer": "Computer",
+    "status": "Status"
   },
   "status": {
     "loading": "로딩 중...",

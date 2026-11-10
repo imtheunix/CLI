@@ -8,6 +8,7 @@ import { AppError, asyncHandler, createApiSuccessResponse } from '@/shared/utils
 import { JOB_KINDS, type JobsService, type OrchestratorJobKind } from './services/jobs.service.js';
 import { formatMorphLine, formatMorphTable } from './services/morph-usage.service.js';
 import type { MorphUsageService } from './services/morph-usage.service.js';
+import type { StatusService } from './services/status.service.js';
 import type { createMergeQueueService } from './services/merge-queue.service.js';
 import type { HubWakeService } from './services/hub-wake.service.js';
 import type { HubService } from './services/hub.service.js';
@@ -65,6 +66,8 @@ export function createOrchestratorRouter(services: {
   hub: HubService;
   /** `tjob meter` and the `tjob ls` line: Morph Ultra's rolling usage against its caps. */
   morphUsage: MorphUsageService;
+  /** `tjob status` and the web Status view: goals, jobs, capacity, hub and efficiency in one place. */
+  status: StatusService;
   caps: () => Record<OrchestratorBackend, number>;
   authenticate: RequestHandler;
   /** `tjob rollback`: restore a job's worktree from a per-turn checkpoint (Worktrees module). */
@@ -98,6 +101,16 @@ export function createOrchestratorRouter(services: {
   router.get('/meter', asyncHandler(async (_req, res) => {
     const usage = services.morphUsage.usage();
     res.set('Cache-Control', 'no-store').json(createApiSuccessResponse({ usage, line: formatMorphLine(usage), table: formatMorphTable(usage) }));
+  }));
+
+  // Before `/:id`, which would otherwise read "status" as a job id.
+  router.get('/status', asyncHandler(async (_req, res) => {
+    res.set('Cache-Control', 'no-store').json(createApiSuccessResponse({ status: services.status.snapshot() }));
+  }));
+
+  // `tjob status --md`: the same snapshot as the STATUS.md rendering.
+  router.get('/status.md', asyncHandler(async (_req, res) => {
+    res.set('Cache-Control', 'no-store').type('text/markdown').send(services.status.markdown());
   }));
 
   router.post('/', asyncHandler(async (req, res) => {

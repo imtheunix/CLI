@@ -23,7 +23,8 @@
     "tasks": "Úkoly",
     "browser": "Prohlížeč",
     "computer": "Počítač",
-    "views": "Zobrazení pracovního prostoru"
+    "views": "Zobrazení pracovního prostoru",
+    "status": "Status"
   },
   "status": {
     "loading": "Načítání...",
@@ -237,7 +238,8 @@
     "browseAllSessions_few": "Procházet všechny relace ({{count}})",
     "browseAllSessions_many": "Procházet všechny relace ({{count}})",
     "browseAllSessions_other": "Procházet všechny relace ({{count}})",
-    "switchTo": "Přepnout na: {{name}}"
+    "switchTo": "Přepnout na: {{name}}",
+    "navStatus": "Go to Status"
   },
   "folderBrowser": {
     "title": "Vybrat složku",

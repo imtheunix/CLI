@@ -22,7 +22,8 @@
     "shell": "Shell",
     "tasks": "Tasks",
     "browser": "Browser",
-    "computer": "Computer"
+    "computer": "Computer",
+    "status": "Status"
   },
   "status": {
     "loading": "Loading...",
@@ -221,7 +222,8 @@
     "navTasks": "Go to Tasks",
     "settingsItem": "Settings: {{label}}",
     "browseAllSessions": "Browse all sessions ({{count}})",
-    "switchTo": "Switch to: {{name}}"
+    "switchTo": "Switch to: {{name}}",
+    "navStatus": "Go to Status"
   },
   "folderBrowser": {
     "title": "Select Folder",

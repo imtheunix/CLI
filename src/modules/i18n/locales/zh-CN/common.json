@@ -22,7 +22,8 @@
     "shell": "终端",
     "tasks": "任务",
     "browser": "浏览器",
-    "computer": "计算机"
+    "computer": "计算机",
+    "status": "Status"
   },
   "status": {
     "loading": "加载中...",
