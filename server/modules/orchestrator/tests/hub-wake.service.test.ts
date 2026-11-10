@@ -18,7 +18,7 @@ import {
 import { chatRunRegistry } from '@/modules/websocket/index.js';
 
 import { appendHubEvent, getLiveHubEventsLogPath } from '../services/hub-events.service.js';
-import { createHubWakeService, hubWakeTestGuard } from '../services/hub-wake.service.js';
+import { buildHubWakeMessage, createHubWakeService, hubWakeTestGuard } from '../services/hub-wake.service.js';
 import type { LoggedHubEvent } from '../services/hub-wake.service.js';
 import { loadOrchestratorConfig } from '../services/orchestrator-config.service.js';
 import type { OrchestratorConfig } from '../services/orchestrator-config.service.js';
@@ -1521,4 +1521,58 @@ test('a wake to a hub session that runs an agent carries provider, model and age
     assert.equal(captured[0].permissionMode, 'bypassPermissions');
     service.stop();
   });
+});
+
+test('mixed events list decisions first and group review_fyi with merged as FYI in one wake', async () => {
+  await withTestContext(async ({ config, runtime, eventsLogPath, offsetPath, stallsPath, hubSessionId, clock }) => {
+    const service = createHubWakeService({
+      config: () => config,
+      runtime: runtime.gateway,
+      now: () => clock.now,
+      eventsLogPath,
+      offsetPath,
+      stallsPath,
+    });
+    service.start();
+
+    appendHubEvent({ jobId: 'job-fyi', state: 'review_fyi', title: 'Low Risk', reason: 'auto-approved', timestamp: clock.now.toISOString() });
+    appendHubEvent({ jobId: 'job-blocked', state: 'blocked', title: 'Needs Help', reason: 'rebase conflict', timestamp: clock.now.toISOString() });
+    appendHubEvent({ jobId: 'job-merged', state: 'merged', title: 'Shipped', reason: 'pushed abc123', timestamp: clock.now.toISOString() });
+    appendHubEvent({ jobId: 'job-review', state: 'review', title: 'Needs Review', reason: 'waiting for review', timestamp: clock.now.toISOString() });
+
+    clock.advance(100);
+    await service.tick();
+
+    assert.equal(runtime.turns.length, 1, 'all mixed events share one wake message');
+    assert.equal(runtime.turns[0].command, [
+      'Decisions needed:',
+      '[tjob] job-blocked Needs Help: blocked, rebase conflict',
+      '[tjob] job-review Needs Review: done, waiting for review',
+      '',
+      'FYI — 2 events; no action needed:',
+      '[tjob] job-fyi Low Risk: review passed, auto-approved',
+      '[tjob] job-merged Shipped: merged, pushed abc123',
+    ].join('\n'));
+
+    runtime.finish(hubSessionId);
+    service.stop();
+  });
+});
+
+test('mixed wakes cap decisions before adding the FYI overflow', () => {
+  const events: LoggedHubEvent[] = [
+    ...Array.from({ length: 25 }, (_, index) => ({
+      jobId: `decision-${index}`,
+      state: 'review' as const,
+      title: `Decision ${index}`,
+      reason: 'needs review',
+      timestamp: new Date(0).toISOString(),
+    })),
+    { jobId: 'fyi', state: 'review_fyi' as const, title: 'FYI', reason: 'auto-approved', timestamp: new Date(0).toISOString() },
+  ];
+  const message = buildHubWakeMessage(events);
+  assert.equal(message.match(/\[tjob\]/g)?.length, 20);
+  assert.match(message, /\+5 more decisions/);
+  assert.match(message, /\+1 more FYI/);
+  assert.doesNotMatch(message, /decision-20/);
 });

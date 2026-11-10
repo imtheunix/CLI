@@ -114,7 +114,7 @@ async function withWorkspace(
   config.forgejo.tokenFile = path.join(root, 'no-token');
   // The balancing tests must not depend on the hour they run at.
   config.glmPeakHours.avoid = false;
-  config.review = false;   // the queue's own tests; the review gate has its own
+  config.review.enabled = false;   // the queue's own tests; the review gate has its own
   tune(config);
 
   const runtime = createRuntime();
@@ -1056,17 +1056,23 @@ test('a finished job waits for the hub: tjob done parks it at review, tjob appro
     const id = await finishedJob(ctx, (worktree) => commitFile(worktree, 'feature.txt', 'f\n', 'feature'));
     assert.equal(ctx.job(id).state, 'done');
     assert.equal(ctx.job(id).merge_step, 'review');
+    assert.equal(ctx.job(id).review_step, 'gate');
     const queue = createMergeQueueService({ jobs: ctx.jobs, config: () => ctx.config });
     await queue.tick();
     assert.equal(ctx.job(id).merge_step, 'review');   // the queue leaves it alone
     const approved = await ctx.jobs.approve(id);
     assert.equal(approved.merge_step, 'queued');
     await assert.rejects(ctx.jobs.approve(id), /not waiting for review/);
-  }, (config) => { config.review = true; });
+  }, (config) => { config.review.enabled = true; });
 });
 
-test('the review gate is the default', () => {
-  assert.equal(loadOrchestratorConfig('/nonexistent/orchestrator.json').review, true);
+test('automatic review is enabled with bounded refutations and conservative defaults', () => {
+  const review = loadOrchestratorConfig('/nonexistent/orchestrator.json').review;
+  assert.equal(review.enabled, true);
+  assert.equal(review.refuteCap, 2);
+  assert.equal(review.maxLines, 400);
+  assert.deepEqual(review.protectedRepos, []);
+  assert.ok(review.riskyPaths.includes('.github'));
 });
 
 test('job branches are feature/… by default and bugfix/… on request', async () => {
