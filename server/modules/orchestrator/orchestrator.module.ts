@@ -14,6 +14,8 @@ import { createHubService } from './services/hub.service.js';
 import { createJobsService } from './services/jobs.service.js';
 import { createMergeQueueService } from './services/merge-queue.service.js';
 import { createMorphUsageService } from './services/morph-usage.service.js';
+import { createRefuteService } from './services/refute.service.js';
+import { createReviewService } from './services/review.service.js';
 import { createHubWakeService } from './services/hub-wake.service.js';
 import { loadOrchestratorConfig } from './services/orchestrator-config.service.js';
 import { getOrchestratorToken } from './services/orchestrator-token.service.js';
@@ -31,6 +33,8 @@ export function createOrchestratorModule(input: { runtime: ProviderRuntimeGatewa
   const config = () => loadOrchestratorConfig();
   const morphUsage = createMorphUsageService({ config });
   const jobs = createJobsService({ runtime: input.runtime, config, morphUsage });
+  const refuteService = createRefuteService({ runtime: input.runtime, config });
+  const review = createReviewService({ jobs, config, refuteService });
   const mergeQueue = createMergeQueueService({ jobs, config });
   const hubWake = createHubWakeService({ runtime: input.runtime, config });
   const hub = createHubService({ config });
@@ -43,6 +47,7 @@ export function createOrchestratorModule(input: { runtime: ProviderRuntimeGatewa
     ticking = true;
     try {
       await jobs.tick();
+      void review.tick();
       void mergeQueue.tick();
       await hubWake.tick();
     } catch (error) {

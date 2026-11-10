@@ -45,7 +45,11 @@ data = body["data"]
 mode = sys.argv[1]
 def line(j):
     doing = j.get("activity") or j["state"]
-    merge = "" if j["merge_step"] == "none" else "  ci:" + j["merge_step"]
+    review_step = j.get("review_step")
+    if j["merge_step"] == "review" and review_step and review_step != "none":
+        merge = "  rv:" + review_step
+    else:
+        merge = "" if j["merge_step"] == "none" else "  ci:" + j["merge_step"]
     err = ("  ! " + j["last_error"].splitlines()[0][:100]) if j.get("last_error") else ""
     fallback = "  (glm quota fallback)" if j.get("quotaFallback") else ""
     if j.get("handover"): fallback += "  " + j["handover"]
@@ -88,7 +92,7 @@ else:
     j = data["job"]
     print(line(j))
     if mode == "show":
-        for k in ("repo_path", "base_branch", "branch", "worktree_path", "session_id", "model", "pushed_sha", "checkLogPath", "last_error"):
+        for k in ("repo_path", "base_branch", "branch", "worktree_path", "session_id", "model", "pushed_sha", "checkLogPath", "last_error", "review_step", "review_verdict", "review_risk"):
             if j.get(k): print("  %s: %s" % (k, j[k]))
         u = j.get("usage")
         if u:
