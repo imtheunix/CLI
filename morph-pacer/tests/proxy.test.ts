@@ -53,6 +53,184 @@ test('passes JSON through, injects auth, captures usage and writes the ledger', 
   }
 });
 
+test('injects cache_ttl and a session run_id for Kimi and records them in the ledger', { timeout: 5_000 }, async () => {
+  const upstream = await startFakeUpstream((_request, _body, response) => {
+    response.writeHead(200, { 'content-type': 'application/json' });
+    response.end(JSON.stringify({ usage: { prompt_tokens: 10, completion_tokens: 5 } }));
+  });
+  const proxy = await startProxy({ upstream: upstream.url });
+
+  try {
+    const response = await request(`${proxy.url}/v1/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-session-id': 'session-abc',
+      },
+      body: JSON.stringify({ model: 'morph-kimik31', messages: [] }),
+    });
+
+    assert.equal(response.status, 200);
+    const sent = JSON.parse(upstream.requests[0].body);
+    assert.equal(sent.cache_ttl, '1h');
+    assert.equal(sent.run_id, 'session-abc');
+
+    const ledger = await proxy.readLedger();
+    assert.equal(ledger[0].cache_ttl, '1h');
+    assert.equal(ledger[0].run_id_set, true);
+  } finally {
+    await proxy.close();
+    await upstream.close();
+  }
+});
+
+test('falls back to x-opencode-session-id for run_id', { timeout: 5_000 }, async () => {
+  const upstream = await startFakeUpstream((_request, _body, response) => {
+    response.writeHead(200, { 'content-type': 'application/json' });
+    response.end(JSON.stringify({ usage: { prompt_tokens: 10, completion_tokens: 5 } }));
+  });
+  const proxy = await startProxy({ upstream: upstream.url });
+
+  try {
+    await request(`${proxy.url}/v1/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-opencode-session-id': 'opencode-session',
+      },
+      body: JSON.stringify({ model: 'kimi-latest', messages: [] }),
+    });
+
+    const sent = JSON.parse(upstream.requests[0].body);
+    assert.equal(sent.run_id, 'opencode-session');
+  } finally {
+    await proxy.close();
+    await upstream.close();
+  }
+});
+
+test('never overwrites cache_ttl or run_id the client set', { timeout: 5_000 }, async () => {
+  const upstream = await startFakeUpstream((_request, _body, response) => {
+    response.writeHead(200, { 'content-type': 'application/json' });
+    response.end(JSON.stringify({ usage: { prompt_tokens: 10, completion_tokens: 5 } }));
+  });
+  const proxy = await startProxy({ upstream: upstream.url });
+
+  try {
+    await request(`${proxy.url}/v1/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-session-id': 'session-abc',
+      },
+      body: JSON.stringify({
+        model: 'morph-kimik31',
+        cache_ttl: '5m',
+        run_id: 'client-run',
+        messages: [],
+      }),
+    });
+
+    const sent = JSON.parse(upstream.requests[0].body);
+    assert.equal(sent.cache_ttl, '5m');
+    assert.equal(sent.run_id, 'client-run');
+
+    const ledger = await proxy.readLedger();
+    assert.equal(ledger[0].cache_ttl, '5m');
+    assert.equal(ledger[0].run_id_set, true);
+  } finally {
+    await proxy.close();
+    await upstream.close();
+  }
+});
+
+test('sets run_id only for listed models and only when a session header exists', { timeout: 5_000 }, async () => {
+  const upstream = await startFakeUpstream((_request, _body, response) => {
+    response.writeHead(200, { 'content-type': 'application/json' });
+    response.end(JSON.stringify({ usage: { prompt_tokens: 10, completion_tokens: 5 } }));
+  });
+  const proxy = await startProxy({ upstream: upstream.url });
+
+  try {
+    await request(`${proxy.url}/v1/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-session-id': 'session-abc',
+      },
+      body: JSON.stringify({ model: 'morph-dsv41flash', messages: [] }),
+    });
+    await request(`${proxy.url}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'morph-kimik31', messages: [] }),
+    });
+
+    const deepseek = JSON.parse(upstream.requests[0].body);
+    const kimi = JSON.parse(upstream.requests[1].body);
+    assert.equal(deepseek.run_id, undefined);
+    assert.equal(kimi.run_id, undefined);
+
+    const ledger = await proxy.readLedger();
+    assert.equal(ledger[0].run_id_set, false);
+    assert.equal(ledger[1].run_id_set, false);
+  } finally {
+    await proxy.close();
+    await upstream.close();
+  }
+});
+
+test('does not inject cache_ttl when it is disabled with an empty string', { timeout: 5_000 }, async () => {
+  const upstream = await startFakeUpstream((_request, _body, response) => {
+    response.writeHead(200, { 'content-type': 'application/json' });
+    response.end(JSON.stringify({ usage: { prompt_tokens: 10, completion_tokens: 5 } }));
+  });
+  const proxy = await startProxy({ upstream: upstream.url, cacheTtl: '' });
+
+  try {
+    await request(`${proxy.url}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'morph-kimik31', messages: [] }),
+    });
+
+    const sent = JSON.parse(upstream.requests[0].body);
+    assert.equal(sent.cache_ttl, undefined);
+
+    const ledger = await proxy.readLedger();
+    assert.equal(ledger[0].cache_ttl, null);
+  } finally {
+    await proxy.close();
+    await upstream.close();
+  }
+});
+
+test('leaves other endpoints untouched', { timeout: 5_000 }, async () => {
+  const upstream = await startFakeUpstream((_request, _body, response) => {
+    response.writeHead(200, { 'content-type': 'application/json' });
+    response.end(JSON.stringify({ ok: true }));
+  });
+  const proxy = await startProxy({ upstream: upstream.url });
+
+  try {
+    await request(`${proxy.url}/v1/embeddings`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-session-id': 'session-abc',
+      },
+      body: JSON.stringify({ model: 'morph-kimik31', input: 'hi' }),
+    });
+
+    const sent = JSON.parse(upstream.requests[0].body);
+    assert.equal(sent.cache_ttl, undefined);
+    assert.equal(sent.run_id, undefined);
+  } finally {
+    await proxy.close();
+    await upstream.close();
+  }
+});
+
 test('passes SSE through, injects include_usage and captures streamed usage', { timeout: 5_000 }, async () => {
   const upstream = await startFakeUpstream((_request, _body, response) => {
     response.writeHead(200, { 'content-type': 'text/event-stream' });
@@ -67,7 +245,7 @@ test('passes SSE through, injects include_usage and captures streamed usage', { 
   try {
     const response = await request(`${proxy.url}/v1/chat/completions`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', 'x-session-id': 'stream-session' },
       body: JSON.stringify({ model: 'morph-kimik31', stream: true, messages: [] }),
     });
 
@@ -75,6 +253,8 @@ test('passes SSE through, injects include_usage and captures streamed usage', { 
     assert.match(response.body, /\[DONE\]/);
     const sent = JSON.parse(upstream.requests[0].body);
     assert.equal(sent.stream_options.include_usage, true);
+    assert.equal(sent.cache_ttl, '1h');
+    assert.equal(sent.run_id, 'stream-session');
 
     const snapshot = JSON.parse((await request(`${proxy.url}/pacer/usage`)).body);
     assert.equal(snapshot.groups.kimik31.window.uncached_in, 25);

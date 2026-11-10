@@ -30,6 +30,10 @@ export interface PacerConfig {
   pollMs: number;
   ledgerPath: string;
   ledgerMaxBytes: number;
+  /** Sent as `cache_ttl` on chat completions when the client did not set one. Empty disables. */
+  cacheTtl: string;
+  /** Models that get a `run_id` derived from the session header when the client did not set one. */
+  runIdModels: string[];
   groups: Record<string, GroupConfig>;
 }
 
@@ -56,6 +60,8 @@ export const DEFAULT_CONFIG: PacerConfig = {
   pollMs: 100,
   ledgerPath: '~/.local/state/morph-pacer/ledger.jsonl',
   ledgerMaxBytes: 50 * 1024 * 1024,
+  cacheTtl: '1h',
+  runIdModels: ['morph-kimik31', 'kimi-latest'],
   groups: DEFAULT_GROUPS,
 };
 

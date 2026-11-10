@@ -12,6 +12,8 @@ export interface LedgerEntry {
   wait_ms: number;
   retries: number;
   stream: boolean;
+  cache_ttl: string | null;
+  run_id_set: boolean;
 }
 
 export class Ledger {
