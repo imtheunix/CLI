@@ -31,19 +31,43 @@ import path from 'node:path';
 import express, { type NextFunction, type Request, type Response } from 'express';
 import { WebSocket, WebSocketServer } from 'ws';
 
-import {
-  closeConnection,
-  getConnection,
-  initializeDatabase,
-  sessionsDb,
-} from '@/modules/database/index.js';
-import projectRouter from '@/modules/projects/projects.routes.js';
-import providerRouter from '@/modules/providers/provider.routes.js';
-import { sessionHistoryCache } from '@/modules/providers/services/session-history-cache.service.js';
-import { chatRunRegistry } from '@/modules/websocket/services/chat-run-registry.service.js';
-import { handleChatConnection } from '@/modules/websocket/services/chat-websocket.service.js';
-import { connectedClients } from '@/modules/websocket/services/websocket-state.service.js';
 import { AppError } from '@/shared/utils.js';
+
+/**
+ * Server modules are loaded only after DATABASE_PATH and HOME point at the
+ * throwaway fixture. A static import would let a module open the real
+ * ~/.cloudcli/auth.db before main() gets a chance to redirect it.
+ */
+type Runtime = {
+  db: typeof import('@/modules/database/index.js');
+  projectRouter: typeof import('@/modules/projects/projects.routes.js').default;
+  providerRouter: typeof import('@/modules/providers/provider.routes.js').default;
+  sessionHistoryCache: typeof import('@/modules/providers/services/session-history-cache.service.js').sessionHistoryCache;
+  chatRunRegistry: typeof import('@/modules/websocket/services/chat-run-registry.service.js').chatRunRegistry;
+  handleChatConnection: typeof import('@/modules/websocket/services/chat-websocket.service.js').handleChatConnection;
+  connectedClients: typeof import('@/modules/websocket/services/websocket-state.service.js').connectedClients;
+};
+
+async function loadRuntime(): Promise<Runtime> {
+  const [db, projects, providers, historyCache, runRegistry, chatSocket, socketState] = await Promise.all([
+    import('@/modules/database/index.js'),
+    import('@/modules/projects/projects.routes.js'),
+    import('@/modules/providers/provider.routes.js'),
+    import('@/modules/providers/services/session-history-cache.service.js'),
+    import('@/modules/websocket/services/chat-run-registry.service.js'),
+    import('@/modules/websocket/services/chat-websocket.service.js'),
+    import('@/modules/websocket/services/websocket-state.service.js'),
+  ]);
+  return {
+    db,
+    projectRouter: projects.default,
+    providerRouter: providers.default,
+    sessionHistoryCache: historyCache.sessionHistoryCache,
+    chatRunRegistry: runRegistry.chatRunRegistry,
+    handleChatConnection: chatSocket.handleChatConnection,
+    connectedClients: socketState.connectedClients,
+  };
+}
 
 type Options = {
   iterations: number;
@@ -227,7 +251,7 @@ type Fixture = {
   scaleProjectPath: string;
 };
 
-async function seedFixture(options: Options, directory: string): Promise<Fixture> {
+async function seedFixture(options: Options, directory: string, getConnection: Runtime['db']['getConnection']): Promise<Fixture> {
   const transcriptDirectory = path.join(directory, 'transcripts');
   await mkdir(transcriptDirectory, { recursive: true });
 
@@ -297,11 +321,11 @@ async function seedFixture(options: Options, directory: string): Promise<Fixture
   };
 }
 
-function createHttpApp(): express.Express {
+function createHttpApp(runtime: Runtime): express.Express {
   const app = express();
   app.use(express.json());
-  app.use('/api/providers', providerRouter);
-  app.use('/api/projects', projectRouter);
+  app.use('/api/providers', runtime.providerRouter);
+  app.use('/api/projects', runtime.projectRouter);
   app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => {
     if (error instanceof AppError) {
       res.status(error.statusCode).json({
@@ -390,7 +414,7 @@ type ChatHarness = {
   close: () => Promise<void>;
 };
 
-async function startChatHarness(options: Options): Promise<ChatHarness> {
+async function startChatHarness(options: Options, handleChatConnection: Runtime['handleChatConnection']): Promise<ChatHarness> {
   const port = await freePort();
   const server = new WebSocketServer({ host: '127.0.0.1', port });
   let serverSocket: WebSocket | null = null;
@@ -410,8 +434,7 @@ async function startChatHarness(options: Options): Promise<ChatHarness> {
     ) => {
       if (options.stubDelayMs > 0) await sleep(options.stubDelayMs);
       writer.send({
-        kind: 'text',
-        role: 'assistant',
+        kind: 'stream_delta',
         provider,
         content: `stub answer: ${content}`,
         timestamp: new Date().toISOString(),
@@ -445,7 +468,7 @@ async function startChatHarness(options: Options): Promise<ChatHarness> {
   } as ChatHarness;
 }
 
-function queryPlan(sql: string, parameter: string): string {
+function queryPlan(getConnection: Runtime['db']['getConnection'], sql: string, parameter: string): string {
   return (getConnection().prepare(`EXPLAIN QUERY PLAN ${sql}`).all(parameter) as Array<{ detail: string }>)
     .map((row) => row.detail)
     .join('\n');
@@ -454,6 +477,7 @@ function queryPlan(sql: string, parameter: string): string {
 async function main(): Promise<void> {
   const options = parseArgs(process.argv.slice(2));
   const previousDatabasePath = process.env.DATABASE_PATH;
+  const previousHome = process.env.HOME;
   const samples: Sample[] = [];
   const record = (name: string, value: number) => {
     let sample = samples.find((candidate) => candidate.name === name);
@@ -468,16 +492,24 @@ async function main(): Promise<void> {
   let fixtureDirectory: string | null = null;
   let httpServer: ReturnType<express.Express['listen']> | null = null;
   let harness: ChatHarness | null = null;
+  let runtime: Runtime | null = null;
 
   try {
     const directory = await mkdtemp(path.join(os.tmpdir(), 'cli-velocity-'));
     fixtureDirectory = directory;
     process.env.DATABASE_PATH = path.join(directory, 'auth.db');
-    closeConnection();
-    await initializeDatabase();
-    fixture = await seedFixture(options, directory);
+    const isolatedHome = path.join(directory, 'home');
+    await mkdir(isolatedHome, { recursive: true });
+    process.env.HOME = isolatedHome;
 
-    const app = createHttpApp();
+    // Only now may any server module load: it resolves DATABASE_PATH and HOME
+    // at import time, and both must already point at the throwaway fixture.
+    runtime = await loadRuntime();
+    runtime.db.closeConnection();
+    await runtime.db.initializeDatabase();
+    fixture = await seedFixture(options, directory, runtime.db.getConnection);
+
+    const app = createHttpApp(runtime);
     httpServer = app.listen(0, '127.0.0.1');
     await once(httpServer, 'listening');
     const address = httpServer.address();
@@ -490,11 +522,13 @@ async function main(): Promise<void> {
     // Path 4's index check: the sidebar page and count must use the composite
     // (project_path, isArchived) index, not a full scan.
     const pagePlan = queryPlan(
+      runtime.db.getConnection,
       `SELECT session_id FROM sessions WHERE project_path = ? AND isArchived = 0
        ORDER BY datetime(COALESCE(updated_at, created_at)) DESC, session_id DESC LIMIT 20 OFFSET 0`,
       fixture.scaleProjectPath,
     );
     const countPlan = queryPlan(
+      runtime.db.getConnection,
       'SELECT COUNT(*) AS count FROM sessions WHERE project_path = ? AND isArchived = 0',
       fixture.scaleProjectPath,
     );
@@ -507,9 +541,9 @@ async function main(): Promise<void> {
 
     const chatSessionId = 'bench-chat-session';
     const eventSessionId = 'bench-event-session';
-    sessionsDb.createAppSession(chatSessionId, 'codex', fixture.scaleProjectPath, 'Bench chat');
-    sessionsDb.createAppSession(eventSessionId, 'codex', fixture.scaleProjectPath, 'Bench event');
-    harness = await startChatHarness(options);
+    runtime.db.sessionsDb.createAppSession(chatSessionId, 'codex', fixture.scaleProjectPath, 'Bench chat');
+    runtime.db.sessionsDb.createAppSession(eventSessionId, 'codex', fixture.scaleProjectPath, 'Bench event');
+    harness = await startChatHarness(options, runtime.handleChatConnection);
 
     const totalIterations = options.warmup + options.iterations;
     for (let iteration = 0; iteration < totalIterations; iteration += 1) {
@@ -517,7 +551,7 @@ async function main(): Promise<void> {
 
       // 1. Chat open: the recent-session list, then the first page of each
       // recent session. The cache is cleared so every page is a cold open.
-      for (const sessionId of fixture.recentSessionIds) sessionHistoryCache.invalidate(sessionId);
+      for (const sessionId of fixture.recentSessionIds) runtime.sessionHistoryCache.invalidate(sessionId);
       const listStart = nowMs();
       await fetchJson(recentUrl);
       const listEnd = nowMs();
@@ -541,13 +575,13 @@ async function main(): Promise<void> {
         sessionId: chatSessionId,
         content: `bench ${iteration}`,
       }));
-      await harness.stream.waitFor((frame) => frame.kind === 'text' && frame.role === 'assistant');
+      await harness.stream.waitFor((frame) => frame.kind === 'stream_delta');
       const sendEnd = nowMs();
       await harness.stream.waitFor((frame) => frame.kind === 'complete');
       if (measured) record('send -> first assistant delta', sendEnd - sendStart);
 
       // 3. Server event -> socket delivery through the real run writer.
-      const run = chatRunRegistry.startRun({
+      const run = runtime.chatRunRegistry.startRun({
         appSessionId: eventSessionId,
         provider: 'codex',
         providerSessionId: null,
@@ -609,11 +643,13 @@ async function main(): Promise<void> {
   } finally {
     if (harness) await harness.close();
     if (httpServer) await new Promise<void>((resolve) => httpServer!.close(() => resolve()));
-    connectedClients.clear();
-    chatRunRegistry.clearAll();
-    closeConnection();
+    runtime?.connectedClients.clear();
+    runtime?.chatRunRegistry.clearAll();
+    runtime?.db.closeConnection();
     if (previousDatabasePath === undefined) delete process.env.DATABASE_PATH;
     else process.env.DATABASE_PATH = previousDatabasePath;
+    if (previousHome === undefined) delete process.env.HOME;
+    else process.env.HOME = previousHome;
     if (fixtureDirectory) await rm(fixtureDirectory, { recursive: true, force: true });
   }
 }

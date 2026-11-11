@@ -6,9 +6,12 @@ This is a baseline only: no production code or UI changed.
 ## Method
 
 `scripts/bench/cli-velocity.ts` starts an isolated in-process server on a free
-port with a temp `DATABASE_PATH`. It never contacts a live server or a real
-model. A stubbed provider turn emits its first delta immediately, so the
-numbers are our spawn/dispatch/transport cost, not model time.
+port with a temp `DATABASE_PATH` and a temp `HOME`. Server modules are loaded
+only after both are redirected, so no module can open the real
+`~/.cloudcli/auth.db` or read real provider directories. It never contacts a
+live server or a real model. A stubbed provider turn emits its first
+`stream_delta` immediately, so the numbers are our spawn/dispatch/transport
+cost, not model time.
 
 Fixture: 10,000 Codex sessions across 20 projects (500 sessions per project).
 The 10 most recent sessions have real JSONL transcripts (20 turns each); the
@@ -31,12 +34,12 @@ npm run bench:cli-velocity -- --iterations 30 --warmup 5 --sessions 10000
 
 | Path | n | p50 | p95 | min | max |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Chat open: session list (`GET /api/providers/sessions/recent`) | 30 | 4.440 | 5.324 | 4.101 | 5.641 |
-| Chat open: first message page, per session (`GET /api/providers/sessions/:id/messages?limit=20`) | 30 | 1.070 | 1.455 | 0.985 | 1.685 |
-| Chat open: list + 10 first pages (one open) | 30 | 15.496 | 18.946 | 14.088 | 21.703 |
-| Send -> first assistant delta (real chat websocket, stubbed turn) | 30 | 0.474 | 0.628 | 0.422 | 0.755 |
-| Server event -> socket delivery (synthetic event through the run writer) | 30 | 0.066 | 0.079 | 0.063 | 0.080 |
-| Session list at scale, per project (`GET /api/projects/:id/sessions?limit=20`) | 30 | 1.107 | 1.472 | 0.997 | 2.819 |
+| Chat open: session list (`GET /api/providers/sessions/recent`) | 30 | 4.930 | 6.872 | 4.611 | 7.895 |
+| Chat open: first message page, per session (`GET /api/providers/sessions/:id/messages?limit=20`) | 30 | 1.281 | 1.675 | 1.045 | 2.101 |
+| Chat open: list + 10 first pages (one open) | 30 | 17.939 | 23.961 | 15.090 | 26.498 |
+| Send -> first assistant delta (real chat websocket, stubbed turn) | 30 | 0.556 | 0.774 | 0.473 | 0.844 |
+| Server event -> socket delivery (synthetic event through the run writer) | 30 | 0.071 | 0.100 | 0.067 | 0.102 |
+| Session list at scale, per project (`GET /api/projects/:id/sessions?limit=20`) | 30 | 1.315 | 1.712 | 1.207 | 1.876 |
 
 ## Index re-verification at 10k sessions
 
@@ -52,12 +55,12 @@ count: SEARCH sessions USING COVERING INDEX idx_sessions_project_archived (proje
 ## Reading the numbers
 
 - Opening a chat is dominated by the recent-session list at 10k rows
-  (~4.4 ms p50); each cold first message page is ~1.1 ms p50, so a full open
-  of the 10 recent sessions is ~15.5 ms p50 / ~18.9 ms p95.
-- The send path is sub-millisecond p50 (~0.47 ms) with the stub emitting
+  (~4.9 ms p50); each cold first message page is ~1.3 ms p50, so a full open
+  of the 10 recent sessions is ~17.9 ms p50 / ~24.0 ms p95.
+- The send path is sub-millisecond p50 (~0.56 ms) with the stub emitting
   immediately: that is the websocket dispatch, run registration, writer
   sequencing and first frame delivery, with no model or process spawn time.
 - A server-side event reaches the client socket in ~0.07 ms p50, so the
   transport itself is not the bottleneck.
-- The per-project sidebar list stays ~1.1 ms p50 at 10k sessions and uses the
+- The per-project sidebar list stays ~1.3 ms p50 at 10k sessions and uses the
   composite index for both the page and the count.
