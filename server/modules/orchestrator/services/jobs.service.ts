@@ -812,13 +812,15 @@ export function createJobsService(deps: {
       const config = deps.config();
       let requested: ReturnType<typeof resolveRequestedModel> | null = null;
       if (input.model && input.backend) {
-        // First identify models shared by another backend, so the refusal is
-        // actionable instead of a generic invalid-model response.
-        const resolved = resolveRequestedModel(config, null, input.model);
-        if (resolved.backend !== input.backend) {
+        try {
+          requested = resolveRequestedModel(config, input.backend, input.model);
+        } catch {
+          // The named backend does not offer the model. Resolve it without a
+          // backend to name the one that does, so the refusal is actionable;
+          // a model offered nowhere still refuses with the full list.
+          const resolved = resolveRequestedModel(config, null, input.model);
           throw new AppError(`model ${input.model} is offered by ${resolved.backend}, not ${input.backend}; omit --backend to select its backend`, { code: 'MODEL_BACKEND_MISMATCH', statusCode: 400 });
         }
-        requested = resolveRequestedModel(config, input.backend, input.model);
       } else if (input.model) {
         requested = resolveRequestedModel(config, null, input.model);
       }
