@@ -11,7 +11,7 @@ import type { OrchestratorBackend, OrchestratorJobRow } from '@/modules/database
 import type { HubService } from '../services/hub.service.js';
 import type { MorphUsage, MorphUsageService } from '../services/morph-usage.service.js';
 import { loadOrchestratorConfig } from '../services/orchestrator-config.service.js';
-import { createStatusService, formatStatusMarkdown, parseGoals } from '../services/status.service.js';
+import { computeEfficiencyWindow, createStatusService, formatStatusMarkdown, parseGoals } from '../services/status.service.js';
 
 const NOW = new Date('2026-11-10T12:00:00.000Z');
 const ago = (ms: number): string => new Date(NOW.getTime() - ms).toISOString();
@@ -498,4 +498,57 @@ test('the snapshot is cached for 30 s', async () => {
     service.snapshot();
     assert.equal(calls, 2);
   });
+});
+
+test('Kimi turn-budget flags: AT the limit is clean, ABOVE is counted by role, unavailable usage is not zero', () => {
+  const nowMs = NOW.getTime();
+  const message = (agent: string, model: string, input: number, output: number, reasoning = 0) => ({
+    sessionId: 's', ts: nowMs - MINUTE, agent, model, input, output, reasoning, cacheRead: 0,
+  });
+  const window = computeEfficiencyWindow({
+    messages: [
+      message('morph-hub', 'morph-kimik31', 5_000, 800),
+      message('morph-hub', 'morph-kimik31', 5_001, 100),
+      message('build', 'morph-kimik31', 100, 801),
+      message('morph-planner', 'morph-kimik31', 5_001, 10),
+      message('compaction', 'morph-kimik31', 10, 10, 791),
+      message('build', 'morph-dsv41flash', 500_000, 50_000),
+    ],
+    ledger: [
+      { ts: nowMs - MINUTE, waitMs: 0, retries: 0, inputRejected: true },
+      { ts: nowMs - MINUTE, waitMs: 0, retries: 0, inputRejected: false },
+    ],
+    jobs: [],
+    nowMs,
+    windowMs: HOUR,
+    deepseekCapOut: 76_559,
+    morphCap: 2,
+  });
+
+  const budget = window.kimi.budget;
+  assert.equal(budget.outLimit, 800);
+  assert.equal(budget.uncachedInLimit, 5_000);
+  assert.equal(budget.usageAvailable, true);
+  // hub: input 5001 over; job: output 801 over; planner: input 5001 over; compaction: 801 billed over.
+  assert.equal(budget.overCalls, 4);
+  assert.equal(budget.overOutput, 2);
+  assert.equal(budget.overInput, 2);
+  assert.deepEqual(budget.byRole.hub, { overCalls: 1, overOutput: 0, overInput: 1 });
+  assert.deepEqual(budget.byRole.jobs, { overCalls: 1, overOutput: 1, overInput: 0 });
+  assert.deepEqual(budget.byRole.planner, { overCalls: 1, overOutput: 0, overInput: 1 });
+  assert.deepEqual(budget.byRole.compaction, { overCalls: 1, overOutput: 1, overInput: 0 });
+  assert.equal(budget.rejectedInputCalls, 1);
+
+  const unavailable = computeEfficiencyWindow({
+    messages: [],
+    ledger: [],
+    jobs: [],
+    nowMs,
+    windowMs: HOUR,
+    deepseekCapOut: 76_559,
+    morphCap: 2,
+    usageAvailable: false,
+  });
+  assert.equal(unavailable.kimi.budget.usageAvailable, false);
+  assert.equal(unavailable.kimi.budget.overCalls, 0);
 });

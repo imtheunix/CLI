@@ -102,6 +102,23 @@ export type StatusDelegation = {
   jobs: { subagentCalls: number; edits: number; ratio: number };
 };
 
+/** Kimi calls over the per-call turn budget, by the role that made them. */
+export type StatusKimiBudgetRole = { overCalls: number; overOutput: number; overInput: number };
+
+/** The per-call Kimi turn budget and how many calls in the window exceeded it. */
+export type StatusKimiBudget = {
+  outLimit: number;
+  uncachedInLimit: number;
+  /** False when the session/usage source could not be read, so zero is not claimed. */
+  usageAvailable: boolean;
+  overCalls: number;
+  overOutput: number;
+  overInput: number;
+  byRole: Record<'hub' | 'planner' | 'jobs' | 'compaction', StatusKimiBudgetRole>;
+  /** Calls refused by the pacer because their estimated uncached input was over budget. */
+  rejectedInputCalls: number;
+};
+
 /** One efficiency window (rolling 1 h or 24 h). */
 export type StatusEfficiencyWindow = {
   windowMs: number;
@@ -122,6 +139,7 @@ export type StatusEfficiencyWindow = {
     cacheHit: number;
     /** Uncached input per hub assistant call. */
     uncachedInputPerHubCall: number;
+    budget: StatusKimiBudget;
   };
   flow: {
     leadTimeMedianMs: number | null;
@@ -340,10 +358,12 @@ type OpenCodeData = {
   sessions: OpenCodeSession[];
   toolCalls: OpenCodeToolCall[];
   prompts: OpenCodePrompt[];
+  /** False when the database was absent or unreadable, so an empty list is not usage of zero. */
+  available: boolean;
 };
 
 /** One morph-pacer ledger line, reduced to the waste metrics. */
-type LedgerEvent = { ts: number; waitMs: number; retries: number };
+type LedgerEvent = { ts: number; waitMs: number; retries: number; inputRejected: boolean };
 
 /** A job worktree lives under `~/Tribeira/.jobs/<project>/<job id>`. */
 function isJobDirectory(directory: string): boolean {
@@ -352,7 +372,7 @@ function isJobDirectory(directory: string): boolean {
 
 /** Reads Morph's messages, Kimi sessions, tool calls and first prompts from OpenCode's database, read-only and tolerant of a lock. */
 function readOpenCodeData(databasePath: string, sinceMs: number): OpenCodeData {
-  const empty: OpenCodeData = { messages: [], sessions: [], toolCalls: [], prompts: [] };
+  const empty: OpenCodeData = { messages: [], sessions: [], toolCalls: [], prompts: [], available: false };
   if (!existsSync(databasePath)) return empty;
   let database: Database.Database;
   try {
@@ -397,7 +417,7 @@ function readOpenCodeData(databasePath: string, sinceMs: number): OpenCodeData {
 
     // Only Kimi sessions can delegate; the rest of the database is not read.
     const kimiSessionIds = new Set(messages.filter((message) => isKimi(message.model)).map((message) => message.sessionId));
-    if (kimiSessionIds.size === 0) return { ...empty, messages };
+    if (kimiSessionIds.size === 0) return { ...empty, messages, available: true };
     const sessionRows = database.prepare(`
       SELECT id, parent_id, directory, title, agent, time_updated FROM session WHERE time_updated >= ?
     `).all(sinceMs) as Array<{
@@ -423,7 +443,7 @@ function readOpenCodeData(databasePath: string, sinceMs: number): OpenCodeData {
     const relevantIds = sessions
       .filter((session) => session.parentId === null && (session.agent === 'morph-hub' || isJobDirectory(session.directory)))
       .map((session) => session.id);
-    if (relevantIds.length === 0) return { ...empty, messages, sessions };
+    if (relevantIds.length === 0) return { ...empty, messages, sessions, available: true };
     const relevantPlaceholders = relevantIds.map(() => '?').join(', ');
 
     const partRows = database.prepare(`
@@ -477,7 +497,7 @@ function readOpenCodeData(databasePath: string, sinceMs: number): OpenCodeData {
       text: entry.parts.join('\n'),
     }));
 
-    return { messages, sessions, toolCalls, prompts };
+    return { messages, sessions, toolCalls, prompts, available: true };
   } catch {
     return empty;
   } finally {
@@ -500,7 +520,13 @@ function readLedgerEvents(ledgerPath: string, sinceMs: number): LedgerEvent[] {
       const row = JSON.parse(line) as Record<string, unknown>;
       const ts = typeof row.ts === 'string' ? Date.parse(row.ts) : NaN;
       if (!Number.isFinite(ts) || ts < sinceMs) continue;
-      events.push({ ts, waitMs: readNumber(row.wait_ms), retries: readNumber(row.retries) });
+      const budget = row.budget && typeof row.budget === 'object' ? row.budget as Record<string, unknown> : null;
+      events.push({
+        ts,
+        waitMs: readNumber(row.wait_ms),
+        retries: readNumber(row.retries),
+        inputRejected: budget?.input_rejected === true,
+      });
     } catch {
       // A half-written line (the pacer appends while we read): skip it, keep the rest.
     }
@@ -662,9 +688,13 @@ export function computeEfficiencyWindow(input: {
   windowMs: number;
   deepseekCapOut: number;
   morphCap: number;
+  kimiTurnBudget?: { uncachedIn: number; out: number };
+  usageAvailable?: boolean;
   getJobTokens?: (sessionId: string, model: string | null) => number | null;
 }): StatusEfficiencyWindow {
   const { messages, sessions = [], toolCalls = [], prompts = [], ledger, jobs, nowMs, windowMs, deepseekCapOut, morphCap } = input;
+  const kimiTurnBudget = input.kimiTurnBudget ?? { uncachedIn: 5_000, out: 800 };
+  const usageAvailable = input.usageAvailable ?? true;
   const since = nowMs - windowMs;
   const inWindow = messages.filter((message) => message.ts >= since && message.ts <= nowMs);
   const ledgerInWindow = ledger.filter((event) => event.ts >= since && event.ts <= nowMs);
@@ -697,6 +727,25 @@ export function computeEfficiencyWindow(input: {
       hubInput += message.input;
     }
   }
+
+  const budgetByRole: StatusKimiBudget['byRole'] = {
+    hub: { overCalls: 0, overOutput: 0, overInput: 0 },
+    planner: { overCalls: 0, overOutput: 0, overInput: 0 },
+    jobs: { overCalls: 0, overOutput: 0, overInput: 0 },
+    compaction: { overCalls: 0, overOutput: 0, overInput: 0 },
+  };
+  for (const message of kimi) {
+    const billed = message.output + message.reasoning;
+    const overOutput = billed > kimiTurnBudget.out;
+    const overInput = message.input > kimiTurnBudget.uncachedIn;
+    if (!overOutput && !overInput) continue;
+    const role = budgetByRole[kimiRole(message.agent)];
+    role.overCalls += 1;
+    if (overOutput) role.overOutput += 1;
+    if (overInput) role.overInput += 1;
+  }
+  const sumRole = (field: keyof StatusKimiBudgetRole): number =>
+    Object.values(budgetByRole).reduce((sum, role) => sum + role[field], 0);
 
   const merged = jobs.filter((job) => job.merge_step === 'merged' && (mergedAt(job) ?? 0) >= since);
   const leadTimes: number[] = [];
@@ -740,6 +789,16 @@ export function computeEfficiencyWindow(input: {
       reasoningShare: kimiOutput + kimiReasoning === 0 ? 0 : kimiReasoning / (kimiOutput + kimiReasoning),
       cacheHit: kimiInput + kimiCacheRead === 0 ? 0 : kimiCacheRead / (kimiInput + kimiCacheRead),
       uncachedInputPerHubCall: hubCalls === 0 ? 0 : hubInput / hubCalls,
+      budget: {
+        outLimit: kimiTurnBudget.out,
+        uncachedInLimit: kimiTurnBudget.uncachedIn,
+        usageAvailable,
+        overCalls: sumRole('overCalls'),
+        overOutput: sumRole('overOutput'),
+        overInput: sumRole('overInput'),
+        byRole: budgetByRole,
+        rejectedInputCalls: ledgerInWindow.filter((event) => event.inputRejected).length,
+      },
     },
     flow: {
       leadTimeMedianMs: median(leadTimes),
@@ -857,6 +916,18 @@ export function formatStatusMarkdown(snapshot: StatusSnapshot): string {
     const roles = window.kimi.outputByRole;
     lines.push(`kimi: out hub ${formatTokens(roles.hub)} planner ${formatTokens(roles.planner)} jobs ${formatTokens(roles.jobs)} compaction ${formatTokens(roles.compaction)}`
       + ` | reasoning ${formatPercent(window.kimi.reasoningShare)} | cache hit ${formatPercent(window.kimi.cacheHit)} | uncached/hub call ${formatTokens(window.kimi.uncachedInputPerHubCall)}`);
+    const budget = window.kimi.budget;
+    const limits = `limits out ${formatTokens(budget.outLimit)} in ${formatTokens(budget.uncachedInLimit)}`;
+    if (!budget.usageAvailable) {
+      lines.push(`kimi budget: ${limits} | usage unavailable (not counted as zero) | rejected input ${budget.rejectedInputCalls}`);
+    } else {
+      const rolesOver = (['hub', 'planner', 'jobs', 'compaction'] as const)
+        .filter((role) => budget.byRole[role].overCalls > 0)
+        .map((role) => `${role} ${budget.byRole[role].overCalls}`)
+        .join(' ');
+      lines.push(`kimi budget: ${limits} | over ${budget.overCalls} calls (out ${budget.overOutput}, in ${budget.overInput})`
+        + ` | rejected input ${budget.rejectedInputCalls}${rolesOver ? ` | by role ${rolesOver}` : ''}`);
+    }
     lines.push(`flow: lead ${formatDuration(window.flow.leadTimeMedianMs)} | review wait ${formatDuration(window.flow.reviewWaitMedianMs)} (max ${formatDuration(window.flow.reviewWaitMaxMs)})`
       + ` | fix rounds ${formatPercent(window.flow.fixRoundRate)} | tiers gate ${window.flow.reviewTiers.gate} refute ${window.flow.reviewTiers.refute} deep ${window.flow.reviewTiers.deep}`
       + ` | merged/h ${window.flow.mergedPerHour.toFixed(2)} | tokens/merged ${formatTokens(window.flow.tokensPerMergedJob)}`);
@@ -971,6 +1042,8 @@ export function createStatusService(deps: {
       nowMs,
       deepseekCapOut: config.morph.caps.deepseek.out,
       morphCap: config.backends.morph.cap,
+      kimiTurnBudget: config.morph.kimiTurnBudget,
+      usageAvailable: openCode.available,
       getJobTokens,
     };
 

@@ -157,6 +157,19 @@ elif mode == "status":
         k = w["kimi"]; r = k["outputByRole"]
         print("  kimi: out hub %s planner %s jobs %s compaction %s | reasoning %s | cache hit %s | uncached/hub call %s" % (
             tok(r["hub"]), tok(r["planner"]), tok(r["jobs"]), tok(r["compaction"]), pct(k["reasoningShare"]), pct(k["cacheHit"]), tok(k["uncachedInputPerHubCall"])))
+        kb = k.get("budget")
+        if kb:
+            limits = "limits out %s in %s" % (tok(kb.get("outLimit", 0)), tok(kb.get("uncachedInLimit", 0)))
+            if not kb.get("usageAvailable", True):
+                print("  kimi budget: %s | usage unavailable (not counted as zero) | rejected input %d" % (
+                    limits, kb.get("rejectedInputCalls", 0)))
+            else:
+                roles = " ".join("%s %d" % (role, kb.get("byRole", {}).get(role, {}).get("overCalls", 0))
+                                 for role in ("hub", "planner", "jobs", "compaction")
+                                 if kb.get("byRole", {}).get(role, {}).get("overCalls", 0) > 0)
+                print("  kimi budget: %s | over %d calls (out %d, in %d) | rejected input %d%s" % (
+                    limits, kb.get("overCalls", 0), kb.get("overOutput", 0), kb.get("overInput", 0),
+                    kb.get("rejectedInputCalls", 0), (" | by role " + roles) if roles else ""))
         f = w["flow"]
         tiers = f.get("reviewTiers") or {}
         print("  flow: lead %s | review wait %s (max %s) | fix rounds %s | tiers gate %d refute %d deep %d | merged/h %.2f | tokens/merged %s" % (

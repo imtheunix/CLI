@@ -64,11 +64,26 @@ Override anything in `~/.config/morph-pacer/config.json`:
       "models": ["morph-dsv41flash", "morph-dsv41flash-1017"],
       "caps": { "uncachedIn": 2103237, "out": 76559 }
     }
+  },
+  "turnBudgets": {
+    "kimik31": { "uncachedIn": 5000, "out": 800 }
   }
 }
 ```
 
-`headroom` is the fraction of each cap the proxy is willing to use. `maxWaitMs` is the longest a request is delayed for budget; after that it is forwarded anyway and a warning is logged. A request is never rejected for budget.
+`headroom` is the fraction of each cap the proxy is willing to use. `maxWaitMs` is the longest a request is delayed for the per-minute budget; after that it is forwarded anyway and a warning is logged.
+
+## Per-call turn budgets
+
+The person decided on 2026-11-11 that a Kimi turn should carry at most ~800 billed output tokens and ~5,000 uncached input tokens; the 429 storm showed the trigger is per-turn volume, not call count. `turnBudgets` enforces that mechanically, per group, at the proxy:
+
+- Output is capped by setting `max_tokens` (OpenAI chat) or `max_completion_tokens` when the client sent it to the budget. A smaller client limit is left alone.
+- Estimated uncached input over the budget is refused with HTTP 413 before the request reaches Morph. The prompt is never trimmed: the caller sees a real failure and can split the turn. The estimate uses the same rolling uncached-share logic as admission.
+- DeepSeek groups have no budget by default and are unchanged.
+
+The ledger line records the budget decision in `budget`: `out_limit`, `in_limit`, `output_capped`, `estimated_uncached_in`, `over_out`, `over_in`, and `input_rejected`. `tjob status` reads completed Kimi calls from OpenCode sessions (with the hub/planner/job/compaction role) and the pacer ledger (refused calls) and prints a `kimi budget` line for each 1 h / 24 h window. When the session source is unavailable it says so instead of reporting zero.
+
+The 30-minute Kimi-task split rule remains the orchestrator's existing health check (`health.maxRunMin`, default 30): an active job past 30 minutes without activity emits `over 30 min: split or stop`.
 
 ## Admission
 
@@ -81,7 +96,7 @@ Upstream `429` and `503` responses are retried transparently up to six times. `R
 Every completed request appends one JSON line to `~/.local/state/morph-pacer/ledger.jsonl`:
 
 ```json
-{"ts":"2026-11-10T09:00:00.000Z","model":"morph-kimik31","uncached_in":80,"cached_in":20,"out":50,"reasoning":10,"status":200,"wait_ms":0,"retries":0,"stream":false}
+{"ts":"2026-11-10T09:00:00.000Z","model":"morph-kimik31","uncached_in":80,"cached_in":20,"out":50,"reasoning":10,"status":200,"wait_ms":0,"retries":0,"stream":false,"budget":{"out_limit":800,"in_limit":5000,"output_capped":false,"estimated_uncached_in":80,"over_out":false,"over_in":false,"input_rejected":false}}
 ```
 
 The file rotates to `ledger.jsonl.1` at 50 MB.

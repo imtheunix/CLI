@@ -95,7 +95,18 @@ const statusBody = JSON.stringify({
         hour: {
           windowMs: 3_600_000,
           deepseek: { capUseAvg: 0.15, capUseP90: 0.2, activeMinutes: 2, slotOccupancy: 0.5 },
-          kimi: { outputByRole: { hub: 150, planner: 300, jobs: 50, compaction: 100 }, reasoningShare: 0.316, cacheHit: 0.655, uncachedInputPerHubCall: 1_000 },
+          kimi: {
+            outputByRole: { hub: 150, planner: 300, jobs: 50, compaction: 100 }, reasoningShare: 0.316, cacheHit: 0.655, uncachedInputPerHubCall: 1_000,
+            budget: {
+              outLimit: 800, uncachedInLimit: 5_000, usageAvailable: true, overCalls: 2, overOutput: 1, overInput: 1, rejectedInputCalls: 1,
+              byRole: {
+                hub: { overCalls: 1, overOutput: 0, overInput: 1 },
+                planner: { overCalls: 0, overOutput: 0, overInput: 0 },
+                jobs: { overCalls: 1, overOutput: 1, overInput: 0 },
+                compaction: { overCalls: 0, overOutput: 0, overInput: 0 },
+              },
+            },
+          },
           flow: { leadTimeMedianMs: 7_200_000, reviewWaitMedianMs: 600_000, reviewWaitMaxMs: 600_000, fixRoundRate: 1, mergedPerHour: 1, tokensPerMergedJob: 5_000 },
           waste: { compactionTokens: 500, cancelledJobs: 1, pacerWaitMs: 1_000, retries429: 1 },
           delegation: {
@@ -110,7 +121,18 @@ const statusBody = JSON.stringify({
         day: {
           windowMs: 86_400_000,
           deepseek: { capUseAvg: 0.26, capUseP90: 0.5, activeMinutes: 3, slotOccupancy: 0.06 },
-          kimi: { outputByRole: { hub: 450, planner: 300, jobs: 50, compaction: 100 }, reasoningShare: 0.32, cacheHit: 0.49, uncachedInputPerHubCall: 1_500 },
+          kimi: {
+            outputByRole: { hub: 450, planner: 300, jobs: 50, compaction: 100 }, reasoningShare: 0.32, cacheHit: 0.49, uncachedInputPerHubCall: 1_500,
+            budget: {
+              outLimit: 800, uncachedInLimit: 5_000, usageAvailable: false, overCalls: 0, overOutput: 0, overInput: 0, rejectedInputCalls: 0,
+              byRole: {
+                hub: { overCalls: 0, overOutput: 0, overInput: 0 },
+                planner: { overCalls: 0, overOutput: 0, overInput: 0 },
+                jobs: { overCalls: 0, overOutput: 0, overInput: 0 },
+                compaction: { overCalls: 0, overOutput: 0, overInput: 0 },
+              },
+            },
+          },
           flow: { leadTimeMedianMs: 7_200_000, reviewWaitMedianMs: 600_000, reviewWaitMaxMs: 600_000, fixRoundRate: 1, mergedPerHour: 0.04, tokensPerMergedJob: 5_000 },
           waste: { compactionTokens: 500, cancelledJobs: 1, pacerWaitMs: 3_000, retries429: 3 },
           delegation: {
@@ -153,6 +175,8 @@ test('tjob status prints needs-you first, then goals, jobs, capacity, hub and ef
   assert.match(result.stdout, /Efficiency \(1h\):/);
   assert.match(result.stdout, /Efficiency \(24h\):/);
   assert.match(result.stdout, /delegation: hub 1\/1 \(100\.0%\) \| jobs 3\/11 \(27\.3%\)/);
+  assert.match(result.stdout, /kimi budget: limits out 800 in 5\.0k \| over 2 calls \(out 1, in 1\) \| rejected input 1 \| by role hub 1 jobs 1/);
+  assert.match(result.stdout, /kimi budget: limits out 800 in 5\.0k \| usage unavailable \(not counted as zero\) \| rejected input 0/);
   assert.match(result.stdout, /contract-1 Contract job  subagents explore:1 morph-scout:2 \| edits 1 \| reads 2 \| bash 1 \| out 200 \| guidance yes/);
 });
 

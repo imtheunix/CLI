@@ -122,7 +122,12 @@ export type OrchestratorConfig = {
    * DeepSeek output window must stay below `admitBelow` of its cap; the configured backend cap
    * remains the ceiling on concurrent morph jobs.
    */
-  morph: { caps: MorphCaps; admitBelow: number };
+  morph: {
+    caps: MorphCaps;
+    admitBelow: number;
+    /** Per-call Kimi budgets the pacer enforces and `tjob status` reports. */
+    kimiTurnBudget?: { uncachedIn: number; out: number };
+  };
   /**
    * Automatic review after `tjob done`: gate, one read-only refutation on another model family, then risk policy.
    * Low-risk diffs take the ordinary `tjob approve` path; everything else waits for the hub.
@@ -231,6 +236,7 @@ function defaults(): OrchestratorConfig {
         deepseek: { uncachedIn: 2_103_237, out: 76_559 },
       },
       admitBelow: 0.7,
+      kimiTurnBudget: { uncachedIn: 5_000, out: 800 },
     },
     review: {
       enabled: true,
