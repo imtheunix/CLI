@@ -51,6 +51,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p server/tsconfig.json && tsc --noEmit -p evals/tsconfig.json && tsc --noEmit -p morph-pacer/tsconfig.json",
     "test": "tsx --tsconfig server/tsconfig.json --test \"server/**/*.test.ts\" \"server/**/*.test.js\" \"morph-pacer/tests/**/*.test.ts\"",
     "test:morph-pacer": "tsx --test \"morph-pacer/tests/**/*.test.ts\"",
+    "probe:morph": "tsx morph-pacer/src/probe-cli.ts",
     "test:client": "cross-env NODE_ENV=development vitest run",
     "evals:harness": "vitest run -c evals/vitest.config.ts",
     "graphify:setup": "python3 -I scripts/graphify/setup.py",

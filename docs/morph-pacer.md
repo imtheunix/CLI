@@ -100,3 +100,31 @@ systemctl --user enable --now morph-pacer
 ```
 
 Check it with `systemctl --user status morph-pacer` and `curl http://127.0.0.1:8198/pacer/usage`.
+
+## Bounded Morph usage probe
+
+`morph-pacer/src/probe.ts` measures Morph's real per-minute ceiling without touching the pacer's live ledger,
+config or defaults. It is offline by default: a dry run performs no provider request, no API-key lookup and no live
+usage lookup, and the default transport throws instead of reaching the network.
+
+The probe sends synthetic prompts only, one outstanding request at a time, with no transport retries. Before every
+live call it reads `GET http://127.0.0.1:8198/pacer/usage` (bounded timeout) and admits only when the live window plus
+the probe's own sliding-60s window plus the planned level fits under the assumed caps (240,000 uncached input /
+32,000 output by default). A missing usage response, an unavailable live-admission state or a failed load guard
+stops the run; failed or usage-less responses never invent tokens. The output JSON keeps `observed` (actual window
+values) separate from `assumedCaps` and reports only tested conclusions.
+
+Run the default dry run:
+
+```sh
+npm run probe:morph
+```
+
+Run it live only when the hub explicitly gates it. The command needs both `--live` and
+`MORPH_PROBE_ALLOW_LIVE=1`; the key is read from `~/.config/morph/api_key` inside the process and is never printed:
+
+```sh
+MORPH_PROBE_ALLOW_LIVE=1 npm run probe:morph -- --live --model morph-dsv41flash-1017
+```
+
+Use `--levels input:output,...` to change the levels and `--max-total-ms` to shorten the hard deadline.
