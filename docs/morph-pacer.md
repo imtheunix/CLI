@@ -4,6 +4,8 @@ A small local proxy in front of Morph's OpenAI-compatible API. It keeps our agen
 
 It listens on `127.0.0.1:8198`, forwards `/v1/*` to `https://api.morphllm.com/v1/*`, and injects the key from `~/.config/morph/api_key`. Client `Authorization` headers are ignored. Streaming responses pass through unbuffered; for streams it adds `stream_options.include_usage=true` when the request does not set it.
 
+`POST /v1/messages` (the Anthropic wire) is passed through too. It uses the same model aliases, pacing groups and ledger, with Anthropic usage mapped as `input_tokens + cache_creation_input_tokens` uncached input, `cache_read_input_tokens` cached input and `output_tokens` output. Verified 2026-11-11: Morph's `/v1/messages` ignores `chat_template_kwargs`, so aliases there map the model only; the Kimi thinking-off alias stays on `/v1/chat/completions`. OpenAI-only injections (`cache_ttl`, `run_id`, `stream_options`) are not added to `/v1/messages`.
+
 ## Run it
 
 ```sh

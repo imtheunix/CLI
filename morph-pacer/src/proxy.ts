@@ -172,6 +172,7 @@ export function createProxyServer(options: ProxyOptions): http.Server {
     const requestedStream = parsed?.stream === true;
     const isChatCompletions =
       request.method === 'POST' && url.pathname === '/v1/chat/completions';
+    const isMessages = request.method === 'POST' && url.pathname === '/v1/messages';
 
     let body = rawBody;
     let cacheTtl: string | null = null;
@@ -184,8 +185,14 @@ export function createProxyServer(options: ProxyOptions): http.Server {
         alias = model;
         model = aliasTarget.model;
         parsed.model = model;
-        for (const [key, value] of Object.entries(aliasTarget.body ?? {})) {
-          if (parsed[key] === undefined) parsed[key] = value;
+        // Verified 2026-11-11 against Morph: /v1/messages ignores chat_template_kwargs, so the
+        // OpenAI thinking-off body cannot be applied there (a {"thinking":false} probe still
+        // emitted thinking content). On the Anthropic wire an alias maps the model only;
+        // thinking-off stays available on /v1/chat/completions.
+        if (!isMessages) {
+          for (const [key, value] of Object.entries(aliasTarget.body ?? {})) {
+            if (parsed[key] === undefined) parsed[key] = value;
+          }
         }
         changed = true;
       }
@@ -206,7 +213,7 @@ export function createProxyServer(options: ProxyOptions): http.Server {
         }
       }
 
-      if (requestedStream) {
+      if (isChatCompletions && requestedStream) {
         const streamOptions =
           parsed.stream_options && typeof parsed.stream_options === 'object'
             ? (parsed.stream_options as Record<string, unknown>)

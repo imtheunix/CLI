@@ -37,6 +37,8 @@ export interface PacerConfig {
   /**
    * Client-facing model aliases: the request is rewritten to `model` and `body` fields the client did not set are added,
    * before pacing (so the alias counts against the real model's budget). E.g. Kimi with thinking switched off.
+   * `body` applies to the OpenAI wire only: Morph's /v1/messages ignores chat_template_kwargs (verified 2026-11-11),
+   * so on the Anthropic wire an alias maps the model only.
    */
   modelAliases: Record<string, { model: string; body: Record<string, unknown> }>;
   groups: Record<string, GroupConfig>;
