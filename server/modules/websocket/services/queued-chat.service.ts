@@ -3,6 +3,7 @@ import { sessionDraftsDb } from '@/modules/database/index.js';
 import type { QueuedSessionMessageRecord } from '@/modules/database/index.js';
 import { sessionsDb } from '@/modules/database/index.js';
 import { chatRunRegistry } from '@/modules/websocket/services/chat-run-registry.service.js';
+import { setTurnPhase } from '@/modules/websocket/services/turn-phase.service.js';
 import { runDetachedChatTurn } from '@/modules/websocket/services/chat-websocket.service.js';
 import type { ProviderRuntimeGateway } from '@/modules/websocket/services/chat-websocket.service.js';
 
@@ -95,7 +96,10 @@ export async function dispatchQueuedChatMessage(
   if (!messageId && !queue.forceId && !chatRunRegistry.isProcessing(candidate.sessionId) && runtime.hasBackgroundWork(candidate.sessionId)) return false;
   const busy = chatRunRegistry.isProcessing(candidate.sessionId) || runtime.hasBackgroundWork(candidate.sessionId);
   const supportsInjection = provider && (runtime.supportsInjection?.(provider as LLMProvider) ?? provider === 'claude');
-  if (busy && !supportsInjection && !((messageId || queue.forceId) && allowInterrupt)) return false;
+  if (busy && !supportsInjection && !((messageId || queue.forceId) && allowInterrupt)) {
+    setTurnPhase(candidate.sessionId, 'queued');
+    return false;
+  }
   if (!sessionDraftsDb.claimQueuedMessage(candidate)) return false;
   preparingQueuedSessions.add(candidate.sessionId);
   onClaimed?.();

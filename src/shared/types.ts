@@ -286,6 +286,18 @@ export type ServerEvent = {
   [key: string]: unknown;
 };
 
+/**
+ * Where a live turn stands, as the chat gateway reports it on `turn_phase`
+ * frames and in the `chat_subscribed` / `chat_resync` snapshots.
+ */
+export type TurnPhase =
+  | 'queued'
+  | 'dispatching'
+  | 'prefill'
+  | 'streaming'
+  | `tool:${string}`
+  | 'pacer-wait';
+
 
 // ---------------------------
 

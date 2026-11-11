@@ -16,7 +16,7 @@ import {
     initializeSessionsWatcher,
     providerRuntimeService,
 } from '@/modules/providers/index.js';
-import { chatRunRegistry, createWebSocketServer } from '@/modules/websocket/index.js';
+import { chatRunRegistry, createChatEventsRouter, createWebSocketServer } from '@/modules/websocket/index.js';
 
 import { getConnectableHost } from '../shared/networkHosts.js';
 
@@ -164,6 +164,12 @@ app.use('/api/projects', authenticateToken, projectModuleRoutes);
 
 // Chat attachment upload/serving (global ~/.cloudcli/assets store, protected)
 app.use('/api/assets', authenticateToken, assetsRoutes);
+
+// Chat transport over SSE: resync snapshot first, then the same events the
+// websocket carries. Additive; the websocket stays the primary transport.
+app.use('/api/chat', authenticateToken, createChatEventsRouter({
+    hasBackgroundWork: (sessionId) => providerRuntimeService.hasBackgroundWork(sessionId),
+}));
 
 // Git API Routes (protected)
 // CLI: retired UI-only APIs always return JSON 404, including in SPA mode.

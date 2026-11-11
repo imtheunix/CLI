@@ -217,6 +217,16 @@ export function useChatRealtimeHandlers({
           return;
         }
 
+        // Live turn phase: the header badge reads it through useTurnPhase.
+        // It is not a transcript row, so it must never reach the store.
+        case 'turn_phase':
+          return;
+
+        // SSE resync snapshot: the SSE transport merges it before dispatching
+        // its messages; the websocket never sends it.
+        case 'chat_resync':
+          return;
+
         // Sidebar/global events — owned by useProjectsState.
         case 'session_upserted':
         case 'loading_progress':
