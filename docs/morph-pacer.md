@@ -100,3 +100,17 @@ systemctl --user enable --now morph-pacer
 ```
 
 Check it with `systemctl --user status morph-pacer` and `curl http://127.0.0.1:8198/pacer/usage`.
+
+## Ceiling probe
+
+`morph-pacer/src/probe-cli.ts` is a bounded, key-safe research probe that talks to Morph directly (it does not go through the proxy and does not write the live ledger). It is offline by default:
+
+```sh
+npx tsx morph-pacer/src/probe-cli.ts            # print the plan, no network
+npx tsx morph-pacer/src/probe-cli.ts --test     # offline self-test, no network
+npx tsx morph-pacer/src/probe-cli.ts --live     # explicit acknowledgement; real transport
+```
+
+The live path reads `~/.config/morph/api_key` into the process only; the key is never printed, put in argv, or written to the report. It sends one synthetic request at a time, DeepSeek before Kimi, with no automatic retries. Before each request it reads `GET http://127.0.0.1:8198/pacer/usage` with a bounded timeout and adds the live 60-second window to its own per-group probe window. A step starts only when the planned combined load fits under the probe's per-request cap (240,000 input / 32,000 output tokens) and the live window is not already at its cap.
+
+The run stops on the 20-minute deadline, a level above the request cap, a second consecutive 429, missing or unreadable usage, or a live-load/admission guard failure. Three successful calls at a level are required before escalating. A 429 below the live cap is recorded as `cap-not-explanatory` and is not a proven ceiling; a ceiling is reported only when a cap-explanatory 429 follows three successes at the previous level. The JSON report records the returned prompt/completion tokens, status, latency, `Retry-After`, model, step, and both the live and probe uncached input/output occupancy. It contains no provider payload and no secret.
