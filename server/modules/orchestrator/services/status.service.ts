@@ -6,7 +6,14 @@ import Database from 'better-sqlite3';
 
 import { readMergeStepHistory } from '@/modules/database/index.js';
 import type { OrchestratorBackend, OrchestratorJobRow } from '@/modules/database/index.js';
-import { providerTokenUsageService } from '@/modules/providers/index.js';
+import {
+  evaluateKimiCallUsage,
+  KIMI_CALL_UNCACHED_INPUT_TOKENS,
+  KIMI_TASK_SPLIT_MS,
+  KIMI_TURN_OUTPUT_TOKENS,
+  providerTokenUsageService,
+  type KimiBudgetWarning,
+} from '@/modules/providers/index.js';
 import { getOpenCodeDatabasePath } from '@/shared/utils.js';
 
 import type { HealthService } from './health.service.js';
@@ -122,6 +129,14 @@ export type StatusEfficiencyWindow = {
     cacheHit: number;
     /** Uncached input per hub assistant call. */
     uncachedInputPerHubCall: number;
+    /** Kimi calls in the window and how many exceeded each budget. */
+    calls: number;
+    overOutput: number;
+    overUncachedInput: number;
+    /** Calls whose provider usage was not reported; never counted as zero. */
+    usageUnavailable: number;
+    /** Up to 20 over-budget calls, newest first, with their role and values. */
+    budgetWarnings: KimiBudgetWarning[];
   };
   flow: {
     leadTimeMedianMs: number | null;
@@ -316,7 +331,19 @@ function toStatusJob(job: OrchestratorJobRow, nowMs: number, reason: string | nu
 }
 
 /** One OpenCode assistant message, reduced to what the efficiency metrics need. */
-type OpenCodeMessage = { sessionId: string; ts: number; agent: string; model: string; input: number; output: number; reasoning: number; cacheRead: number };
+type OpenCodeMessage = {
+  sessionId: string;
+  ts: number;
+  agent: string;
+  model: string;
+  input: number;
+  output: number;
+  reasoning: number;
+  cacheRead: number;
+  /** Whether the provider reported each field; a missing value is not zero. */
+  inputAvailable: boolean;
+  outputAvailable: boolean;
+};
 
 /** One OpenCode session, reduced to what the delegation metrics need. */
 type OpenCodeSession = {
@@ -389,6 +416,8 @@ function readOpenCodeData(databasePath: string, sinceMs: number): OpenCodeData {
           output: readNumber(data.tokens.output),
           reasoning: readNumber(data.tokens.reasoning),
           cacheRead: readNumber(data.tokens.cache?.read),
+          inputAvailable: typeof data.tokens.input === 'number' && Number.isFinite(data.tokens.input),
+          outputAvailable: typeof data.tokens.output === 'number' && Number.isFinite(data.tokens.output),
         });
       } catch {
         // A malformed message row is not usage.
@@ -685,16 +714,33 @@ export function computeEfficiencyWindow(input: {
   let kimiCacheRead = 0;
   let hubCalls = 0;
   let hubInput = 0;
+  let overOutput = 0;
+  let overUncachedInput = 0;
+  let usageUnavailable = 0;
+  const budgetWarnings: KimiBudgetWarning[] = [];
   for (const message of kimi) {
+    const role = kimiRole(message.agent);
     const billed = message.output + message.reasoning;
-    outputByRole[kimiRole(message.agent)] += billed;
+    outputByRole[role] += billed;
     kimiOutput += message.output;
     kimiReasoning += message.reasoning;
     kimiInput += message.input;
     kimiCacheRead += message.cacheRead;
-    if (kimiRole(message.agent) === 'hub') {
+    if (role === 'hub') {
       hubCalls += 1;
       hubInput += message.input;
+    }
+    if (!message.inputAvailable || !message.outputAvailable) usageUnavailable += 1;
+    const warning = evaluateKimiCallUsage({
+      role,
+      sessionId: message.sessionId,
+      outputTokens: message.outputAvailable ? message.output : null,
+      uncachedInputTokens: message.inputAvailable ? message.input : null,
+    });
+    if (warning) {
+      if (warning.violations.includes('output')) overOutput += 1;
+      if (warning.violations.includes('uncachedInput')) overUncachedInput += 1;
+      if (budgetWarnings.length < 20) budgetWarnings.push(warning);
     }
   }
 
@@ -740,6 +786,11 @@ export function computeEfficiencyWindow(input: {
       reasoningShare: kimiOutput + kimiReasoning === 0 ? 0 : kimiReasoning / (kimiOutput + kimiReasoning),
       cacheHit: kimiInput + kimiCacheRead === 0 ? 0 : kimiCacheRead / (kimiInput + kimiCacheRead),
       uncachedInputPerHubCall: hubCalls === 0 ? 0 : hubInput / hubCalls,
+      calls: kimi.length,
+      overOutput,
+      overUncachedInput,
+      usageUnavailable,
+      budgetWarnings,
     },
     flow: {
       leadTimeMedianMs: median(leadTimes),
@@ -857,6 +908,14 @@ export function formatStatusMarkdown(snapshot: StatusSnapshot): string {
     const roles = window.kimi.outputByRole;
     lines.push(`kimi: out hub ${formatTokens(roles.hub)} planner ${formatTokens(roles.planner)} jobs ${formatTokens(roles.jobs)} compaction ${formatTokens(roles.compaction)}`
       + ` | reasoning ${formatPercent(window.kimi.reasoningShare)} | cache hit ${formatPercent(window.kimi.cacheHit)} | uncached/hub call ${formatTokens(window.kimi.uncachedInputPerHubCall)}`);
+    lines.push(`kimi budget: ${window.kimi.calls} calls | over output ${window.kimi.overOutput} (>${KIMI_TURN_OUTPUT_TOKENS})`
+      + ` | over uncached input ${window.kimi.overUncachedInput} (>${KIMI_CALL_UNCACHED_INPUT_TOKENS})`
+      + ` | usage unavailable ${window.kimi.usageUnavailable} | split tasks <=${formatDuration(KIMI_TASK_SPLIT_MS)}`);
+    for (const warning of window.kimi.budgetWarnings.slice(0, 5)) {
+      const over = warning.violations.join('+');
+      lines.push(`  ! ${warning.role} ${warning.label}  out ${warning.outputTokens === null ? 'n/a' : formatTokens(warning.outputTokens)}`
+        + ` in ${warning.uncachedInputTokens === null ? 'n/a' : formatTokens(warning.uncachedInputTokens)}  over ${over}`);
+    }
     lines.push(`flow: lead ${formatDuration(window.flow.leadTimeMedianMs)} | review wait ${formatDuration(window.flow.reviewWaitMedianMs)} (max ${formatDuration(window.flow.reviewWaitMaxMs)})`
       + ` | fix rounds ${formatPercent(window.flow.fixRoundRate)} | tiers gate ${window.flow.reviewTiers.gate} refute ${window.flow.reviewTiers.refute} deep ${window.flow.reviewTiers.deep}`
       + ` | merged/h ${window.flow.mergedPerHour.toFixed(2)} | tokens/merged ${formatTokens(window.flow.tokensPerMergedJob)}`);

@@ -13,6 +13,7 @@ import {
   normalizeAttachmentDescriptors
 } from '@/shared/image-attachments.js';
 import { createCompleteMessage, createNormalizedMessage, flattenPromptForWindowsShell, getOpenCodeDatabasePath, stripAnsiSequences } from '@/shared/utils.js';
+import { checkKimiTurnInput, mergeKimiOutputLimitConfig } from '@/modules/providers/shared/kimi-turn-budget.js';
 
 // cross-spawn resolves .cmd shims/PATHEXT on Windows and delegates to
 // child_process.spawn everywhere else.
@@ -486,6 +487,29 @@ async function spawnOpenCode(command, options = {}, ws, context) {
       }
 
       const resolvedEffort = resolveOpenCodeEffort(resolvedModel, effort, effortModels);
+      const hasAttachments =
+        normalizeAttachmentDescriptors(images).length > 0
+        || normalizeAttachmentDescriptors(files).length > 0;
+      const promptWithAttachments = appendFilesInputTag(
+        appendImagesInputTag(command?.trim() || '', images),
+        files
+      );
+      // Kimi's per-call uncached-input budget is enforced before the turn
+      // starts. Refuse an over-budget prompt; never truncate it.
+      const kimiInput = checkKimiTurnInput({ model: resolvedModel, prompt: promptWithAttachments });
+      if (!kimiInput.allowed) {
+        const refusedSessionId = sessionId || capturedSessionId || processKey;
+        ws.send(createNormalizedMessage({
+          kind: 'error',
+          content: kimiInput.reason,
+          sessionId: refusedSessionId,
+          provider: 'opencode',
+        }));
+        ws.send(createCompleteMessage({ provider: 'opencode', sessionId: refusedSessionId, exitCode: 1 }));
+        notifyTerminalState({ code: 1, error: kimiInput.reason });
+        reject(new Error(kimiInput.reason));
+        return;
+      }
       const args = ['run', '--format', 'json'];
       // OpenCode's `run` command owns workspace selection through `--dir`.
       // Relying on the child-process cwd alone is not enough on Linux, where
@@ -509,24 +533,18 @@ async function spawnOpenCode(command, options = {}, ws, context) {
       if (sessionAgent && !permissionOptions.args.includes('--agent')) {
         args.push('--agent', sessionAgent);
       }
-      const hasAttachments =
-        normalizeAttachmentDescriptors(images).length > 0
-        || normalizeAttachmentDescriptors(files).length > 0;
       if ((command && command.trim()) || hasAttachments) {
         // Image attachments ride along as an <images_input> path list appended
         // to the prompt; the session history reader strips the tag back out.
         // opencode is a .cmd shim on Windows, so the whole argument must be
         // newline-free or cmd.exe silently truncates it at the first newline.
-        const promptWithAttachments = appendFilesInputTag(
-          appendImagesInputTag(command?.trim() || '', images),
-          files
-        );
         args.push(flattenPromptForWindowsShell(promptWithAttachments));
       }
 
       if (options.abortController?.signal.aborted) { resolve(); return; }
 
       const bridge = resolveOpenCodeBridge();
+      const kimiConfigContent = mergeKimiOutputLimitConfig(process.env.OPENCODE_CONFIG_CONTENT, resolvedModel);
       const turnExecution = await spawnDetachedTurn({
         command: process.execPath,
         args: [...bridge.args, '--', ...args],
@@ -536,7 +554,13 @@ async function spawnOpenCode(command, options = {}, ws, context) {
         // (provider lookup, abort), so a foreign label here would break both.
         backend: 'opencode',
         jobId: typeof options.jobId === 'string' ? options.jobId : null,
-        env: { ...permissionOptions.env, ...bridge.env },
+        env: {
+          ...permissionOptions.env,
+          ...bridge.env,
+          // Kimi's output budget rides as a per-turn model limit; the user's
+          // global OpenCode config is never modified.
+          ...(kimiConfigContent ? { OPENCODE_CONFIG_CONTENT: kimiConfigContent } : {}),
+        },
         onLine: (line) => {
           const trimmed = line.trim();
           if (trimmed.startsWith('{')) {
