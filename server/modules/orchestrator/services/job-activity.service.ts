@@ -22,6 +22,20 @@ function fileMtimeMs(filePath: string | null | undefined): number | null {
 }
 
 /**
+ * True when a job still being prepared has a live worker: a turn is marked in
+ * flight, its session has a live chat run, or a detached turn unit is recorded
+ * for it. Used by status digests and hub event lines so a preparing job with a
+ * worker is not read as waiting or unknown and re-dispatched.
+ */
+export function isPreparingJobAlive(job: OrchestratorJobRow): boolean {
+  if (job.state !== 'preparing') return false;
+  if (job.in_turn === 1) return true;
+  if (!job.session_id) return false;
+  if (chatRunRegistry.isProcessing(job.session_id)) return true;
+  return runningTurnsDb.getRunningTurnBySession(job.session_id) !== null;
+}
+
+/**
  * The last real sign of life for a job, from the same sources hub-wake uses to
  * tell a live run from a dead one: the session transcript, the detached turn
  * log, the live run's start, and the job row's own last write. Returns `nowMs`

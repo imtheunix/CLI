@@ -156,6 +156,16 @@ test('tjob status prints needs-you first, then goals, jobs, capacity, hub and ef
   assert.match(result.stdout, /contract-1 Contract job  subagents explore:1 morph-scout:2 \| edits 1 \| reads 2 \| bash 1 \| out 200 \| guidance yes/);
 });
 
+test('tjob status shows a preparing job with a live process as alive', () => {
+  const body = JSON.parse(statusBody);
+  const running = body.data.status.jobs.running[0];
+  running.state = 'preparing';
+  running.alive = true;
+  const result = runTjob(['status'], { body: JSON.stringify(body) });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /preparing \(alive\)/);
+});
+
 test('tjob status --md prints the markdown rendering', () => {
   const markdown = '# Status  (2026-11-10 12:00)\n\n## Needs you\n- the restart\n';
   const result = runTjob(['status', '--md'], { body: markdown });

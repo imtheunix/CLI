@@ -11,6 +11,7 @@ import { getOpenCodeDatabasePath } from '@/shared/utils.js';
 
 import type { HealthService } from './health.service.js';
 import type { HubService, HubStatus } from './hub.service.js';
+import { isPreparingJobAlive } from './job-activity.service.js';
 import type { MorphUsage, MorphUsageService } from './morph-usage.service.js';
 import type { OrchestratorConfig } from './orchestrator-config.service.js';
 
@@ -38,6 +39,8 @@ export type StatusJob = {
   tier: string | null;
   /** Running/preparing: how long since the job was created. */
   ageMs: number | null;
+  /** A preparing job with a live worker, so the digest does not read it as waiting or unknown. */
+  alive: boolean;
   /** At review: how long since `tjob done` parked it. */
   waitingMs: number | null;
   /** In the CI/CD queue: the step it is on. */
@@ -301,6 +304,7 @@ function toStatusJob(job: OrchestratorJobRow, nowMs: number, reason: string | nu
     mergeStep: job.merge_step,
     tier: job.review_tier,
     ageMs: job.state === 'preparing' || job.state === 'active' ? (created === null ? null : Math.max(0, nowMs - created)) : null,
+    alive: isPreparingJobAlive(job),
     waitingMs: job.state === 'done' && job.merge_step === 'review' ? (updated === null ? null : Math.max(0, nowMs - updated)) : null,
     step: QUEUE_STEPS.has(job.merge_step) ? job.merge_step : null,
     at: job.state === 'failed' || job.merge_step === 'blocked'
@@ -807,7 +811,7 @@ export function formatStatusMarkdown(snapshot: StatusSnapshot): string {
   const jobLine = (job: StatusJob): string => {
     const backend = job.backend ?? '-';
     const model = (job.model ?? '-').split('/').at(-1) ?? '-';
-    const where = job.step ? `ci:${job.step}` : job.mergeStep !== 'none' ? `ci:${job.mergeStep}` : job.state;
+    const where = job.step ? `ci:${job.step}` : job.mergeStep !== 'none' ? `ci:${job.mergeStep}` : job.alive ? 'preparing (alive)' : job.state;
     const tier = job.tier ? ` tier:${job.tier}` : '';
     const extra = job.ageMs !== null ? ` (${formatDuration(job.ageMs)})` : job.waitingMs !== null ? ` (waiting ${formatDuration(job.waitingMs)})` : job.at ? ` (${job.at.slice(0, 16).replace('T', ' ')})` : '';
     const health = job.health.length > 0 ? `  ! ${job.health.join(', ')}` : '';

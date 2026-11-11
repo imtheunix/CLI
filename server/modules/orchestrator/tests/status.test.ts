@@ -370,6 +370,41 @@ test('status JSON from fixtures: needsYou, 24 h filtering, capacity, hub and eff
   });
 });
 
+test('status digest marks a preparing job with a live process as alive', async () => {
+  await withFixtures(async ({ goalsPath, databasePath, ledgerPath, hubEventsLogPath, statusFilePath }) => {
+    const rows: OrchestratorJobRow[] = [
+      job({ id: 'j1', title: 'Running job', state: 'active', created_at: sqliteAgo(2 * HOUR) }),
+      job({ id: 'j10', title: 'Preparing live', state: 'preparing', in_turn: 1, created_at: sqliteAgo(5 * MINUTE), updated_at: sqliteAgo(MINUTE) }),
+      job({ id: 'j11', title: 'Preparing idle', state: 'preparing', in_turn: 0, created_at: sqliteAgo(5 * MINUTE), updated_at: sqliteAgo(MINUTE) }),
+    ];
+
+    const config = loadOrchestratorConfig('/nonexistent/orchestrator.json');
+    const service = createStatusService({
+      config: () => config,
+      jobs: {
+        list: () => rows,
+        loads: () => ({ claude: 0, codex: 0, glm: 0, agy: 0, zcode: 0, morph: 1 }) as Record<OrchestratorBackend, number>,
+        backendStatus: () => ({ glm: null, zcode: null }),
+      },
+      morphUsage: { usage: () => MORPH_USAGE, admitted: () => true } as MorphUsageService,
+      hub: { status: () => HUB } as unknown as HubService,
+      now: () => NOW,
+      goalsPath,
+      databasePath,
+      ledgerPath,
+      hubEventsLogPath,
+      statusFilePath,
+      getJobTokens: () => null,
+    });
+
+    const status = service.snapshot();
+    assert.deepEqual(status.jobs.running.map((entry) => entry.id), ['j1', 'j10', 'j11']);
+    assert.equal(status.jobs.running[1].alive, true, 'a preparing job with a live turn is alive');
+    assert.equal(status.jobs.running[2].alive, false, 'a preparing job with no worker is not alive');
+    assert.match(formatStatusMarkdown(status), /preparing \(alive\)/);
+  });
+});
+
 test('delegation metrics: one row per Kimi session, counts, marker and ratio', async () => {
   await withDelegationFixtures(async ({ goalsPath, databasePath, ledgerPath, hubEventsLogPath, statusFilePath }) => {
     const config = loadOrchestratorConfig('/nonexistent/orchestrator.json');
