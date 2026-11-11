@@ -61,3 +61,23 @@ The delivery plumbing is genuinely safe (events flow through `appendHubEvent` �
 ## Revert assessment
 - If the hub chooses revert over fix: revert `ad096ea8` and `a8a02132` together (the evals fixture fills the `title_history` column the feature's schema migration adds). `baef1805` (websocket test wait) is unrelated and safe to keep. Since `baef1805` is already `origin/main`, a revert lands as a new commit on main; the CI queue owns that path.
 - If fixing instead: F2 and F1 are small, localized changes (`isWaitingForHub` + `jobs.service.ts:1098` + the `sendToJob` wiring/steer path); F3 wants an intent call (activity gate vs new event state) before code; F4/F5 are small guards. F1's existing test should be extended to wire the real `jobs.notify` so the masked path cannot regress silently.
+
+# Job d10ec06c — CLI: F4 health cooldown persistence, exact focused tests
+
+## Scope and ancestry
+- Supersedes cancelled `bab94074`; starts from its `fb9c56c0` on fresh `origin/main` (`cac72b11`), reapplied as `03097083` (FB9's parent was already `cac72b11`, so the change is the same six files).
+- Scope limited to F4: orchestrator `health.service` restart-safe cooldowns, the `health` hub event state, `hub-wake` formatting/dedup, and the exact tests of those files. No watcher code, no test disabling, no system-limit changes, no server restart or live provider.
+
+## What changed
+- Per-job, per-condition `deliveredAt` cooldowns persist in `app_config` under `orchestrator.job_health_cooldowns` (`{version:1, cooldowns:{'<jobId>:<condition>':{at,marker}}}`).
+- Episode markers: HEAD sha (`no_commit`), `created_at` (`overtime`), `updated_at` (`dead_slot`). A restart inside the 30-minute debounce with the same marker does not re-emit; a changed marker starts a fresh episode, so the old cooldown no longer suppresses it.
+- Health alerts emit HubEventState `health` (rendered as `stalled, <reason>`), so `hub-wake`'s stall-dedup reconstruction never absorbs them.
+- Persistence is injectable (`cooldownPersistence`); a failed save keeps the in-process debounce and never spams.
+
+## Verification (focused only, per brief)
+- `health.service.test.ts` + `hub-wake.service.test.ts` + `job-health-refute-801ee02f.test.ts` + `orchestrator.test.ts`: **138/138 pass** (`tsx --tsconfig server/tsconfig.json --test`, 75.9 s).
+- Added two explicit episode tests: a changed `created_at` marker expires the persisted overtime cooldown after restart; a changed HEAD sha starts a fresh no-commit episode after restart (old cooldown does not suppress it).
+- `tsc --noEmit -p server/tsconfig.json`: clean. `oxlint` on the six touched files: clean.
+
+## Watcher host limit (separate, not modified here)
+- The earlier merge failure was not this code: `server/modules/providers/tests/sessions-watcher-native.test.ts` had five timeouts then four cancellations with `ENOSPC` — the host had exhausted its inotify watcher instances. That is a machine/host limit, not a code or test defect. This job ran no watcher tests and changed neither watcher code nor limits. CI's full gate will still exercise those tests; if `ENOSPC` recurs there, raise the host's `fs.inotify.max_user_watches`/`max_user_instances`.

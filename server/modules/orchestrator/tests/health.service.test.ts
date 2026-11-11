@@ -532,6 +532,55 @@ test('health cooldowns: a restart inside the debounce does not re-emit the same 
   });
 });
 
+test('health cooldowns: a changed condition episode expires the persisted cooldown', async () => {
+  await withHealthContext(async (ctx) => {
+    const job = ctx.createJob('changed-episode', {
+      state: 'active',
+      created_at: minutesAgo(ctx, 31),
+      updated_at: minutesAgo(ctx, 31),
+    });
+    const first = serviceFor(ctx);
+    await first.tick();
+    assert.equal(ctx.events().length, 1, 'the original episode fires once');
+
+    getConnection()
+      .prepare('UPDATE orchestrator_jobs SET created_at = ?, updated_at = ? WHERE id = ?')
+      .run(minutesAgo(ctx, 45), minutesAgo(ctx, 45), job.id);
+    ctx.clock.advance(10);
+    const restarted = serviceFor(ctx);
+    await restarted.tick();
+    assert.equal(ctx.events().length, 2, 'a different episode marker is not suppressed by the old cooldown');
+  });
+});
+
+test('health cooldowns: a new HEAD starts a fresh no-commit episode after restart', async () => {
+  await withHealthContext(async (ctx) => {
+    ctx.config.health.maxRunMin = 1_000;
+    const job = ctx.createJob('head-episode', {
+      state: 'active',
+      in_turn: 1,
+      session_id: 'session-head-episode',
+      created_at: new Date(ctx.clock.now.getTime() - 60 * 60_000).toISOString(),
+    });
+    startBusy(job.session_id!);
+    ctx.heads.set('head-episode', { sha: 'sha-a', committedAtMs: ctx.clock.now.getTime() - 50 * 60_000 });
+    const first = serviceFor(ctx);
+    await first.tick();
+    ctx.clock.advance(15);
+    await first.tick();
+    assert.equal(ctx.events().length, 1, 'the first HEAD episode alerts');
+
+    ctx.heads.set('head-episode', { sha: 'sha-b', committedAtMs: ctx.clock.now.getTime() - 50 * 60_000 });
+    ctx.clock.advance(1);
+    const restarted = serviceFor(ctx);
+    await restarted.tick();
+    assert.equal(ctx.sent.length, 2, 'the new HEAD is nudged again');
+    ctx.clock.advance(15);
+    await restarted.tick();
+    assert.equal(ctx.events().length, 2, 'the new HEAD episode alerts despite the old cooldown');
+  });
+});
+
 test('health cooldowns: a resolved condition does not alert after restart', async () => {
   await withHealthContext(async (ctx) => {
     const job = ctx.createJob('resolved-condition', {
