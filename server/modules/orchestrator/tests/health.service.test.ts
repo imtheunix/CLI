@@ -332,14 +332,10 @@ test('health flags are exposed for status and disabled config emits nothing', as
 test('idle continuation: real busy run is untouched; completed turn is retried after a failure', async () => {
   await withHealthContext(async (ctx) => {
     ctx.config.health.maxRunMin = 1_000;
-    const jobs = await realJobsService(ctx);
     const sessionId = sessionsDb.createSession('sess-continuation', 'claude', ctx.dir, 'Continuation');
     const job = ctx.createJob('active-continuation', { state: 'active', session_id: sessionId, backend: 'claude' });
     startBusy(sessionId);
-    const service = createHealthService({
-      config: () => ctx.config, now: () => ctx.clock.now,
-      sendToJob: (row, message) => jobs.notifyWithOutcome(row, message),
-    });
+    const service = serviceFor(ctx);
     await service.tick();
     assert.equal(chatRunRegistry.isProcessing(sessionId), true, 'the live run is never interrupted');
     assert.equal(ctx.events().length, 0);
