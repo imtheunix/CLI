@@ -1714,3 +1714,24 @@ test('mixed wakes cap decisions before adding the FYI overflow', () => {
   assert.match(message, /\+1 more FYI/);
   assert.doesNotMatch(message, /decision-20/);
 });
+
+test('a preparing job with a live worker reads as alive in hub event lines', () => {
+  const preparing = formatHubEventLine({
+    timestamp: 'now',
+    jobId: 'prep-1',
+    state: 'preparing',
+    title: 'Preparing job',
+    reason: 'worker running',
+  });
+  assert.equal(preparing, '[tjob] prep-1 Preparing job: alive, worker running');
+
+  const enriched = formatHubEventLine({
+    timestamp: 'now',
+    jobId: 'prep-2',
+    state: 'waiting',
+    title: 'Preparing job',
+    reason: 'worker running',
+    alive: true,
+  });
+  assert.equal(enriched, '[tjob] prep-2 Preparing job: alive, worker running');
+});
