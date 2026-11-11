@@ -258,7 +258,7 @@ test('F1: a busy registered run refuses the real nudge; the hub alert fires now,
     assert.equal(ctx.sent.length, 1, 'the nudge path was attempted exactly once');
     assert.equal(ctx.sent[0].message, NO_COMMIT_NUDGE);
     assert.equal(jobEvents.length, 1, 'a refused nudge escalates immediately, not 15 min later');
-    assert.equal(jobEvents[0].state, 'stalled');
+    assert.equal(jobEvents[0].state, 'health');
     assert.equal(jobEvents[0].title, job.title, 'the alert carries the right title');
     assert.match(jobEvents[0].reason, /no commit for 50m/);
     assert.equal((orchestratorJobsDb.get(job.id) as OrchestratorJobRow).in_turn, 1, 'the live run keeps in_turn');
@@ -648,7 +648,7 @@ test('F6: non-finite heads, malformed metadata, missing heads and empty worktree
   });
 });
 
-test('F4 (deferred, expected present): cooldowns remain process-local across a simulated restart', async () => {
+test('F4 (fixed): cooldowns persist across a simulated restart', async () => {
   await withProbeContext(async (ctx) => {
     ctx.createJob('restart-idle', {
       state: 'active',
@@ -663,11 +663,11 @@ test('F4 (deferred, expected present): cooldowns remain process-local across a s
     // A fresh service instance on the same DB/log stands in for a restarted process.
     const restarted = injectedHealth(ctx);
     await restarted.tick();
-    assert.equal(ctx.events().length, 2, 'the deferred F4 defect is still present: a restart re-emits inside the 30 min debounce');
+    assert.equal(ctx.events().length, 1, 'a restart inside the 30 min debounce does not re-emit');
 
-    ctx.clock.advance(10);
-    await before.tick();
-    assert.equal(ctx.events().length, 2, 'the pre-restart instance still holds its own debounce');
+    ctx.clock.advance(25);
+    await restarted.tick();
+    assert.equal(ctx.events().length, 2, 'an older deliveredAt is honored: the alert returns after 30 min');
   });
 });
 

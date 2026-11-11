@@ -128,6 +128,8 @@ export function formatHubEventStateDescription(event: LoggedHubEvent): string {
       return `cancelled, ${event.reason}`;
     case 'stalled':
       return `stalled, ${event.reason}`;
+    case 'health':
+      return `stalled, ${event.reason}`;
     default:
       return `${event.state}, ${event.reason}`;
   }
