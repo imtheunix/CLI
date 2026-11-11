@@ -230,6 +230,59 @@ export function createProxyServer(options: ProxyOptions): http.Server {
       runIdSet = parsed.run_id !== undefined;
     }
 
+    const turnBudget = pacer.turnBudgetFor(model);
+    let outputCapped = false;
+    let estimatedInput = 0;
+    if (parsed && turnBudget) {
+      // Cap billed output at the turn budget. The prompt itself is never trimmed.
+      const outputField = isMessages || parsed.max_completion_tokens === undefined ? 'max_tokens' : 'max_completion_tokens';
+      const requestedOut = parsed[outputField];
+      if (typeof requestedOut !== 'number' || !Number.isFinite(requestedOut) || requestedOut > turnBudget.out) {
+        parsed[outputField] = turnBudget.out;
+        outputCapped = true;
+        body = Buffer.from(JSON.stringify(parsed), 'utf8');
+      }
+      estimatedInput = pacer.estimateUncachedInput(model, body.length);
+      if (estimatedInput > turnBudget.uncachedIn) {
+        // Refuse rather than trimming the prompt: the client sees a real failure it can split.
+        const message = `morph-pacer: estimated uncached input ${estimatedInput} exceeds the Kimi turn budget ${turnBudget.uncachedIn}; split the turn`;
+        const entry: LedgerEntry = {
+          ts: new Date(clock.now()).toISOString(),
+          model,
+          uncached_in: 0,
+          cached_in: 0,
+          out: 0,
+          reasoning: 0,
+          status: 413,
+          wait_ms: 0,
+          retries: 0,
+          stream: requestedStream,
+          cache_ttl: cacheTtl,
+          run_id_set: runIdSet,
+          alias,
+          budget: {
+            out_limit: turnBudget.out,
+            in_limit: turnBudget.uncachedIn,
+            output_capped: outputCapped,
+            estimated_uncached_in: estimatedInput,
+            over_out: false,
+            over_in: true,
+            input_rejected: true,
+          },
+        };
+        try {
+          await ledger.append(entry);
+        } catch (error) {
+          logger.error(`morph-pacer: ledger write failed: ${(error as Error).message}`);
+        }
+        if (!response.destroyed) {
+          response.writeHead(413, { 'content-type': 'application/json' });
+          response.end(JSON.stringify({ error: { message } }));
+        }
+        return;
+      }
+    }
+
     const admission = await pacer.admit(model, body.length);
     let finished = false;
     let retries = 0;
@@ -257,6 +310,17 @@ export function createProxyServer(options: ProxyOptions): http.Server {
         cache_ttl: cacheTtl,
         run_id_set: runIdSet,
         alias,
+        ...(turnBudget ? {
+          budget: {
+            out_limit: turnBudget.out,
+            in_limit: turnBudget.uncachedIn,
+            output_capped: outputCapped,
+            estimated_uncached_in: estimatedInput,
+            over_out: usage ? usage.completionTokens > turnBudget.out : false,
+            over_in: usage ? Math.max(0, usage.promptTokens - usage.cachedTokens) > turnBudget.uncachedIn : false,
+            input_rejected: false,
+          },
+        } : {}),
       };
       try {
         await ledger.append(entry);

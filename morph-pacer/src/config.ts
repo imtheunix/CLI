@@ -12,6 +12,12 @@ export interface GroupConfig {
   caps: Caps;
 }
 
+/** A hard per-call budget for one model group. A request over the input budget is refused; output is capped. */
+export interface TurnBudget {
+  uncachedIn: number;
+  out: number;
+}
+
 export interface PacerConfig {
   host: string;
   port: number;
@@ -42,6 +48,12 @@ export interface PacerConfig {
    */
   modelAliases: Record<string, { model: string; body: Record<string, unknown> }>;
   groups: Record<string, GroupConfig>;
+  /**
+   * Per-call budgets by group, e.g. Kimi: at most ~800 billed output tokens and ~5000 uncached input
+   * tokens per turn (the person, 2026-11-11). Output is capped by `max_tokens`; a request whose
+   * estimated uncached input exceeds the budget is refused (413) instead of truncating its prompt.
+   */
+  turnBudgets: Record<string, TurnBudget>;
 }
 
 export const DEFAULT_GROUPS: Record<string, GroupConfig> = {
@@ -53,6 +65,10 @@ export const DEFAULT_GROUPS: Record<string, GroupConfig> = {
     models: ['morph-dsv41flash', 'morph-dsv41flash-1017'],
     caps: { uncachedIn: 2_103_237, out: 76_559 },
   },
+};
+
+export const DEFAULT_TURN_BUDGETS: Record<string, TurnBudget> = {
+  kimik31: { uncachedIn: 5_000, out: 800 },
 };
 
 export const DEFAULT_CONFIG: PacerConfig = {
@@ -75,6 +91,7 @@ export const DEFAULT_CONFIG: PacerConfig = {
     'morph-kimik31-nothink': { model: 'morph-kimik31', body: { chat_template_kwargs: { thinking: false } } },
   },
   groups: DEFAULT_GROUPS,
+  turnBudgets: DEFAULT_TURN_BUDGETS,
 };
 
 export function expandHome(path: string): string {
@@ -118,6 +135,34 @@ function mergeGroups(
   return merged;
 }
 
+function mergeTurnBudgets(overrides: Record<string, Partial<TurnBudget>> | undefined): Record<string, TurnBudget> {
+  const merged: Record<string, TurnBudget> = {};
+  for (const [key, budget] of Object.entries(DEFAULT_TURN_BUDGETS)) merged[key] = { ...budget };
+  for (const [key, override] of Object.entries(overrides ?? {})) {
+    const base = merged[key];
+    if (!base) {
+      merged[key] = {
+        uncachedIn: override.uncachedIn ?? Number.NaN,
+        out: override.out ?? Number.NaN,
+      };
+      continue;
+    }
+    merged[key] = { uncachedIn: override.uncachedIn ?? base.uncachedIn, out: override.out ?? base.out };
+  }
+  return merged;
+}
+
+function validateTurnBudgets(budgets: Record<string, TurnBudget>): void {
+  for (const [key, budget] of Object.entries(budgets)) {
+    for (const field of ['uncachedIn', 'out'] as const) {
+      const value = budget[field];
+      if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
+        throw new Error(`morph-pacer: turn budget ${key} ${field} must be a finite positive number`);
+      }
+    }
+  }
+}
+
 function validateGroups(groups: Record<string, GroupConfig>): void {
   for (const [key, group] of Object.entries(groups)) {
     if (
@@ -158,6 +203,7 @@ export function loadConfig(path = '~/.config/morph-pacer/config.json'): PacerCon
     ...DEFAULT_CONFIG,
     ...file,
     groups: mergeGroups(file.groups as Record<string, Partial<GroupConfig>> | undefined),
+    turnBudgets: mergeTurnBudgets(file.turnBudgets as Record<string, Partial<TurnBudget>> | undefined),
   };
 
   if (process.env.MORPH_PACER_HOST) config.host = process.env.MORPH_PACER_HOST;
@@ -172,6 +218,7 @@ export function loadConfig(path = '~/.config/morph-pacer/config.json'): PacerCon
 
   validateUpstream(config.upstream);
   validateGroups(config.groups);
+  validateTurnBudgets(config.turnBudgets);
 
   if (!config.apiKey) {
     try {

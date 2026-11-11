@@ -16,6 +16,16 @@ export interface LedgerEntry {
   run_id_set: boolean;
   /** The client-facing alias that was rewritten to `model`, if any. */
   alias?: string | null;
+  /** The per-call turn budget applied to this request, and whether it was met. */
+  budget?: {
+    out_limit: number;
+    in_limit: number;
+    output_capped: boolean;
+    estimated_uncached_in: number;
+    over_out: boolean;
+    over_in: boolean;
+    input_rejected: boolean;
+  };
 }
 
 export class Ledger {

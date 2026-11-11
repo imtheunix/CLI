@@ -1,5 +1,5 @@
 import type { Clock } from './clock.js';
-import type { Caps, PacerConfig } from './config.js';
+import type { Caps, PacerConfig, TurnBudget } from './config.js';
 import type { Logger } from './logger.js';
 import { RollingWindow, type UsageEvent } from './windows.js';
 
@@ -106,6 +106,12 @@ export class Pacer {
       this.modelToGroup.set(model, key);
     }
     return this.groups.get(key) as GroupState;
+  }
+
+  /** The hard per-call budget for a model's group, or null when the group has none. */
+  turnBudgetFor(model: string): TurnBudget | null {
+    const key = this.modelToGroup.get(model);
+    return key ? this.config.turnBudgets[key] ?? null : null;
   }
 
   estimateOutput(model: string): number {
