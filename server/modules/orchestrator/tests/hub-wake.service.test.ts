@@ -1576,3 +1576,34 @@ test('mixed wakes cap decisions before adding the FYI overflow', () => {
   assert.match(message, /\+1 more FYI/);
   assert.doesNotMatch(message, /decision-20/);
 });
+
+test('health alerts are not absorbed into hub-wake stall dedup', async () => {
+  await withTestContext(async ({ config, runtime, eventsLogPath, offsetPath, stallsPath, clock }) => {
+    appendHubEvent({
+      jobId: 'health-job',
+      state: 'health',
+      title: 'Health alert',
+      reason: 'no commit for 50m',
+    });
+    appendHubEvent({
+      jobId: 'stall-job',
+      state: 'stalled',
+      title: 'Stall alert',
+      reason: 'no transcript activity for 30m',
+    });
+
+    const service = createHubWakeService({
+      config: () => config,
+      runtime: runtime.gateway,
+      now: () => clock.now,
+      eventsLogPath,
+      offsetPath,
+      stallsPath,
+    });
+    service.start();
+
+    assert.equal(service.getLastStallEmitted('health-job'), undefined, 'a health line never seeds stall dedup');
+    assert.equal(typeof service.getLastStallEmitted('stall-job'), 'number', 'a real stall line still seeds it');
+    service.stop();
+  });
+});

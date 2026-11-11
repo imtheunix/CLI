@@ -6,6 +6,7 @@ import path from 'node:path';
 import test from 'node:test';
 
 import {
+  appConfigDb,
   closeConnection,
   getConnection,
   initializeDatabase,
@@ -502,5 +503,140 @@ test('rename persists the new title and records the old one in history', async (
     assert.equal(history[0].from, 'Old title');
     assert.equal(history[0].to, 'Plain outcome');
     assert.ok(jobs.list().some((entry) => entry.id === job.id && entry.title === 'Plain outcome'));
+  });
+});
+
+function minutesAgo(ctx: { clock: { now: Date } }, min: number): string {
+  return new Date(ctx.clock.now.getTime() - min * 60_000).toISOString();
+}
+
+test('health cooldowns: a restart inside the debounce does not re-emit the same condition', async () => {
+  await withHealthContext(async (ctx) => {
+    ctx.createJob('restart-overtime', {
+      state: 'active',
+      created_at: minutesAgo(ctx, 31),
+      updated_at: minutesAgo(ctx, 31),
+    });
+    const first = serviceFor(ctx);
+    await first.tick();
+    assert.equal(ctx.events().length, 1, 'the overtime condition fires once');
+
+    ctx.clock.advance(10);
+    const restarted = serviceFor(ctx);
+    await restarted.tick();
+    assert.equal(ctx.events().length, 1, 'a restart inside the 30 min debounce does not re-emit');
+
+    ctx.clock.advance(25);
+    await restarted.tick();
+    assert.equal(ctx.events().length, 2, 'an older deliveredAt is honored after 30 min');
+  });
+});
+
+test('health cooldowns: a resolved condition does not alert after restart', async () => {
+  await withHealthContext(async (ctx) => {
+    const job = ctx.createJob('resolved-condition', {
+      state: 'active',
+      created_at: minutesAgo(ctx, 31),
+      updated_at: minutesAgo(ctx, 31),
+    });
+    const first = serviceFor(ctx);
+    await first.tick();
+    assert.equal(ctx.events().length, 1);
+
+    orchestratorJobsDb.update(job.id, { state: 'cancelled' });
+    ctx.clock.advance(10);
+    const restarted = serviceFor(ctx);
+    await restarted.tick();
+    assert.equal(ctx.events().length, 1, 'a condition that no longer holds emits nothing');
+  });
+});
+
+test('health cooldowns: jobs and conditions are isolated', async () => {
+  await withHealthContext(async (ctx) => {
+    ctx.createJob('iso-a', { state: 'active', created_at: minutesAgo(ctx, 31), updated_at: minutesAgo(ctx, 31) });
+    ctx.createJob('iso-b', { state: 'active', created_at: minutesAgo(ctx, 31), updated_at: minutesAgo(ctx, 31) });
+    const first = serviceFor(ctx);
+    await first.tick();
+    assert.equal(ctx.events().length, 2);
+
+    ctx.clock.advance(10);
+    const restarted = serviceFor(ctx);
+    await restarted.tick();
+    assert.equal(ctx.events().length, 2, 'both jobs keep their own cooldown');
+
+    ctx.createJob('iso-c', { state: 'active', created_at: minutesAgo(ctx, 31), updated_at: minutesAgo(ctx, 31) });
+    await restarted.tick();
+    assert.equal(ctx.events().length, 3, 'a job without a cooldown still alerts');
+  });
+});
+
+test('health cooldowns: a different condition on the same job is not suppressed', async () => {
+  await withHealthContext(async (ctx) => {
+    ctx.createJob('iso-condition', {
+      state: 'active',
+      created_at: minutesAgo(ctx, 60),
+      updated_at: minutesAgo(ctx, 30),
+      last_error: 'failed',
+    });
+    const first = serviceFor(ctx);
+    await first.tick();
+    assert.equal(ctx.events().length, 2, 'overtime and dead_slot both fire');
+
+    ctx.clock.advance(10);
+    const restarted = serviceFor(ctx);
+    await restarted.tick();
+    assert.equal(ctx.events().length, 2, 'each condition keeps its own cooldown');
+  });
+});
+
+test('health cooldowns: an older persisted deliveredAt is honored', async () => {
+  await withHealthContext(async (ctx) => {
+    const oldJob = ctx.createJob('old-cooldown', {
+      state: 'active',
+      created_at: minutesAgo(ctx, 31),
+      updated_at: minutesAgo(ctx, 31),
+    });
+    const recentJob = ctx.createJob('recent-cooldown', {
+      state: 'active',
+      created_at: minutesAgo(ctx, 31),
+      updated_at: minutesAgo(ctx, 31),
+    });
+    appConfigDb.set('orchestrator.job_health_cooldowns', JSON.stringify({
+      version: 1,
+      cooldowns: {
+        [`${oldJob.id}:overtime`]: { at: ctx.clock.now.getTime() - 31 * 60_000, marker: oldJob.created_at },
+        [`${recentJob.id}:overtime`]: { at: ctx.clock.now.getTime() - 10 * 60_000, marker: recentJob.created_at },
+      },
+    }));
+
+    const service = serviceFor(ctx);
+    await service.tick();
+    assert.deepEqual(ctx.events().filter((event) => event !== null).map((event) => event.jobId), [oldJob.id]);
+  });
+});
+
+test('health cooldowns: a failing persistence write does not spam alerts', async () => {
+  await withHealthContext(async (ctx) => {
+    ctx.createJob('failing-store', {
+      state: 'active',
+      created_at: minutesAgo(ctx, 31),
+      updated_at: minutesAgo(ctx, 31),
+    });
+    const failing = {
+      load: () => ({}),
+      save: () => {
+        throw new Error('disk full');
+      },
+    };
+    const service = serviceFor(ctx, { cooldownPersistence: failing });
+    await service.tick();
+    await service.tick();
+    await service.tick();
+    assert.equal(ctx.events().length, 1, 'the in-process debounce still holds when the write fails');
+
+    const restarted = serviceFor(ctx, { cooldownPersistence: failing });
+    await restarted.tick();
+    await restarted.tick();
+    assert.equal(ctx.events().length, 2, 'a restart loses the guard but emits once, not per tick');
   });
 });

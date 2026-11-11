@@ -1,4 +1,4 @@
-import { orchestratorJobsDb } from '@/modules/database/index.js';
+import { appConfigDb, orchestratorJobsDb } from '@/modules/database/index.js';
 import type { OrchestratorJobRow } from '@/modules/database/index.js';
 import { runGitCommand } from '@/modules/worktrees/index.js';
 import { chatRunRegistry } from '@/modules/websocket/index.js';
@@ -26,6 +26,20 @@ export type WorktreeHead = { sha: string; committedAtMs: number };
 /** What a nudge attempt actually did: delivered, refused by a live run, or neither. */
 export type NudgeOutcome = { started: boolean; refused: boolean };
 
+/** A delivered hub alert for one job and condition, kept across restarts. */
+export type HealthCooldownRecord = {
+  /** When the alert was delivered, in epoch milliseconds. */
+  at: number;
+  /** What defined the condition episode: HEAD sha, created_at or updated_at. */
+  marker: string | null;
+};
+
+/** Persists the per-job, per-condition deliveredAt cooldowns. */
+export type HealthCooldownPersistence = {
+  load(): Record<string, HealthCooldownRecord>;
+  save(records: Record<string, HealthCooldownRecord>): void;
+};
+
 /** Dependencies injected into createHealthService. */
 export type HealthDependencies = {
   config: () => OrchestratorConfig;
@@ -34,6 +48,8 @@ export type HealthDependencies = {
   readHead?: (worktreePath: string) => Promise<WorktreeHead | null>;
   /** Sends a message into a job's own session; defaults to the jobs service's notify path. */
   sendToJob?: (job: OrchestratorJobRow, message: string) => Promise<boolean | NudgeOutcome>;
+  /** Restart-safe alert cooldowns; defaults to the app config table. */
+  cooldownPersistence?: HealthCooldownPersistence;
 };
 
 /** The no-commit nudge: sent once per unchanged HEAD before the hub event. */
@@ -44,6 +60,45 @@ const EVENT_DEBOUNCE_MS = 30 * 60_000;
 
 /** How long after the nudge the hub is told when HEAD still has not moved. */
 const NO_COMMIT_EVENT_DELAY_MS = 15 * 60_000;
+
+/** The app config key holding the restart-safe health alert cooldowns. */
+const COOLDOWN_CONFIG_KEY = 'orchestrator.job_health_cooldowns';
+const COOLDOWN_SCHEMA_VERSION = 1;
+
+function cooldownKey(jobId: string, condition: HealthCondition): string {
+  return `${jobId}:${condition}`;
+}
+
+function parseCooldownRecords(value: unknown): Record<string, HealthCooldownRecord> {
+  if (!value || typeof value !== 'object') return {};
+  const root = value as { version?: unknown; cooldowns?: unknown };
+  if (root.version !== COOLDOWN_SCHEMA_VERSION || !root.cooldowns || typeof root.cooldowns !== 'object') return {};
+  const records: Record<string, HealthCooldownRecord> = {};
+  for (const [key, raw] of Object.entries(root.cooldowns as Record<string, unknown>)) {
+    if (!raw || typeof raw !== 'object') continue;
+    const record = raw as { at?: unknown; marker?: unknown };
+    if (typeof record.at !== 'number' || !Number.isFinite(record.at)) continue;
+    if (record.marker !== null && typeof record.marker !== 'string') continue;
+    records[key] = { at: record.at, marker: record.marker };
+  }
+  return records;
+}
+
+function defaultCooldownPersistence(): HealthCooldownPersistence {
+  return {
+    load() {
+      try {
+        const raw = appConfigDb.get(COOLDOWN_CONFIG_KEY);
+        return raw ? parseCooldownRecords(JSON.parse(raw)) : {};
+      } catch {
+        return {};
+      }
+    },
+    save(records) {
+      appConfigDb.set(COOLDOWN_CONFIG_KEY, JSON.stringify({ version: COOLDOWN_SCHEMA_VERSION, cooldowns: records }));
+    },
+  };
+}
 
 type JobHealthState = {
   headSha: string | null;
@@ -108,6 +163,43 @@ export function createHealthService(deps: HealthDependencies) {
   const readHead = deps.readHead ?? defaultReadHead;
   const sendToJob = deps.sendToJob ?? (async () => false);
   const states = new Map<string, JobHealthState>();
+  const persistence = deps.cooldownPersistence ?? defaultCooldownPersistence();
+  const cooldowns = new Map<string, HealthCooldownRecord>(Object.entries(persistence.load()));
+
+  function persistCooldowns(): void {
+    try {
+      persistence.save(Object.fromEntries(cooldowns));
+    } catch (error) {
+      // A failed write loses the restart guard, never the in-process one; do not retry in a tight loop.
+      console.error('[Health] Failed to persist alert cooldowns:', error);
+    }
+  }
+
+  function rememberCooldown(jobId: string, condition: HealthCondition, at: number, marker: string | null): void {
+    cooldowns.set(cooldownKey(jobId, condition), { at, marker });
+    persistCooldowns();
+  }
+
+  function forgetCooldown(jobId: string, condition: HealthCondition): void {
+    if (cooldowns.delete(cooldownKey(jobId, condition))) persistCooldowns();
+  }
+
+  /**
+   * The persisted deliveredAt for a still-matching condition episode. A marker
+   * from a different episode (new HEAD, retry or row update) is dropped so a
+   * restart cannot suppress or repeat an alert for work that has moved on.
+   */
+  function persistedCooldown(jobId: string, condition: HealthCondition, marker: string | null): number | null {
+    const key = cooldownKey(jobId, condition);
+    const record = cooldowns.get(key);
+    if (!record) return null;
+    if (record.marker !== marker) {
+      cooldowns.delete(key);
+      persistCooldowns();
+      return null;
+    }
+    return record.at;
+  }
 
   function stateFor(job: OrchestratorJobRow, nowMs: number): JobHealthState {
     let state = states.get(job.id);
@@ -153,11 +245,12 @@ export function createHealthService(deps: HealthDependencies) {
     if (!current) return;
     appendHubEvent({
       jobId: current.id,
-      state: 'stalled',
+      state: 'health',
       title: current.title,
       reason: `no commit for ${minutes(nowMs - state.headSinceMs)}m`,
     });
     state.noCommitEventAtMs = nowMs;
+    rememberCooldown(current.id, 'no_commit', nowMs, state.headSha);
   }
 
   async function checkNoCommit(job: OrchestratorJobRow, state: JobHealthState, nowMs: number, noCommitMs: number): Promise<void> {
@@ -168,7 +261,12 @@ export function createHealthService(deps: HealthDependencies) {
     // instead of turning it into an immediate nudge.
     if (!Number.isFinite(head.committedAtMs)) return;
     if (state.headSha !== head.sha) {
+      if (state.headSha !== null) forgetCooldown(job.id, 'no_commit');
       resetNoCommit(state, head, job, nowMs);
+    }
+    if (state.noCommitEventAtMs === null) {
+      const persisted = persistedCooldown(job.id, 'no_commit', head.sha);
+      if (persisted !== null) state.noCommitEventAtMs = persisted;
     }
     if (!isBusy(job)) return;
     if (nowMs - state.headSinceMs < noCommitMs) return;
@@ -200,16 +298,21 @@ export function createHealthService(deps: HealthDependencies) {
     // is healthy, however long it has been going. Only an observably idle run is
     // overdue; a genuinely dead one still alerts here (and in hub-wake).
     if (nowMs - lastJobActivityMs(job, nowMs) < maxRunMs) return;
+    if (state.overtimeEventAtMs === null) {
+      const persisted = persistedCooldown(job.id, 'overtime', job.created_at);
+      if (persisted !== null) state.overtimeEventAtMs = persisted;
+    }
     if (state.overtimeEventAtMs !== null && nowMs - state.overtimeEventAtMs < EVENT_DEBOUNCE_MS) return;
     const current = currentLiveJob(job, ['active']);
     if (!current) return;
     appendHubEvent({
       jobId: current.id,
-      state: 'stalled',
+      state: 'health',
       title: current.title,
       reason: `over ${minutes(maxRunMs)} min: split or stop`,
     });
     state.overtimeEventAtMs = nowMs;
+    rememberCooldown(current.id, 'overtime', nowMs, job.created_at);
   }
 
   function checkDeadSlot(job: OrchestratorJobRow, state: JobHealthState, nowMs: number, deadSlotMs: number): void {
@@ -218,16 +321,21 @@ export function createHealthService(deps: HealthDependencies) {
     if (!isWaitingForHub(job)) return;
     const since = parseTimestamp(job.updated_at);
     if (since === null || nowMs - since < deadSlotMs) return;
+    if (state.deadSlotEventAtMs === null) {
+      const persisted = persistedCooldown(job.id, 'dead_slot', job.updated_at);
+      if (persisted !== null) state.deadSlotEventAtMs = persisted;
+    }
     if (state.deadSlotEventAtMs !== null && nowMs - state.deadSlotEventAtMs < EVENT_DEBOUNCE_MS) return;
     const current = currentLiveJob(job, ['active', 'preparing']);
     if (!current) return;
     appendHubEvent({
       jobId: current.id,
-      state: 'stalled',
+      state: 'health',
       title: current.title,
       reason: `holding a slot: cancel or resume (${minutes(nowMs - since)}m)`,
     });
     state.deadSlotEventAtMs = nowMs;
+    rememberCooldown(current.id, 'dead_slot', nowMs, current.updated_at);
   }
 
   /** The health flags a job has right now, for `tjob status` and the Status view. */
@@ -275,6 +383,16 @@ export function createHealthService(deps: HealthDependencies) {
       for (const id of states.keys()) {
         if (!live.has(id)) states.delete(id);
       }
+      let prunedCooldowns = false;
+      for (const key of cooldowns.keys()) {
+        const separator = key.lastIndexOf(':');
+        const jobId = separator === -1 ? key : key.slice(0, separator);
+        if (!live.has(jobId)) {
+          cooldowns.delete(key);
+          prunedCooldowns = true;
+        }
+      }
+      if (prunedCooldowns) persistCooldowns();
 
       for (const job of jobs) {
         if (job.state !== 'active' && job.state !== 'preparing') continue;
