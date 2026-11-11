@@ -27,7 +27,11 @@ jobs:
         run: env -u GITHUB_TOKEN npm ci
 
       - name: Prepare runner environment
-        run: mkdir -p "$HOME/Tribeira"
+        run: |
+          mkdir -p "$HOME/Tribeira" "$HOME/.config/cli"
+          printf 'ci-test-token\n' > "$HOME/.config/cli/labs.token"
+          nohup node -e 'require("http").createServer((req, res) => { res.writeHead(200, { "Content-Type": "application/json" }); res.end("[]"); }).listen(18190, "127.0.0.1")' >/tmp/labs-stub.log 2>&1 &
+          sleep 1
 
       - name: Run full CLI test gate
         env:
@@ -35,7 +39,7 @@ jobs:
           LANG: C
           LC_ALL: C
           TZ: UTC
-          LABS_CONTROL_TOKEN: ci-test-token
+          LABS_CONTROL_URL: http://127.0.0.1:18190
         run: |
           env -u CLAUDE_CLI_PATH -u CLAUDE_CODE_EXECUTABLE -u CLAUDE_CODE_EXECPATH \
             npm run typecheck && \
