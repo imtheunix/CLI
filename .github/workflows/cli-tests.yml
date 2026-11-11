@@ -24,7 +24,7 @@ jobs:
           cache: npm
 
       - name: Install dependencies
-        run: npm ci
+        run: env -u GITHUB_TOKEN npm ci
 
       - name: Run full CLI test gate
         env:
