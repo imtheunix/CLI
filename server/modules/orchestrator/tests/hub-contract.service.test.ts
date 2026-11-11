@@ -11,7 +11,7 @@ import { countHubWrites, createHubContractService, HUB_WRITES_EVENT_GAP_MS } fro
 import type { HubEventInput } from '../services/hub-events.service.js';
 
 /** An OpenCode-shaped database with the two tables hub-contract reads: session and part. */
-function fixtureDatabase(dir: string, rows: Array<{ agent: string | null; parent: string | null; parts: Array<{ type: string; tool?: string; at: number }> }>): string {
+function fixtureDatabase(dir: string, rows: Array<{ agent: string | null; parent: string | null; parts: Array<{ type: string; tool?: string; at: number; filePath?: string }> }>): string {
   const file = path.join(dir, `opencode-${Math.random().toString(36).slice(2)}.db`);
   const database = new Database(file);
   database.exec('CREATE TABLE session (id TEXT PRIMARY KEY, parent_id TEXT, agent TEXT, time_updated INTEGER)');
@@ -21,7 +21,9 @@ function fixtureDatabase(dir: string, rows: Array<{ agent: string | null; parent
     const id = `ses_${session++}`;
     database.prepare('INSERT INTO session (id, parent_id, agent, time_updated) VALUES (?, ?, ?, ?)').run(id, row.parent, row.agent, 1);
     for (const part of row.parts) {
-      const data = part.type === 'tool' ? JSON.stringify({ type: 'tool', tool: part.tool ?? 'edit' }) : JSON.stringify({ type: part.type });
+      const data = part.type === 'tool'
+        ? JSON.stringify({ type: 'tool', tool: part.tool ?? 'edit', state: { input: part.filePath === undefined ? {} : { filePath: part.filePath } } })
+        : JSON.stringify({ type: part.type });
       database.prepare('INSERT INTO part (session_id, time_created, data) VALUES (?, ?, ?)').run(id, part.at, data);
     }
   }
@@ -40,6 +42,8 @@ test('the hub contract service counts only the hub\'s own edits in the window', 
       { type: 'tool', tool: 'write', at: T0 + 2 },
       { type: 'tool', tool: 'read', at: T0 + 3 },
       { type: 'tool', tool: 'edit', at: T0 - 61 * 60_000 },  // before the window
+      { type: 'tool', tool: 'edit', at: T0 + 4, filePath: `${process.env.HOME}/.cache/tsge-hub/goals.md` },   // the hub's own records: allowed
+      { type: 'tool', tool: 'write', at: T0 + 5, filePath: `${process.env.HOME}/.cache/tsge-hub/state.md` },  // allowed
     ] },
     { agent: 'morph-worker', parent: null, parts: [{ type: 'tool', tool: 'edit', at: T0 + 4 }] },   // not the hub
     { agent: 'morph-hub', parent: 'ses_0', parts: [{ type: 'tool', tool: 'edit', at: T0 + 5 }] },   // a subagent, not the hub session

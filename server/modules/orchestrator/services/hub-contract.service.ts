@@ -28,7 +28,17 @@ export type HubContractDependencies = {
   readCount?: (databasePath: string, sinceMs: number, nowMs: number) => number;
 };
 
-/** The hub's own edit/write tool calls in the window, straight from OpenCode's database (read-only, tolerant of a lock). */
+/** The hub's own record-keeping: edits under this directory are its job, not contract violations (the OrchestrationRoom, 2026-11-11: "the flag counted my 14 goals.md edits — those are the hub's allowed edits"). */
+export const HUB_STATE_DIR = `${process.env.HOME ?? ''}/.cache/tsge-hub`;
+
+/** True for a tool input whose file is the hub's own state (goals/state/inbox/handover), which it must keep writing. */
+function isHubRecordKeeping(input: unknown): boolean {
+  if (typeof input !== 'object' || input === null) return false
+  const filePath = (input as { filePath?: unknown }).filePath
+  return typeof filePath === 'string' && (filePath.startsWith(`${HUB_STATE_DIR}/`) || filePath === HUB_STATE_DIR)
+}
+
+/** The hub's own edit/write tool calls in the window, straight from OpenCode's database (read-only, tolerant of a lock). Code edits only: the hub's state files are exempt. */
 export function countHubWrites(databasePath: string, sinceMs: number, nowMs: number): number {
   if (!existsSync(databasePath)) return 0;
   let database: Database.Database;
@@ -46,8 +56,10 @@ export function countHubWrites(databasePath: string, sinceMs: number, nowMs: num
     let edits = 0;
     for (const row of rows) {
       try {
-        const data = JSON.parse(row.data) as { type?: string; tool?: string };
-        if (data.type === 'tool' && (data.tool === 'edit' || data.tool === 'write')) edits += 1;
+        const data = JSON.parse(row.data) as { type?: string; tool?: string; state?: { input?: unknown } };
+        if (data.type !== 'tool' || (data.tool !== 'edit' && data.tool !== 'write')) continue;
+        if (isHubRecordKeeping(data.state?.input)) continue;
+        edits += 1;
       } catch {
         // A malformed part row is not a write.
       }
