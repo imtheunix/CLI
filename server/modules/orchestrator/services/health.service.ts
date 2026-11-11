@@ -108,6 +108,8 @@ export function createHealthService(deps: HealthDependencies) {
   const readHead = deps.readHead ?? defaultReadHead;
   const sendToJob = deps.sendToJob ?? (async () => false);
   const states = new Map<string, JobHealthState>();
+  const lastIdleTurnKey = new Map<string, string>();
+  let lastContinuationMs = 0;
 
   function stateFor(job: OrchestratorJobRow, nowMs: number): JobHealthState {
     let state = states.get(job.id);
@@ -180,10 +182,9 @@ export function createHealthService(deps: HealthDependencies) {
         state.nudgedAtMs = nowMs;
         return;
       }
-      // A live run owns the session, so no nudge can be delivered until it ends.
-      // Waiting another 15 minutes for an impossible nudge would hide the
-      // condition; tell the hub now. A non-refusal failure is retried next tick.
-      if (outcome.refused) emitNoCommit(job, state, nowMs);
+      // A live run owns the session. A refusal to queue a message is proof
+      // of life, not a stalled session: try the idle continuation once it ends.
+      if (outcome.refused && !chatRunRegistry.isProcessing(job.session_id ?? '')) emitNoCommit(job, state, nowMs);
       return;
     }
     if (nowMs - state.nudgedAtMs < NO_COMMIT_EVENT_DELAY_MS) return;
@@ -260,12 +261,40 @@ export function createHealthService(deps: HealthDependencies) {
     return flags;
   }
 
+  /** Re-enter a completed session once per ended turn. A real run is never interrupted. */
+  async function continueIdle(): Promise<void> {
+    for (const job of orchestratorJobsDb.listByState(['active'])) {
+      if (!job.session_id || !job.backend || chatRunRegistry.isProcessing(job.session_id)) continue;
+      // An armed limit/login recovery has its own durable retry schedule.
+      if (isWaitingForHub(job) || job.resume_at) continue;
+      const key = job.updated_at;
+      if (lastIdleTurnKey.get(job.id) === key) continue;
+      const current = currentLiveJob(job, ['active']);
+      if (!current) continue;
+      lastIdleTurnKey.set(job.id, key);
+      try {
+        const result = normalizeNudge(await sendToJob(current,
+          'Continue your unfinished job; process completed delegated results, commit progress and call tjob done when complete.'));
+        if (!result.started && !result.refused && !chatRunRegistry.isProcessing(current.session_id!)) {
+          lastIdleTurnKey.delete(job.id);
+          appendHubEvent({ jobId: job.id, state: 'stalled', title: job.title, reason: 'idle session has no active turn' });
+        }
+      } catch (error) {
+        lastIdleTurnKey.delete(job.id);
+        console.error(`[Orchestrator] Idle continuation ${job.id} failed`, error);
+      }
+    }
+  }
+
   return {
-    /** One pass over the jobs; called by the orchestrator's tick. */
     async tick(): Promise<void> {
       const config = deps.config().health;
       if (!config.enabled) return;
       const nowMs = now().getTime();
+      if (nowMs - lastContinuationMs >= 5 * 60_000) {
+        await continueIdle();
+        lastContinuationMs = nowMs;
+      }
       const noCommitMs = config.noCommitMin * 60_000;
       const maxRunMs = config.maxRunMin * 60_000;
       const deadSlotMs = config.deadSlotMin * 60_000;

@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { existsSync } from 'node:fs';
+import { existsSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
 
 import {
@@ -55,6 +55,7 @@ import { modelLabel, resolveRequestedModel } from './orchestrator-config.service
 import type { OrchestratorConfig } from './orchestrator-config.service.js';
 import { prepareJobProjectMap } from './project-map.service.js';
 import {
+  availableBytes,
   hasCommitsAhead,
   getCheckLogPath,
   isDirty,
@@ -809,9 +810,26 @@ export function createJobsService(deps: {
       kind?: OrchestratorJobKind;
     }): Promise<OrchestratorJobView> {
       const config = deps.config();
-      const requested = input.model ? resolveRequestedModel(config, input.backend, input.model) : null;
+      let requested: ReturnType<typeof resolveRequestedModel> | null = null;
+      if (input.model && input.backend) {
+        // First identify models shared by another backend, so the refusal is
+        // actionable instead of a generic invalid-model response.
+        const resolved = resolveRequestedModel(config, null, input.model);
+        if (resolved.backend !== input.backend) {
+          throw new AppError(`model ${input.model} is offered by ${resolved.backend}, not ${input.backend}; omit --backend to select its backend`, { code: 'MODEL_BACKEND_MISMATCH', statusCode: 400 });
+        }
+        requested = resolveRequestedModel(config, input.backend, input.model);
+      } else if (input.model) {
+        requested = resolveRequestedModel(config, null, input.model);
+      }
       const repoPath = path.resolve(input.repoPath);
-      if (!repoPath.startsWith(path.resolve(config.workspacesRoot) + path.sep)) {
+      const minimumGiB = config.storage.requireFreeGiB ?? 10;
+      mkdirSync(config.worktreesRoot, { recursive: true });
+      const freeGiB = availableBytes(config.worktreesRoot) / 1024 ** 3;
+      if (freeGiB < minimumGiB) {
+        throw new AppError(`only ${freeGiB.toFixed(1)} GiB free for job artifacts; ${minimumGiB} GiB required. Run tjob cleanup --dry-run, then clean reproducible artifacts; active work is kept.`, { code: 'INSUFFICIENT_DISK', statusCode: 507 });
+      }
+      if (repoPath === path.resolve(config.workspacesRoot) || !repoPath.startsWith(path.resolve(config.workspacesRoot) + path.sep)) {
         throw new AppError(`repo must be inside ${config.workspacesRoot}`, { code: 'REPO_OUTSIDE_WORKSPACES', statusCode: 400 });
       }
       // An unusable repository is refused here with a reason, not discovered

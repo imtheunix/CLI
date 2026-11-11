@@ -236,7 +236,7 @@ function armedRecoveryJson(ctx: ProbeCtx, kind: 'usage_limit' | 'auth_required',
 
 const minutesAgoIso = (ctx: ProbeCtx, min: number) => new Date(ctx.clock.now.getTime() - min * 60_000).toISOString();
 
-test('F1: a busy registered run refuses the real nudge; the hub alert fires now, scoped and once', async () => {
+test('F1: a genuinely busy run stays quiet and owns its session; no false stall escalation', async () => {
   await withProbeContext(async (ctx) => {
     ctx.config.health.maxRunMin = 1_000;
     const runtime = fakeRuntime();
@@ -257,10 +257,7 @@ test('F1: a busy registered run refuses the real nudge; the hub alert fires now,
     let jobEvents = ctx.eventsFor('refute-f1');
     assert.equal(ctx.sent.length, 1, 'the nudge path was attempted exactly once');
     assert.equal(ctx.sent[0].message, NO_COMMIT_NUDGE);
-    assert.equal(jobEvents.length, 1, 'a refused nudge escalates immediately, not 15 min later');
-    assert.equal(jobEvents[0].state, 'stalled');
-    assert.equal(jobEvents[0].title, job.title, 'the alert carries the right title');
-    assert.match(jobEvents[0].reason, /no commit for 50m/);
+    assert.equal(jobEvents.length, 0, 'a refused nudge is evidence of real work, not a stalled session');
     assert.equal((orchestratorJobsDb.get(job.id) as OrchestratorJobRow).in_turn, 1, 'the live run keeps in_turn');
     assert.equal(chatRunRegistry.isProcessing(sessionId), true, 'the run is untouched');
     assert.equal(runtime.calls.inject, 0, 'the refusal never steered or injected into a live run');
@@ -271,8 +268,12 @@ test('F1: a busy registered run refuses the real nudge; the hub alert fires now,
     await health.tick();
     ctx.clock.advance(50);
     await health.tick();
-    assert.equal(ctx.sent.length, 1, 'a refused send is never counted as delivered; no re-nudge after escalation');
-    assert.equal(ctx.eventsFor('refute-f1').length, 1, 'one event per unchanged HEAD');
+    assert.ok(ctx.sent.length > 1, 'liveness probes may retry while the run is busy');
+    assert.ok(ctx.sent.every((sent) => sent.message === NO_COMMIT_NUDGE), 'the busy run is never resumed');
+    assert.equal(runtime.calls.inject, 0, 'no inject across repeated busy checks');
+    assert.equal(runtime.calls.abort, 0, 'no abort across repeated busy checks');
+    assert.equal(runtime.calls.run, 0, 'no overlapping run across repeated busy checks');
+    assert.equal(ctx.eventsFor('refute-f1').length, 0, 'no false escalation after an hour of busy work');
   });
 });
 

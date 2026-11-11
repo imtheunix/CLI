@@ -14,7 +14,7 @@ import type { NormalizedMessage } from '@/shared/types.js';
 import { createJobsService, mergeStepTimings } from '../services/jobs.service.js';
 import { createMergeQueueService } from '../services/merge-queue.service.js';
 import { computeMorphUsage } from '../services/morph-usage.service.js';
-import { loadOrchestratorConfig } from '../services/orchestrator-config.service.js';
+import { loadOrchestratorConfig, resolveRequestedModel } from '../services/orchestrator-config.service.js';
 import type { OrchestratorConfig } from '../services/orchestrator-config.service.js';
 import { checkEnvironment, getCheckLogPath, resolveCheckCommand, runCommand } from '../services/workspace.service.js';
 import type { CommandResult } from '../services/workspace.service.js';
@@ -102,6 +102,8 @@ async function withWorkspace(
   extraDeps: Partial<Parameters<typeof createJobsService>[0]> = {},
 ): Promise<void> {
   const previousDatabasePath = process.env.DATABASE_PATH;
+  const previousNodeEnv = process.env.NODE_ENV;
+  process.env.NODE_ENV = 'test';
   const root = await mkdtemp(path.join(tmpdir(), 'orchestrator-'));
   closeConnection();
   process.env.DATABASE_PATH = path.join(root, 'auth.db');
@@ -161,6 +163,8 @@ async function withWorkspace(
     closeConnection();
     if (previousDatabasePath === undefined) delete process.env.DATABASE_PATH;
     else process.env.DATABASE_PATH = previousDatabasePath;
+    if (previousNodeEnv === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = previousNodeEnv;
     await rm(root, { recursive: true, force: true });
   }
 }
@@ -319,7 +323,7 @@ test('a model the backend does not offer is refused, naming the ones it does', a
   await withWorkspace(async ({ repo, jobs, job }) => {
     await assert.rejects(
       jobs.create({ title: 'x', prompt: 'p', repoPath: repo, backend: 'claude', model: 'glm-5.3', baseBranch: null }),
-      /model glm-5.3 is not offered \(claude: claude-opus-5-5\)/,
+      /model glm-5.3 is offered by glm, not claude; omit --backend to select its backend/,
     );
     await assert.rejects(
       jobs.create({ title: 'x', prompt: 'p', repoPath: repo, backend: null, model: 'gpt-4', baseBranch: null }),
@@ -329,6 +333,32 @@ test('a model the backend does not offer is refused, naming the ones it does', a
     assert.equal(codex.requested_backend, 'codex');
     await eventually(() => job(codex.id).state === 'active', 'y to start');
   });
+});
+
+test('a Morph model request stays on Morph, never transformed into GLM', async () => {
+  const config = loadOrchestratorConfig('/nonexistent/orchestrator-test.json');
+  config.backends.glm.models = { 'morph/morph-kimik31': 'morph-kimik31' };
+  config.backends.morph.models = { 'morph/morph-kimik31': 'morph-kimik31' };
+  assert.deepEqual(resolveRequestedModel(config, null, 'morph/morph-kimik31'), { backend: 'morph', model: 'morph/morph-kimik31' });
+});
+
+test('disk floors refuse job creation and a model/backend mismatch before git work', async () => {
+  await withWorkspace(async ({ repo, jobs }) => {
+    await assert.rejects(
+      jobs.create({ title: 'full', prompt: 'p', repoPath: repo, backend: null, baseBranch: null }),
+      (error: unknown) => {
+        assert.equal((error as { code?: string }).code, 'INSUFFICIENT_DISK');
+        return true;
+      },
+    );
+    await assert.rejects(
+      jobs.create({ title: 'mismatch', prompt: 'p', repoPath: repo, backend: 'morph', model: 'GLM-5.3', baseBranch: null }),
+      (error: unknown) => {
+        assert.equal((error as { code?: string }).code, 'MODEL_BACKEND_MISMATCH');
+        return true;
+      },
+    );
+  }, (config) => { config.storage.requireFreeGiB = 1e20; });
 });
 
 test('job guidance per repository from orchestrator.json is added to that repository job prompts', async () => {

@@ -13,6 +13,7 @@ import type { HealthService } from './health.service.js';
 import type { HubService, HubStatus } from './hub.service.js';
 import type { MorphUsage, MorphUsageService } from './morph-usage.service.js';
 import type { OrchestratorConfig } from './orchestrator-config.service.js';
+import { availableBytes } from './workspace.service.js';
 
 /** One goal block from the hub's goals.md. */
 export type StatusGoal = {
@@ -63,6 +64,8 @@ export type StatusCapacity = {
   caps: Record<OrchestratorBackend, number>;
   /** Per backend, when a quota wait ends (ISO 8601); null when it is not waiting. */
   quota: Record<string, string | null>;
+  /** Free disk and configured floors for local artifacts and merge checks. */
+  storage: { freeGiB: number; requiredGiB: number; checkGiB: number };
 };
 
 /** The hub session and when it was last woken. */
@@ -826,6 +829,8 @@ export function formatStatusMarkdown(snapshot: StatusSnapshot): string {
 
   lines.push('## Capacity', '```');
   lines.push(BACKENDS.map((backend) => `${backend}: ${snapshot.capacity.loads[backend] ?? 0}/${snapshot.capacity.caps[backend] ?? 0}`).join('  '));
+  const storage = snapshot.capacity.storage;
+  lines.push(`disk: ${storage.freeGiB.toFixed(1)} GiB free; new jobs need ${storage.requiredGiB}; merge checks pause at ${storage.checkGiB}`);
   const morph = snapshot.capacity.morph;
   lines.push(`morph: kimi out ${formatTokens(morph.groups.kimi.out)}/${formatTokens(morph.groups.kimi.caps.out)} in ${formatTokens(morph.groups.kimi.uncachedIn)}/${formatTokens(morph.groups.kimi.caps.uncachedIn)}`
     + ` | deepseek out ${formatTokens(morph.groups.deepseek.out)}/${formatTokens(morph.groups.deepseek.caps.out)} in ${formatTokens(morph.groups.deepseek.uncachedIn)}/${formatTokens(morph.groups.deepseek.caps.uncachedIn)}`);
@@ -980,6 +985,11 @@ export function createStatusService(deps: {
         loads: deps.jobs.loads(),
         caps: Object.fromEntries(BACKENDS.map((backend) => [backend, config.backends[backend].cap])) as Record<OrchestratorBackend, number>,
         quota,
+        storage: {
+          freeGiB: availableBytes(config.worktreesRoot) / 1024 ** 3,
+          requiredGiB: config.storage.requireFreeGiB ?? 10,
+          checkGiB: config.checkFreeGiB ?? 15,
+        },
       },
       hub: { ...deps.hub.status(), lastWakeAt: readLastHubEventAt(hubEventsLogPath) },
       efficiency: {

@@ -10,6 +10,7 @@ import { appendHubEvent } from './hub-events.service.js';
 import type { JobsService } from './jobs.service.js';
 import type { OrchestratorConfig } from './orchestrator-config.service.js';
 import {
+  availableBytes,
   checkEnvironment,
   getCheckLogPath,
   readOriginRepository,
@@ -243,6 +244,10 @@ export function createMergeQueueService(deps: {
   async function stepCheck(job: OrchestratorJobRow): Promise<void> {
     // Taken before the first await: the steps of one tick start side by side. No free slot: wait in `check`.
     if (runningChecks.size >= Math.max(1, deps.config().maxConcurrentChecks)) return;
+    const freeGiB = availableBytes(job.repo_path) / 1024 ** 3;
+    const minimumFreeGiB = deps.config().checkFreeGiB;
+    // Below the threshold, exact equality included, starting a compiler or a full test run is unsafe.
+    if (minimumFreeGiB !== undefined && freeGiB <= minimumFreeGiB) return;
     runningChecks.add(job.id);
     const token = tokenFor(job.id);
     let key: string | null = null;

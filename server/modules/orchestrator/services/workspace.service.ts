@@ -1,5 +1,5 @@
 import { execFile, spawn } from 'node:child_process';
-import { createReadStream, existsSync, promises as fs } from 'node:fs';
+import { createReadStream, existsSync, promises as fs, statfsSync } from 'node:fs';
 import path from 'node:path';
 import { createInterface } from 'node:readline';
 
@@ -9,6 +9,18 @@ export type CommandResult = { code: number; stdout: string; stderr: string; sign
 /** Used by the queue and job view: check artifacts live in job state outside the git worktree. */
 export function getCheckLogPath(worktreePath: string): string {
   return path.join(path.dirname(worktreePath), '.state', path.basename(worktreePath), 'merge-check.log');
+}
+
+/** Bytes still available on the filesystem that will contain `directory`, even before it exists. */
+export function availableBytes(directory: string): number {
+  let existing = path.resolve(directory);
+  while (!existsSync(existing)) {
+    const parent = path.dirname(existing);
+    if (parent === existing) break;
+    existing = parent;
+  }
+  const filesystem = statfsSync(existing);
+  return filesystem.bavail * filesystem.bsize;
 }
 
 /** Stream both descriptors to the same file, keeping order and avoiding execFile's maxBuffer cutoff. */
