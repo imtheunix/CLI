@@ -82,7 +82,8 @@ test('output AT the budget is left alone and output ABOVE is capped', { timeout:
       body: JSON.stringify({ model: 'morph-kimik31', max_tokens: 8, messages: [] }),
     });
     assert.equal(JSON.parse(upstream.requests[0].body).max_tokens, 8);
-    assert.equal((await proxy.readLedger())[0].budget && (await proxy.readLedger())[0].budget.output_capped, false);
+    const atLimit = (await proxy.readLedger())[0].budget as Record<string, unknown>;
+    assert.equal(atLimit.output_capped, false);
 
     await request(`${proxy.url}/v1/messages`, {
       method: 'POST',
@@ -90,7 +91,8 @@ test('output AT the budget is left alone and output ABOVE is capped', { timeout:
       body: JSON.stringify({ model: 'morph-kimik31', max_tokens: 9, messages: [] }),
     });
     assert.equal(JSON.parse(upstream.requests[1].body).max_tokens, 8);
-    assert.equal((await proxy.readLedger())[1].budget.output_capped, true);
+    const above = (await proxy.readLedger())[1].budget as Record<string, unknown>;
+    assert.equal(above.output_capped, true);
   } finally {
     await proxy.close();
     await upstream.close();
