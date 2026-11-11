@@ -39,6 +39,8 @@ async function withHealthContext(
 ) {
   const previousDatabasePath = process.env.DATABASE_PATH;
   const previousEventsLog = process.env.CLI_HUB_EVENTS_LOG;
+  const previousNodeEnv = process.env.NODE_ENV;
+  process.env.NODE_ENV = 'test';
   const dir = await mkdtemp(path.join(tmpdir(), 'health-test-'));
   const eventsLogPath = path.join(dir, 'hub-events.log');
 
@@ -98,6 +100,8 @@ async function withHealthContext(
     else process.env.DATABASE_PATH = previousDatabasePath;
     if (previousEventsLog === undefined) delete process.env.CLI_HUB_EVENTS_LOG;
     else process.env.CLI_HUB_EVENTS_LOG = previousEventsLog;
+    if (previousNodeEnv === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = previousNodeEnv;
     rmSync(dir, { recursive: true, force: true });
   }
 }
@@ -236,6 +240,22 @@ test('no commit: a busy job with fresh commits never fires', async () => {
   });
 });
 
+test('healthy continuation: resumes exactly once per ended turn, never repeats on a successful idle result', async () => {
+  await withHealthContext(async (ctx) => {
+    const job = ctx.createJob('idle', { state: 'active', in_turn: 0, session_id: 'sess-idle', backend: 'morph' });
+    const service = serviceFor(ctx);
+    await service.tick();
+    await service.tick();
+    assert.equal(ctx.sent.length, 1);
+    assert.equal(ctx.sent[0]?.jobId, job.id);
+    getConnection().prepare('UPDATE orchestrator_jobs SET updated_at = ? WHERE id = ?').run(new Date(ctx.clock.now.getTime() + 7 * 60_000).toISOString(), job.id);
+    ctx.clock.advance(6);
+    await service.tick();
+    assert.equal(ctx.sent.length, 2);
+    assert.equal(ctx.events().length, 0);
+  });
+});
+
 test('overtime: fires once at maxRunMin and again only after the 30 min debounce', async () => {
   await withHealthContext(async (ctx) => {
     ctx.createJob('long', {
@@ -309,7 +329,43 @@ test('health flags are exposed for status and disabled config emits nothing', as
   });
 });
 
-test('no commit: a real busy run refuses the nudge, so the hub is told now and in_turn is kept', async () => {
+test('idle continuation: real busy run is untouched; completed turn is retried after a failure', async () => {
+  await withHealthContext(async (ctx) => {
+    ctx.config.health.maxRunMin = 1_000;
+    const jobs = await realJobsService(ctx);
+    const sessionId = sessionsDb.createSession('sess-continuation', 'claude', ctx.dir, 'Continuation');
+    const job = ctx.createJob('active-continuation', { state: 'active', session_id: sessionId, backend: 'claude' });
+    startBusy(sessionId);
+    const service = createHealthService({
+      config: () => ctx.config, now: () => ctx.clock.now,
+      sendToJob: (row, message) => jobs.notifyWithOutcome(row, message),
+    });
+    await service.tick();
+    assert.equal(chatRunRegistry.isProcessing(sessionId), true, 'the live run is never interrupted');
+    assert.equal(ctx.events().length, 0);
+
+    chatRunRegistry.completeRun(sessionId, { exitCode: 0, aborted: false });
+    orchestratorJobsDb.update(job.id, { in_turn: 0 });
+    const successful = serviceFor(ctx);
+    const failing = createHealthService({
+      config: () => ctx.config,
+      now: () => ctx.clock.now,
+      sendToJob: async () => ({ started: false, refused: false }),
+    });
+    ctx.clock.advance(6);
+    await failing.tick();
+    assert.ok(ctx.events().some((event) => event?.reason === 'idle session has no active turn'));
+    // A successful later continuation is sent once for this completed turn.
+    await successful.tick();
+    assert.equal(ctx.sent.filter((message) => message.jobId === job.id).length, 1);
+    getConnection().prepare('UPDATE orchestrator_jobs SET updated_at = ? WHERE id = ?').run(new Date(ctx.clock.now.getTime() + 6 * 60_000).toISOString(), job.id);
+    ctx.clock.advance(6);
+    await successful.tick();
+    assert.equal(ctx.sent.filter((message) => message.jobId === job.id).length, 2);
+  });
+});
+
+test('no commit: a real busy run stays quiet and receives no overlapping continuation', async () => {
   await withHealthContext(async (ctx) => {
     ctx.config.health.maxRunMin = 1_000;
     const jobs = await realJobsService(ctx);
@@ -334,14 +390,14 @@ test('no commit: a real busy run refuses the nudge, so the hub is told now and i
 
     await service.tick();
     const events = ctx.events();
-    assert.equal(events.length, 1, 'a refused nudge escalates to the hub instead of waiting 15 impossible minutes');
-    assert.match(events[0]!.reason, /no commit for \d+m/);
+    assert.equal(events.length, 0, 'a live turn is not a stall');
     assert.equal((orchestratorJobsDb.get(job.id) as OrchestratorJobRow).in_turn, 1, 'the live run keeps its in_turn flag');
     assert.equal(chatRunRegistry.isProcessing(sessionId), true, 'the run is still processing');
+    assert.equal(ctx.sent.length, 0, 'no extra turn while the real one is live');
 
     ctx.clock.advance(60);
     await service.tick();
-    assert.equal(ctx.events().length, 1, 'one event per unchanged HEAD');
+    assert.equal(ctx.events().length, 0, 'a live, no-commit run never wakes the hub by itself');
   });
 });
 

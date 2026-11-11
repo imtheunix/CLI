@@ -91,6 +91,10 @@ export type OrchestratorConfig = {
   checks: Record<string, string>;
   /** Per-repository build directory templates containing {id}. */
   cleanup: { buildDirs: Record<string, string> };
+  /** Disk guard for dispatching new job worktrees. */
+  storage: { requireFreeGiB?: number; warnFreeGiB?: number };
+  /** Pause local merge checks below this many free GiB. Omit to disable. */
+  checkFreeGiB?: number;
   /**
    * Per-repository lines added to every job prompt (keyed by the repository folder's name), e.g. where heavy
    * work runs (the person, 2026-11-05: a load balancer over the workstation and the VM pool, defined in the
@@ -213,7 +217,10 @@ function defaults(): OrchestratorConfig {
     checks: {
       tribeiracli: 'npm run typecheck && npm run lint',
     },
-    cleanup: { buildDirs: {} },
+    // Each job has its own reproducible Rust cache; never match an active job by glob.
+    cleanup: { buildDirs: { tsge: '~/.cache/tsge-targets/{id}' } },
+    storage: { requireFreeGiB: 10, warnFreeGiB: 30 },
+    checkFreeGiB: 15,
     jobGuidance: {},
     modelGuidance: {},
     maxConcurrentChecks: 1,
@@ -294,6 +301,16 @@ export function loadOrchestratorConfig(file = path.join(os.homedir(), '.config/c
         if (typeof template === 'string' && template.includes('{id}')) config.cleanup.buildDirs[repo] = template;
       }
     }
+  }
+  if (override.storage && typeof override.storage === 'object') {
+    const storage = override.storage as Record<string, unknown>;
+    for (const key of ['requireFreeGiB', 'warnFreeGiB'] as const) {
+      const value = storage[key];
+      if (typeof value === 'number' && Number.isFinite(value) && value >= 0) config.storage[key] = value;
+    }
+  }
+  if (typeof override.checkFreeGiB === 'number' && Number.isFinite(override.checkFreeGiB) && override.checkFreeGiB >= 0) {
+    config.checkFreeGiB = override.checkFreeGiB;
   }
   if (override.jobGuidance && typeof override.jobGuidance === 'object') {
     for (const [repo, text] of Object.entries(override.jobGuidance as Record<string, unknown>)) {
@@ -417,6 +434,10 @@ export function resolveRequestedModel(
   requestedModel: string,
 ): { backend: OrchestratorBackend; model: string } {
   const allowed = (name: OrchestratorBackend) => [...new Set([config.backends[name].model, ...Object.keys(config.backends[name].models)])];
+  if (!requestedBackend) {
+    const morph = config.backends.morph.models[requestedModel];
+    if (morph && /morph/i.test(morph)) return { backend: 'morph', model: requestedModel };
+  }
   const matches = (id: string) => id.toLowerCase() === requestedModel.toLowerCase() || id.slice(id.indexOf('/') + 1).toLowerCase() === requestedModel.toLowerCase();
   const candidates = requestedBackend ? [requestedBackend] : (Object.keys(config.backends) as OrchestratorBackend[]);
   for (const backend of candidates) {

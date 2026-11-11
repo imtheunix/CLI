@@ -94,6 +94,7 @@ test('orchestrator job view attaches usage from transcript with notional USD', a
         conflictResolver: { command: 'agy', model: 'gemini-3.8-flash-medium' },
         checks: {},
         cleanup: { buildDirs: {} },
+        storage: {},
         jobGuidance: {},
         modelGuidance: {},
         maxConcurrentChecks: 1,
