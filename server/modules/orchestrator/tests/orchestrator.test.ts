@@ -920,7 +920,7 @@ async function stackedJobs(ctx: Parameters<Parameters<typeof withWorkspace>[0]>[
   return { parent, child: created.id, parentBranch: parentRow.branch };
 }
 
-test('a job stacked on a cancelled job\'s branch is blocked, never merged into that dead branch (88328da6)', async () => {
+test('a job stacked on a cancelled job\'s preserved branch lands on that job\'s base, never into the dead branch (88328da6)', async () => {
   await withWorkspace(async (ctx) => {
     const { parent, child, parentBranch } = await stackedJobs(ctx);
     const queue = createMergeQueueService({ jobs: ctx.jobs, config: () => ctx.config });
@@ -928,13 +928,14 @@ test('a job stacked on a cancelled job\'s branch is blocked, never merged into t
     await queue.tick();
     assert.equal(ctx.job(child).merge_step, 'queued', 'waits while its parent is on its way');
 
-    orchestratorJobsDb.update(parent, { state: 'cancelled' });
-    await drain(queue, () => ctx.job(child), ['merged', 'blocked']);
-    assert.equal(ctx.job(child).merge_step, 'blocked');
-    assert.match(ctx.job(child).last_error ?? '', /cancelled.*never reaches main/);
-    assert.equal(ctx.job(child).pushed_sha, null);
     const parentTip = git(ctx.repo, 'ls-remote', 'origin', `refs/heads/${parentBranch}`).split('\t')[0];
-    assert.equal(parentTip, git(ctx.job(parent).worktree_path, 'rev-parse', 'HEAD'), 'nothing pushed onto the parent branch');
+    orchestratorJobsDb.update(parent, { state: 'cancelled' });
+    ctx.config.waitForDeploy = { demo: false };
+    await drain(queue, () => ctx.job(child), ['merged', 'blocked']);
+    assert.equal(ctx.job(child).merge_step, 'merged');
+    assert.equal(ctx.job(child).base_branch, 'main');
+    assert.equal(ctx.job(parent).state, 'cancelled');
+    assert.equal(git(ctx.repo, 'ls-remote', 'origin', `refs/heads/${parentBranch}`).split('\t')[0], parentTip, 'nothing pushed onto the parent branch');
   });
 });
 
@@ -1937,3 +1938,80 @@ test('a handed-over job whose first GLM turn never started resumes a login wait 
     probeZcode: async () => (loginOk ? { ok: true } : { ok: false, error: 'login_failed', message: 'injected login failure' }),
   });
 });
+
+
+test('a job based on a cancelled job\'s preserved branch lands independently on that job\'s base', async () => {
+  await withWorkspace(async (ctx) => {
+    const parent = await finishedJob(ctx, (worktree) => commitFile(worktree, 'parent.txt', 'p\n', 'parent'));
+    const parentRow = ctx.job(parent);
+    git(parentRow.worktree_path, 'push', '-q', 'origin', `HEAD:refs/heads/${parentRow.branch}`);
+    await ctx.jobs.cancel(parent);
+    assert.equal(ctx.job(parent).state, 'cancelled');
+    const parentTip = git(ctx.repo, 'ls-remote', 'origin', `refs/heads/${parentRow.branch}`).split('\t')[0];
+
+    const child = await ctx.jobs.create({ title: 'follow-up', prompt: 'p', repoPath: ctx.repo, backend: 'glm', baseBranch: parentRow.branch });
+    await eventually(() => ctx.job(child.id).state === 'active', 'child start');
+    commitFile(ctx.job(child.id).worktree_path, 'child.txt', 'c\n', 'child');
+    ctx.runtime.finish(ctx.job(child.id).session_id!);
+    await ctx.jobs.markDone(child.id);
+
+    ctx.config.waitForDeploy = { demo: false };
+    const queue = createMergeQueueService({ jobs: ctx.jobs, config: () => ctx.config });
+    await drain(queue, () => ctx.job(child.id), ['merged', 'blocked']);
+
+    const merged = ctx.job(child.id);
+    assert.equal(merged.merge_step, 'merged');
+    assert.equal(merged.base_branch, 'main');
+    git(ctx.upstream, 'pull', '-q', 'origin', 'main');
+    assert.ok(existsSync(path.join(ctx.upstream, 'parent.txt')), 'the preserved parent commit lands too');
+    assert.ok(existsSync(path.join(ctx.upstream, 'child.txt')));
+    assert.equal(ctx.job(parent).state, 'cancelled', 'the old job is not resumed or cancelled again');
+    assert.equal(git(ctx.repo, 'ls-remote', 'origin', `refs/heads/${parentRow.branch}`).split('\t')[0], parentTip, 'nothing pushed onto the cancelled branch');
+  });
+});
+
+test('a job based on a cancelled job\'s branch is blocked when that branch is gone from origin', async () => {
+  await withWorkspace(async (ctx) => {
+    const parent = await finishedJob(ctx, (worktree) => commitFile(worktree, 'parent.txt', 'p\n', 'parent'));
+    const parentRow = ctx.job(parent);
+    git(parentRow.worktree_path, 'push', '-q', 'origin', `HEAD:refs/heads/${parentRow.branch}`);
+    const child = await ctx.jobs.create({ title: 'follow-up', prompt: 'p', repoPath: ctx.repo, backend: 'glm', baseBranch: parentRow.branch });
+    await eventually(() => ctx.job(child.id).state === 'active', 'child start');
+    commitFile(ctx.job(child.id).worktree_path, 'child.txt', 'c\n', 'child');
+    ctx.runtime.finish(ctx.job(child.id).session_id!);
+    await ctx.jobs.markDone(child.id);
+    await ctx.jobs.cancel(parent);
+    git(ctx.repo, 'push', '-q', 'origin', '--delete', parentRow.branch);
+
+    const queue = createMergeQueueService({ jobs: ctx.jobs, config: () => ctx.config });
+    await drain(queue, () => ctx.job(child.id), ['merged', 'blocked']);
+    assert.equal(ctx.job(child.id).merge_step, 'blocked');
+    assert.match(ctx.job(child.id).last_error ?? '', /no longer on origin/);
+  });
+});
+
+test('a job that does not contain the cancelled branch\'s preserved tip is blocked, not landed', async () => {
+  await withWorkspace(async (ctx) => {
+    const parent = await finishedJob(ctx, (worktree) => commitFile(worktree, 'parent.txt', 'p\n', 'parent'));
+    const parentRow = ctx.job(parent);
+    git(parentRow.worktree_path, 'push', '-q', 'origin', `HEAD:refs/heads/${parentRow.branch}`);
+    const child = await ctx.jobs.create({ title: 'follow-up', prompt: 'p', repoPath: ctx.repo, backend: 'glm', baseBranch: parentRow.branch });
+    await eventually(() => ctx.job(child.id).state === 'active', 'child start');
+    commitFile(ctx.job(child.id).worktree_path, 'child.txt', 'c\n', 'child');
+    ctx.runtime.finish(ctx.job(child.id).session_id!);
+    await ctx.jobs.markDone(child.id);
+    // The preserved branch moves on after the follow-up was created: its new tip is not in the child.
+    git(ctx.upstream, 'fetch', '-q', 'origin', parentRow.branch);
+    git(ctx.upstream, 'checkout', '-q', '-B', parentRow.branch, `origin/${parentRow.branch}`);
+    commitFile(ctx.upstream, 'later.txt', 'l\n', 'later');
+    git(ctx.upstream, 'push', '-q', 'origin', `HEAD:refs/heads/${parentRow.branch}`);
+    git(ctx.upstream, 'checkout', '-q', 'main');
+    await ctx.jobs.cancel(parent);
+
+    const queue = createMergeQueueService({ jobs: ctx.jobs, config: () => ctx.config });
+    await drain(queue, () => ctx.job(child.id), ['merged', 'blocked']);
+    assert.equal(ctx.job(child.id).merge_step, 'blocked');
+    assert.match(ctx.job(child.id).last_error ?? '', /does not contain its preserved tip/);
+  });
+});
+

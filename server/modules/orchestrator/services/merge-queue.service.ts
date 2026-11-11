@@ -321,12 +321,23 @@ export function createMergeQueueService(deps: {
     setStep(job, 'deploy', { pushed_sha: head, deploy_waiting_since: new Date(now()).toISOString(), last_error: null });
   }
 
+  /** The preserved tip of a cancelled job's branch on origin, or null when the branch is gone. */
+  async function preservedBaseTip(job: OrchestratorJobRow, branch: string): Promise<string | null> {
+    const fetched = await git(job.worktree_path, 'fetch', '--quiet', 'origin', branch);
+    if (fetched.code !== 0) return null;
+    const tip = await git(job.worktree_path, 'rev-parse', '--verify', '--quiet', `origin/${branch}`);
+    return tip.code === 0 ? tip.stdout.trim() : null;
+  }
+
   /**
    * A stacked job (its base is another job's branch) lands where its parent lands: pushed onto the parent's branch it
    * would only count as merged there. It waits while the parent is on its way, follows the parent's base once the parent
-   * is merged, and is blocked when the parent was cancelled or failed (its branch never reaches a landing branch).
+   * is merged, and is blocked when the parent failed (its branch never reaches a landing branch). A cancelled parent
+   * whose branch is preserved on origin is different: an explicitly-named preserved branch lets a follow-up job land
+   * independently on the parent's base, carrying the preserved commits, without resuming or cancelling the old job.
+   * A missing branch or a child that does not contain the preserved tip is still blocked, so no work is dropped.
    */
-  async function landsOnItsBase(job: OrchestratorJobRow): Promise<boolean> {
+  async function landsOnItsBase(job: OrchestratorJobRow, token: number): Promise<boolean> {
     for (let current = job, depth = 0; depth < 10; depth += 1) {
       const parent = orchestratorJobsDb.list().find((other) =>
         other.id !== current.id && other.repo_path === current.repo_path && other.branch === current.base_branch);
@@ -337,8 +348,26 @@ export function createMergeQueueService(deps: {
         current = orchestratorJobsDb.update(job.id, { base_branch: parent.base_branch, last_error: note }) as OrchestratorJobRow;
         continue;
       }
-      if (parent.state === 'cancelled' || parent.state === 'failed') {
-        await block(job, `origin/${current.base_branch} is job ${parent.id}'s branch, and that job is ${parent.state}: a push there never reaches ${parent.base_branch}, so it would not be merged. Land job ${parent.id}, or create a job based on ${parent.base_branch} with these commits.`, false);
+      if (parent.state === 'cancelled') {
+        const tip = await preservedBaseTip(job, current.base_branch);
+        if (stale(job.id, token)) return false;
+        if (!tip) {
+          await block(job, `origin/${current.base_branch} is job ${parent.id}'s branch, and that job is cancelled: the branch is no longer on origin, so its work cannot be landed. Land job ${parent.id}, or create a job based on ${parent.base_branch} with these commits.`, false);
+          return false;
+        }
+        const contains = await git(job.worktree_path, 'merge-base', '--is-ancestor', tip, 'HEAD');
+        if (stale(job.id, token)) return false;
+        if (contains.code !== 0) {
+          await block(job, `origin/${current.base_branch} is job ${parent.id}'s branch, and that job is cancelled: this job does not contain its preserved tip ${tip.slice(0, 8)}, so landing it would drop that work. Rebase onto origin/${current.base_branch} and run tjob done again.`, false);
+          return false;
+        }
+        const note = `base was job ${parent.id}'s cancelled branch ${current.base_branch}, preserved on origin: lands independently on ${parent.base_branch}`;
+        console.warn(`[Orchestrator] Job ${job.id}: ${note}`);
+        current = orchestratorJobsDb.update(job.id, { base_branch: parent.base_branch, last_error: note }) as OrchestratorJobRow;
+        continue;
+      }
+      if (parent.state === 'failed') {
+        await block(job, `origin/${current.base_branch} is job ${parent.id}'s branch, and that job is failed: a push there never reaches ${parent.base_branch}, so it would not be merged. Land job ${parent.id}, or create a job based on ${parent.base_branch} with these commits.`, false);
         return false;
       }
       return false; // the parent is still on its way: this job lands after it
@@ -506,7 +535,10 @@ export function createMergeQueueService(deps: {
     switch (job.merge_step) {
       case 'queued': {
         if (deps.jobs.isSessionBusy(job)) return; // the agent's last turn is still going
-        if (!await landsOnItsBase(job)) return;
+        const token = tokenFor(job.id);
+        if (!await landsOnItsBase(job, token)) return;
+        // landsOnItsBase may fetch and inspect the preserved base: a cancel that landed meanwhile must win.
+        if (stale(job.id, token)) return;
         const laneTaken = orchestratorJobsDb.listInMergeQueue().some((other) =>
           other.id !== job.id && other.repo_path === job.repo_path && LANE_STEPS.includes(other.merge_step));
         if (!laneTaken) setStep(job, 'rebase');
