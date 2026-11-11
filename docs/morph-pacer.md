@@ -100,3 +100,102 @@ systemctl --user enable --now morph-pacer
 ```
 
 Check it with `systemctl --user status morph-pacer` and `curl http://127.0.0.1:8198/pacer/usage`.
+
+## Guarded ceiling probe
+
+`morph-pacer/src/probe.ts` is an offline-testable, guarded measurement tool for the real
+per-minute input/output ceilings. It is **disabled by default**: without `--enable-live` it
+prints a `disabled` report and makes no network call. It never retries a request, keeps one
+request in flight, and uses only deterministic synthetic prompts (no workspace or customer
+data).
+
+The key is read in-process from `~/.config/morph/api_key` (or `--api-key-file`). It is never
+accepted as an argument, printed, logged or written to the report; only the outbound
+`Authorization` header carries it.
+
+Before every call the probe reads `GET http://127.0.0.1:8198/pacer/usage` with a timeout and
+fails closed when live occupancy is unavailable or above the configured guard. Because direct
+requests bypass the pacer, the probe keeps its own 60-second rolling window and records
+`live_occupancy`, `probe_occupancy`, the per-call `reservation` and `combined_occupancy` for
+every call. It stops on the deadline, any token/call cap, a second consecutive 429, absent
+usage, transport uncertainty, or the live-load guard.
+
+Input is measured first, then output. Each step needs three successes before the next step is
+tried. A 429 below the proposed ceiling is classified `ceiling_not_explanatory`; a threshold is
+only called explanatory with repeatable evidence (two 429s at or above the proposed ceiling).
+The report never claims measured capacity.
+
+### Safe DeepSeek invocation
+
+```sh
+npx tsx morph-pacer/src/probe-cli.ts \
+  --enable-live \
+  --model morph-dsv41flash-1017 \
+  --group deepseek \
+  --deadline-ms 1200000 \
+  --max-calls 60 \
+  --max-input-tokens 8000000 \
+  --max-output-tokens 200000 \
+  > /tmp/morph-deepseek-probe.json
+```
+
+Hard caps are the four flags above (20 minutes, 60 calls, 8M input tokens, 200k output
+tokens). The per-request caps are 2,000,000 input tokens and 65,536 output tokens. The live
+guard fails closed at 50% of the group cap. Run the Kimi measurement as a separate invocation
+with `--model morph-kimik31 --group kimik31` and the same caps.
+
+### Report schema (`morph-ceiling-probe/v1`)
+
+```json
+{
+  "schema": "morph-ceiling-probe/v1",
+  "status": "disabled | completed | stopped",
+  "stopReason": "disabled | completed | deadline | call_cap | input_token_cap | output_token_cap | live_usage_unavailable | live_load_guard | two_consecutive_429 | missing_usage | transport_uncertainty | http_error | missing_api_key",
+  "model": "morph-dsv41flash-1017",
+  "group": "deepseek",
+  "startedAt": "ISO-8601",
+  "endedAt": "ISO-8601",
+  "caps": { "maxCalls": 60, "maxInputTokens": 8000000, "maxOutputTokens": 200000, "deadlineMs": 1200000 },
+  "guard": { "maxLiveUncachedIn": 1000000, "maxLiveOut": 30000, "maxCombinedUncachedIn": 1500000, "maxCombinedOut": 50000 },
+  "proposedCeiling": { "input": 2103237, "output": 76559 },
+  "calls": [
+    {
+      "index": 1,
+      "phase": "input | output",
+      "step": 1,
+      "targetInputTokens": 1024,
+      "targetOutputTokens": 16,
+      "maxTokens": 16,
+      "promptBytes": 1234,
+      "status": 200,
+      "retryAfterMs": null,
+      "provider429": false,
+      "ceilingNotExplanatory": false,
+      "usage": { "inputTokens": 1000, "outputTokens": 10, "cachedTokens": 0, "uncachedInputTokens": 1000 },
+      "liveOccupancy": { "uncachedIn": 0, "out": 0 },
+      "probeOccupancy": { "uncachedIn": 0, "out": 0 },
+      "reservation": { "uncachedIn": 512, "out": 16 },
+      "combinedOccupancy": { "uncachedIn": 512, "out": 16 },
+      "pacerWaitMs": 0,
+      "providerWaitMs": 10,
+      "outcome": "success | provider_429 | missing_usage | transport_error | http_error",
+      "error": null
+    }
+  ],
+  "summary": {
+    "totalCalls": 1,
+    "totalInputTokens": 1000,
+    "totalOutputTokens": 10,
+    "totalUncachedInputTokens": 1000,
+    "provider429Count": 0,
+    "input": { "successes": 1, "maxSuccessTarget": 1024, "maxSuccessActualInput": 1000, "maxSuccessActualOutput": 10, "rateLimits": 0, "ceilingExplanatory": null },
+    "output": { "successes": 0, "maxSuccessTarget": null, "maxSuccessActualInput": null, "maxSuccessActualOutput": null, "rateLimits": 0, "ceilingExplanatory": null },
+    "pacerWaitMsTotal": 0,
+    "providerWaitMsTotal": 10
+  }
+}
+```
+
+`pacerWaitMs` is the time spent reading live occupancy and applying the guard before a call;
+`providerWaitMs` is the request latency. `retryAfterMs` is the provider's `Retry-After` value
+when present. These are measurements, not conclusions.
