@@ -11,6 +11,7 @@ import { AppError } from '@/shared/index.js';
 import { createOrchestratorRouter } from './orchestrator.routes.js';
 import { getEffectOutbox } from './services/effect-outbox.service.js';
 import { createHealthService } from './services/health.service.js';
+import { createHubContractService } from './services/hub-contract.service.js';
 import { createHubService } from './services/hub.service.js';
 import { createJobsService } from './services/jobs.service.js';
 import { createMergeQueueService } from './services/merge-queue.service.js';
@@ -54,6 +55,8 @@ export function createOrchestratorModule(input: { runtime: ProviderRuntimeGatewa
     config,
     sendToJob: (job, message) => jobs.notifyWithOutcome(job, message),
   });
+  // The delegation contract for the hub itself: its own edits become a hub event (the person, 2026-11-11).
+  const hubContract = createHubContractService();
   const hub = createHubService({ config });
   const status = createStatusService({ config, jobs, morphUsage, hub, health });
   let timer: ReturnType<typeof setInterval> | null = null;
@@ -69,6 +72,7 @@ export function createOrchestratorModule(input: { runtime: ProviderRuntimeGatewa
       void review.tick();
       void mergeQueue.tick();
       await health.tick();
+      hubContract.tick();
       await hubWake.tick();
     } catch (error) {
       console.error('[Orchestrator] Tick failed', error);

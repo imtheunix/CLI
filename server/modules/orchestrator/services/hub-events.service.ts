@@ -3,7 +3,8 @@ import os from 'node:os';
 import path from 'node:path';
 
 // review_fyi: a low-risk review auto-approved; waiting: provider recovery needs the hub (or says when it resumes).
-export type HubEventState = 'review' | 'review_fyi' | 'blocked' | 'merge_failed' | 'turn_ended' | 'merged' | 'cancelled' | 'stalled' | 'waiting';
+// hub_writes: the hub edited files itself — the delegation contract correction (hub-contract.service).
+export type HubEventState = 'review' | 'review_fyi' | 'blocked' | 'merge_failed' | 'turn_ended' | 'merged' | 'cancelled' | 'stalled' | 'waiting' | 'hub_writes';
 
 export type HubEventInput = {
   jobId: string;
