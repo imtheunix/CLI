@@ -355,10 +355,33 @@ test('disk floors refuse job creation and a model/backend mismatch before git wo
       jobs.create({ title: 'mismatch', prompt: 'p', repoPath: repo, backend: 'morph', model: 'GLM-5.3', baseBranch: null }),
       (error: unknown) => {
         assert.equal((error as { code?: string }).code, 'MODEL_BACKEND_MISMATCH');
+        assert.match((error as Error).message, /offered by glm, not morph/);
+        return true;
+      },
+    );
+    // A backend that genuinely offers the model is never refused as a mismatch,
+    // even when another backend sorts first for the same id (zcode's GLM-5.3 vs glm's zai-coding-plan/glm-5.3).
+    await assert.rejects(
+      jobs.create({ title: 'shared', prompt: 'p', repoPath: repo, backend: 'zcode', model: 'GLM-5.3', baseBranch: null }),
+      (error: unknown) => {
+        assert.equal((error as { code?: string }).code, 'INSUFFICIENT_DISK', 'the mismatch gate passed and the disk floor refused');
         return true;
       },
     );
   }, (config) => { config.storage.requireFreeGiB = 1e20; });
+});
+
+test('low disk pauses merge checks in check without a command or an agent turn', async () => {
+  await withWorkspace(async (ctx) => {
+    const id = await finishedJob(ctx, (worktree) => commitFile(worktree, 'feature.txt', 'f', 'feature'));
+    ctx.config.checkFreeGiB = 1e9;
+    const queue = createMergeQueueService({ jobs: ctx.jobs, config: () => ctx.config });
+    await drain(queue, () => ctx.job(id), ['check']);
+    for (let i = 0; i < 3; i += 1) await queue.tick();
+    assert.equal(ctx.job(id).merge_step, 'check', 'the check is paused, not failed');
+    assert.equal(ctx.job(id).state, 'done', 'the job is not sent back to its agent');
+    assert.equal(ctx.runtime.turns.length, 0, 'the agent is never woken for a paused check');
+  });
 });
 
 test('job guidance per repository from orchestrator.json is added to that repository job prompts', async () => {
