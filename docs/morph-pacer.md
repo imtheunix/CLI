@@ -128,3 +128,39 @@ MORPH_PROBE_ALLOW_LIVE=1 npm run probe:morph -- --live --model morph-dsv41flash-
 ```
 
 Use `--levels input:output,...` to change the levels and `--max-total-ms` to shorten the hard deadline.
+
+## Guarded ceiling probe
+
+`morph-pacer/src/ceiling-probe-cli.ts` measures Morph's real sliding-60s input and output ceilings with direct provider calls. It is off unless `--enable` is passed, so importing or running it without that flag reads no key, fetches no pacer usage and makes no provider call.
+
+The probe reads the key in-process from `~/.config/morph/api_key` (or `--api-key-file`). The key is never printed, logged or accepted as an argv value. It sends only deterministic synthetic prompts, keeps one request in flight, and never retries a request. Before every call it reads `GET http://127.0.0.1:8198/pacer/usage` with a timeout and fails closed if that usage is unavailable, invalid, or above `liveGuardFraction` of the proposed ceiling. Because direct calls bypass the pacer, the probe adds its own rolling-60s usage to the live pacer window and waits for that combined occupancy plus the next reservation to fit under the proposed ceiling.
+
+It measures input first, then output. Each step needs three successes before the next larger step. It stops safely on the deadline, call/token caps, a second consecutive provider 429, a successful response without usage, transport uncertainty, or the live-load guard. A 429 below the proposed ceiling is classified `ceiling-not-explanatory`; a threshold is only reported after two consecutive 429s at the same step, and the report never claims capacity.
+
+### Safe DeepSeek invocation
+
+Run the pacer first, then from the repository root:
+
+```sh
+npx tsx morph-pacer/src/ceiling-probe-cli.ts \
+  --enable \
+  --model morph-dsv41flash-1017 \
+  --deadline-ms 1200000 \
+  --max-calls 60 \
+  --max-input-tokens 12000000 \
+  --max-output-tokens 500000 \
+  --live-guard-fraction 0.5
+```
+
+Hard caps: 20 minutes, 60 calls, 12,000,000 prompt tokens, 500,000 completion tokens, one request in flight, no retries, and live occupancy at most 50% of the DeepSeek proposed ceiling (2,103,237 uncached input / 76,559 output per 60s). The command exits `0` only when the plan completes; any safe stop exits `2` and still prints the report.
+
+### Report schema
+
+The CLI prints one JSON object (`schema: "morph-ceiling-probe/v1"`):
+
+- `enabled`, `model`, `startedAt`, `finishedAt`, `durationMs`, `stopReason`, `stopDetail`
+- `caps` (`maxCalls`, `maxInputTokens`, `maxOutputTokens`, `deadlineMs`), `proposedCeiling`, `liveGuard`
+- `calls[]`: `phase` (`input`/`output`), `step`, `attempt`, `startedAt`, `durationMs`, `request` (`model`, `targetInputTokens`, `targetOutputTokens`, `bodyBytes`), `status`, `retryAfterMs`, `usage` (`promptTokens`, `completionTokens`, `cachedTokens`, `uncachedIn`), `liveOccupancy`, `combinedOccupancy`, `provider429`, `pacerWaitMs`, `providerLatencyMs`, `classification`, optional `error`
+- `summary`: call/success/429 counts, exact token totals, `pacerWaitMsTotal`, `providerLatencyMsTotal`, per-phase `maxSuccessTokens` and `successes`, and `threshold` (only with repeatable two-consecutive-429 evidence)
+
+`pacerWaitMs` is the time the probe waited for live occupancy and its own rolling window before sending; `providerLatencyMs` is the provider call duration. They are measurements, not conclusions.
