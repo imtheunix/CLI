@@ -26,9 +26,16 @@ jobs:
       - name: Install dependencies
         run: env -u GITHUB_TOKEN npm ci
 
+      - name: Prepare runner environment
+        run: mkdir -p "$HOME/Tribeira"
+
       - name: Run full CLI test gate
         env:
           CLI_HUB_EVENTS_LOG: ${{ runner.temp }}/cli-hub-events.log
+          LANG: C
+          LC_ALL: C
+          TZ: UTC
+          LABS_CONTROL_TOKEN: ci-test-token
         run: |
           env -u CLAUDE_CLI_PATH -u CLAUDE_CODE_EXECUTABLE -u CLAUDE_CODE_EXECPATH \
             npm run typecheck && \
