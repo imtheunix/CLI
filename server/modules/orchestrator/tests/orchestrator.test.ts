@@ -374,13 +374,14 @@ test('disk floors refuse job creation and a model/backend mismatch before git wo
 test('low disk pauses merge checks in check without a command or an agent turn', async () => {
   await withWorkspace(async (ctx) => {
     const id = await finishedJob(ctx, (worktree) => commitFile(worktree, 'feature.txt', 'f', 'feature'));
+    const turnsBefore = ctx.runtime.turns.length;
     ctx.config.checkFreeGiB = 1e9;
     const queue = createMergeQueueService({ jobs: ctx.jobs, config: () => ctx.config });
     await drain(queue, () => ctx.job(id), ['check']);
     for (let i = 0; i < 3; i += 1) await queue.tick();
     assert.equal(ctx.job(id).merge_step, 'check', 'the check is paused, not failed');
     assert.equal(ctx.job(id).state, 'done', 'the job is not sent back to its agent');
-    assert.equal(ctx.runtime.turns.length, 0, 'the agent is never woken for a paused check');
+    assert.equal(ctx.runtime.turns.length, turnsBefore, 'the agent is never woken for a paused check');
   });
 });
 
