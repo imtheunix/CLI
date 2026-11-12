@@ -1,0 +1,2 @@
+data: {"id":"evt_1c75ee86c001vaIwxza96QMzMl","type":"server.connected","properties":{}}
+
