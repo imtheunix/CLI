@@ -1,0 +1,10 @@
+[Unit]
+Description=Clean tribeira-recall artifacts daily
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+Unit=tribeira-recall-cleanup.service
+
+[Install]
+WantedBy=timers.target

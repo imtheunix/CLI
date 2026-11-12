@@ -173,6 +173,8 @@ CREATE TABLE IF NOT EXISTS orchestrator_jobs (
     limit_recovery TEXT,
     -- JSON [{at, fromBackend, toBackend, toModel, reason, resetAt, ...}]: backend handovers (Codex quota -> GLM Flash).
     backend_history TEXT,
+    -- JSON [{at, from, to}]: title changes made with tjob rename, oldest first.
+    title_history TEXT,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );

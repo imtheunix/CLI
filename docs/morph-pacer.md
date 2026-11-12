@@ -4,6 +4,8 @@ A small local proxy in front of Morph's OpenAI-compatible API. It keeps our agen
 
 It listens on `127.0.0.1:8198`, forwards `/v1/*` to `https://api.morphllm.com/v1/*`, and injects the key from `~/.config/morph/api_key`. Client `Authorization` headers are ignored. Streaming responses pass through unbuffered; for streams it adds `stream_options.include_usage=true` when the request does not set it.
 
+`POST /v1/messages` (the Anthropic wire) is passed through too. It uses the same model aliases, pacing groups and ledger, with Anthropic usage mapped as `input_tokens + cache_creation_input_tokens` uncached input, `cache_read_input_tokens` cached input and `output_tokens` output. Verified 2026-11-11: Morph's `/v1/messages` ignores `chat_template_kwargs`, so aliases there map the model only; the Kimi thinking-off alias stays on `/v1/chat/completions`. OpenAI-only injections (`cache_ttl`, `run_id`, `stream_options`) are not added to `/v1/messages`.
+
 ## Run it
 
 ```sh
@@ -98,3 +100,83 @@ systemctl --user enable --now morph-pacer
 ```
 
 Check it with `systemctl --user status morph-pacer` and `curl http://127.0.0.1:8198/pacer/usage`.
+
+## Bounded Morph usage probe
+
+`morph-pacer/src/probe.ts` measures Morph's real per-minute ceiling without touching the pacer's live ledger,
+config or defaults. It is offline by default: a dry run performs no provider request, no API-key lookup and no live
+usage lookup, and the default transport throws instead of reaching the network.
+
+The probe sends synthetic prompts only, one outstanding request at a time, with no transport retries. It runs two
+separate sweeps: output first (128 -> 512 -> 2048 actual completion tokens with at most 2,000 actual uncached input),
+then input (50,000 -> 100,000 -> 200,000 actual uncached input with a fixed 128 actual completion). A level succeeds
+only when the provider's returned usage meets its actual-token threshold. Planned characters, `max_tokens` and the
+planned level are never counted as measured success. A cached or short-finished response is `below_threshold` and
+inconclusive, never a capacity claim.
+
+Every request body is wholly unique (deterministic filler with a fresh seed, not a repeated body with a nonce
+prefix), so uncached input is genuinely exercised. The character-to-token ratio is calibrated from the provider's
+actual `prompt_tokens` after each response instead of a guessed 4 chars/token. Output levels ask for a deterministic
+long-form counting sequence rather than `OK`, so real completion volume is generated.
+
+Before every live call it reads `GET http://127.0.0.1:8198/pacer/usage` (bounded timeout) and admits only when the
+live window plus the probe's own sliding-60s window plus the level's worst-case reservation fits under the assumed
+caps (240,000 uncached input / 32,000 output by default). A missing usage response, an unavailable live-admission
+state or a failed load guard stops the run; failed or usage-less responses never invent tokens. The run also stops
+at a finite deadline, call cap, actual-token cap, attempt cap per level, or two consecutive 429s. The output JSON
+keeps `observed` (actual window values) separate from `assumedCaps`, reports actual observed and successful maxima,
+and marks a run `completed` only when every level met its actual-token threshold; otherwise it is `inconclusive` or
+a specific safe stop.
+
+Run the default dry run:
+
+```sh
+npm run probe:morph
+```
+
+Run it live only when the hub explicitly gates it. The command needs both `--live` and
+`MORPH_PROBE_ALLOW_LIVE=1`; the key is read from `~/.config/morph/api_key` inside the process and is never printed:
+
+```sh
+MORPH_PROBE_ALLOW_LIVE=1 npm run probe:morph -- --live --model morph-dsv41flash-1017
+```
+
+Explicit finite controls: `--mode output|input|all`, `--levels sweep:input:output,...` (for example
+`output:2000:128,input:50000:128`), `--max-total-ms`, `--max-calls`, `--max-tokens`,
+`--successes-per-level`, `--max-attempts-per-level`, `--caps-in` and `--caps-out`.
+
+## Guarded ceiling probe
+
+`morph-pacer/src/ceiling-probe-cli.ts` measures Morph's real sliding-60s input and output ceilings with direct provider calls. It is off unless `--enable` is passed, so importing or running it without that flag reads no key, fetches no pacer usage and makes no provider call.
+
+The probe reads the key in-process from `~/.config/morph/api_key` (or `--api-key-file`). The key is never printed, logged or accepted as an argv value. It sends only deterministic synthetic prompts, keeps one request in flight, and never retries a request. Before every call it reads `GET http://127.0.0.1:8198/pacer/usage` with a timeout and fails closed if that usage is unavailable, invalid, or above `liveGuardFraction` of the proposed ceiling. Because direct calls bypass the pacer, the probe adds its own rolling-60s usage to the live pacer window and waits for that combined occupancy plus the next reservation to fit under the proposed ceiling.
+
+It measures input first, then output. Each step needs three successes before the next larger step. It stops safely on the deadline, call/token caps, a second consecutive provider 429, a successful response without usage, transport uncertainty, or the live-load guard. A 429 below the proposed ceiling is classified `ceiling-not-explanatory`; a threshold is only reported after two consecutive 429s at the same step, and the report never claims capacity.
+
+### Safe DeepSeek invocation
+
+Run the pacer first, then from the repository root:
+
+```sh
+npx tsx morph-pacer/src/ceiling-probe-cli.ts \
+  --enable \
+  --model morph-dsv41flash-1017 \
+  --deadline-ms 1200000 \
+  --max-calls 60 \
+  --max-input-tokens 12000000 \
+  --max-output-tokens 500000 \
+  --live-guard-fraction 0.5
+```
+
+Hard caps: 20 minutes, 60 calls, 12,000,000 prompt tokens, 500,000 completion tokens, one request in flight, no retries, and live occupancy at most 50% of the DeepSeek proposed ceiling (2,103,237 uncached input / 76,559 output per 60s). The command exits `0` only when the plan completes; any safe stop exits `2` and still prints the report.
+
+### Report schema
+
+The CLI prints one JSON object (`schema: "morph-ceiling-probe/v1"`):
+
+- `enabled`, `model`, `startedAt`, `finishedAt`, `durationMs`, `stopReason`, `stopDetail`
+- `caps` (`maxCalls`, `maxInputTokens`, `maxOutputTokens`, `deadlineMs`), `proposedCeiling`, `liveGuard`
+- `calls[]`: `phase` (`input`/`output`), `step`, `attempt`, `startedAt`, `durationMs`, `request` (`model`, `targetInputTokens`, `targetOutputTokens`, `bodyBytes`), `status`, `retryAfterMs`, `usage` (`promptTokens`, `completionTokens`, `cachedTokens`, `uncachedIn`), `liveOccupancy`, `combinedOccupancy`, `provider429`, `pacerWaitMs`, `providerLatencyMs`, `classification`, optional `error`
+- `summary`: call/success/429 counts, exact token totals, `pacerWaitMsTotal`, `providerLatencyMsTotal`, per-phase `maxSuccessTokens` and `successes`, and `threshold` (only with repeatable two-consecutive-429 evidence)
+
+`pacerWaitMs` is the time the probe waited for live occupancy and its own rolling window before sending; `providerLatencyMs` is the provider call duration. They are measurements, not conclusions.

@@ -8,6 +8,7 @@ import {
   projectsDb,
   readBackendHandovers,
   readMergeStepHistory,
+  readTitleHistory,
   sessionsDb,
   userDb,
 } from '@/modules/database/index.js';
@@ -17,6 +18,7 @@ import type {
   OrchestratorEffectRow,
   OrchestratorJobRow,
   OrchestratorMergeStepEvent,
+  OrchestratorTitleChange,
 } from '@/modules/database/index.js';
 import { abortTurn } from '@/modules/detached-turns/index.js';
 import {
@@ -98,6 +100,47 @@ export type OrchestratorJobView = OrchestratorJobRow & {
 export const HANDOVER_CONTINUE = 'Continue where the previous agent stopped.';
 
 /**
+ * `tjob show`: whether the job's worktree is still on disk, and where its code went when it is not.
+ * A removed worktree keeps its pushed/merged sha; a cancelled job also says whether its branch
+ * still exists locally or on origin, so the hub does not grep a dead path.
+ */
+export type OrchestratorWorktreeStatus = {
+  exists: boolean;
+  pushedSha: string | null;
+  branch: string;
+  /** For a cancelled job whose worktree is gone: the branch still exists in the repo; null when not checked. */
+  branchLocal: boolean | null;
+  /** For a cancelled job whose worktree is gone: the branch still exists on origin; null when not checked. */
+  branchOrigin: boolean | null;
+};
+
+async function branchExists(repoPath: string, ref: string): Promise<boolean> {
+  try {
+    await runGitCommand(['show-ref', '--verify', '--quiet', ref], repoPath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function describeWorktree(
+  job: Pick<OrchestratorJobRow, 'worktree_path' | 'repo_path' | 'branch' | 'state' | 'pushed_sha'>,
+): Promise<OrchestratorWorktreeStatus> {
+  const exists = existsSync(job.worktree_path);
+  const status: OrchestratorWorktreeStatus = {
+    exists,
+    pushedSha: job.pushed_sha,
+    branch: job.branch,
+    branchLocal: null,
+    branchOrigin: null,
+  };
+  if (exists || job.state !== 'cancelled') return status;
+  status.branchLocal = await branchExists(job.repo_path, `refs/heads/${job.branch}`);
+  status.branchOrigin = await branchExists(job.repo_path, `refs/remotes/origin/${job.branch}`);
+  return status;
+}
+
+/**
  * Jobs service: the handover note of a job moved to another backend at its quota: who stopped and why, the
  * previous agent's last message, the branch's commits since its base and the worktree's status.
  */
@@ -130,7 +173,7 @@ export function buildHandoverNote(input: {
 export type OrchestratorMergeStepTiming = OrchestratorMergeStepEvent & { durationMs: number | null };
 
 /** Steps with nothing after them: their duration is not counted. */
-const RESTING_MERGE_STEPS = new Set<string>(['none', 'review', 'merged', 'blocked']);
+const RESTING_MERGE_STEPS = new Set<string>(['none', 'review', 'merged', 'blocked', 'cancelled']);
 
 /**
  * Used by the job view: a step lasts until the next one began; the job's current step until now, unless it is a
@@ -228,6 +271,8 @@ export function createJobsService(deps: {
   morphUsage?: MorphUsageService;
   /** Cancellation also stops this job's slotless automatic reviewer, when one is running. */
   abortRefutation?: (job: OrchestratorJobRow) => void;
+  /** The CI/CD queue's own cancel: stops a running step by its tracked process and takes the job out of the queue. */
+  withdrawFromMergeQueue?: (job: OrchestratorJobRow) => Promise<{ cancelled: boolean; reason?: string }>;
 }) {
   const now = deps.now ?? (() => new Date());
   const morphUsage = deps.morphUsage ?? createMorphUsageService({ config: deps.config, now });
@@ -478,22 +523,32 @@ export function createJobsService(deps: {
     if (outcome.status.startsWith('worktree removal failed')) throw new Error(outcome.status);
   };
 
-  /** Starts a turn in the job's session. False when the session is busy or gone. */
-  async function sendTurn(
+  /**
+   * Starts a turn in the job's session and says what happened: `started` when
+   * the turn is running, `refused` when a live run (or a cancelled/gone job)
+   * owns the session and no turn can start. A timer is never evidence of
+   * delivery: after the grace period only a registered run counts as started.
+   */
+  async function sendTurnOutcome(
     job: OrchestratorJobRow,
     content: string,
     resumeKey: string | null = null,
     // The caller probed ZCode moments ago (a handover): no second probe before the first turn.
     options: { zcodeProbed?: boolean } = {},
-  ): Promise<boolean> {
-    if (!job.session_id || !job.backend || orchestratorJobsDb.get(job.id)?.state === 'cancelled') return false;
+  ): Promise<{ started: boolean; refused: boolean }> {
+    if (!job.session_id || !job.backend || orchestratorJobsDb.get(job.id)?.state === 'cancelled') {
+      return { started: false, refused: true };
+    }
+    // A processing session cannot take another turn. Report the refusal directly
+    // instead of racing the timer below, which would call it delivered.
+    if (chatRunRegistry.isProcessing(job.session_id)) return { started: false, refused: true };
     const backend = deps.config().backends[job.backend];
 
     if (!options.zcodeProbed && (job.backend === 'glm' || job.backend === 'zcode' || backend.provider === 'zcode')) {
       const probe = await probeZcode({ now: now() });
       if (!probe.ok && probe.error === 'login_failed') {
         holdForAuthRequired(job, probe.message);
-        return false;
+        return { started: false, refused: true };
       }
     }
 
@@ -503,7 +558,7 @@ export function createJobsService(deps: {
     if (begun.status === 'skipped') {
       // A failed abort or cleanup of this job: no new turn before the old work is undone.
       orchestratorJobsDb.update(job.id, { last_error: `No new turn: ${begun.row.kind} ${begun.row.key} failed (${begun.row.last_error ?? 'unknown'}); it must be undone first` });
-      return false;
+      return { started: false, refused: true };
     }
     liveTurnKeys.add(turnKey);
     orchestratorJobsDb.update(job.id, { in_turn: 1 });
@@ -531,10 +586,32 @@ export function createJobsService(deps: {
     // Settles when the turn ends; only a turn that never started is reported here.
     const started = await Promise.race([
       turn.then((result) => result.started),
-      new Promise<boolean>((resolve) => setTimeout(() => resolve(true), 2_000)),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), 2_000)),
     ]);
-    if (!started) orchestratorJobsDb.update(job.id, { in_turn: 0 });
-    return started;
+    if (started === null) {
+      // The grace period elapsed without a verdict. A registered run is real
+      // delivery; anything else is not, and must not be reported as started.
+      return chatRunRegistry.isProcessing(job.session_id)
+        ? { started: true, refused: false }
+        : { started: false, refused: false };
+    }
+    if (!started) {
+      // A refused nudge must not clear a live run's in_turn: only clear when no
+      // run owns the session now.
+      if (!chatRunRegistry.isProcessing(job.session_id)) orchestratorJobsDb.update(job.id, { in_turn: 0 });
+      return { started: false, refused: true };
+    }
+    return { started: true, refused: false };
+  }
+
+  /** Starts a turn in the job's session. False when the session is busy or gone. */
+  async function sendTurn(
+    job: OrchestratorJobRow,
+    content: string,
+    resumeKey: string | null = null,
+    options: { zcodeProbed?: boolean } = {},
+  ): Promise<boolean> {
+    return (await sendTurnOutcome(job, content, resumeKey, options)).started;
   }
 
   function effectHandlers(): Partial<Record<OrchestratorEffectRow['kind'], EffectReplayHandler>> {
@@ -669,7 +746,7 @@ export function createJobsService(deps: {
       if (!sessionId) {
         projectsDb.createProjectPath(job.worktree_path, `${path.basename(job.repo_path)} · ${job.title}`);
         sessionId = sessionsService.createAppSession(backendConfig.provider, job.worktree_path, job.title).sessionId;
-        sessionsDb.updateSessionCustomName(sessionId, `${label} · ${job.title}`);
+        sessionsDb.updateSessionCustomName(sessionId, `${label} · ${job.id} · ${job.title}`);
         sessionsDb.setSessionModel(sessionId, model);
         if (backendConfig.effort) sessionsDb.setSessionEffort(sessionId, backendConfig.effort);
       }
@@ -894,18 +971,49 @@ export function createJobsService(deps: {
     },
 
     /**
+     * `tjob rename <id> "<new title>"`: the hub gives a job a plain-outcome title. The old title is kept in the
+     * job's title history, so `tjob show` and later readers can still see what it was called.
+     */
+    async rename(id: string, title: string): Promise<OrchestratorJobView> {
+      const job = orchestratorJobsDb.get(id);
+      if (!job) throw new AppError(`Job ${id} was not found`, { code: 'JOB_NOT_FOUND', statusCode: 404 });
+      const next = title.trim();
+      if (!next) throw new AppError('title is required', { code: 'INVALID_REQUEST_BODY', statusCode: 400 });
+      if (next === job.title) return view(job);
+      const change: OrchestratorTitleChange = { at: now().toISOString(), from: job.title, to: next };
+      orchestratorJobsDb.update(id, {
+        title: next,
+        title_history: JSON.stringify([...readTitleHistory(job), change]),
+      });
+      return view(orchestratorJobsDb.get(id) as OrchestratorJobRow);
+    },
+
+    /**
      * `tjob cancel`: the person said they do not want the job anymore (in
      * its session, where its agent runs this, or from a shell). It frees its
      * slot and leaves the CI/CD queue; branch and session are kept; a clean worktree is removed after the session stops.
-     * A merge already past its rebase is not taken back.
+     * Before the push the queue stops the step it is running; from the push on the job is left to merge.
      */
     async cancel(id: string): Promise<OrchestratorJobView> {
       const job = orchestratorJobsDb.get(id);
       if (!job) throw new AppError(`Job ${id} was not found`, { code: 'JOB_NOT_FOUND', statusCode: 404 });
-      if (['rebase', 'check', 'push', 'deploy', 'merged'].includes(job.merge_step)) {
-        throw new AppError(`Job ${id} is already in the CI/CD queue (${job.merge_step})`, { code: 'JOB_MERGING', statusCode: 409 });
+      if (['queued', 'rebase', 'check', 'push', 'deploy', 'merged'].includes(job.merge_step)) {
+        const withdrawn = await deps.withdrawFromMergeQueue?.(job);
+        if (withdrawn) {
+          if (!withdrawn.cancelled) {
+            throw new AppError(withdrawn.reason ?? `Job ${id} is already in the CI/CD queue (${job.merge_step})`, { code: 'JOB_MERGING', statusCode: 409 });
+          }
+        } else if (['push', 'deploy', 'merged'].includes(job.merge_step)) {
+          throw new AppError(`Job ${id} is already pushing; it will merge`, { code: 'JOB_MERGING', statusCode: 409 });
+        } else {
+          // No queue wired (a service used on its own): a job before the push has no process to stop.
+          orchestratorJobsDb.update(id, { state: 'cancelled', merge_step: 'none', in_turn: 0 });
+          orchestratorJobsDb.recordMergeStep(id, 'cancelled', now().toISOString(), 'tjob cancel');
+          appendHubEvent({ jobId: id, state: 'cancelled', title: job.title, reason: `cancelled from the CI/CD queue at ${job.merge_step}; branch kept` });
+        }
+      } else {
+        orchestratorJobsDb.update(id, { state: 'cancelled', merge_step: 'none', in_turn: 0 });
       }
-      orchestratorJobsDb.update(id, { state: 'cancelled', merge_step: 'none', in_turn: 0 });
       // Persist cancellation first: a late verdict is superseded even while the provider interrupt is in flight.
       try {
         deps.abortRefutation?.(job);
@@ -995,6 +1103,11 @@ export function createJobsService(deps: {
       return sendTurn(job, message);
     },
 
+    /** Used by health: like notify, but says whether a live run refused the message. */
+    async notifyWithOutcome(job: OrchestratorJobRow, message: string): Promise<{ started: boolean; refused: boolean }> {
+      return sendTurnOutcome(job, message);
+    },
+
     /** Used by the CI/CD queue to wait for an agent's last turn before touching its worktree. */
     isSessionBusy(job: OrchestratorJobRow): boolean {
       return Boolean(job.session_id && (chatRunRegistry.isProcessing(job.session_id) || deps.runtime.hasBackgroundWork(job.session_id)));
@@ -1074,6 +1187,9 @@ export function createJobsService(deps: {
         // A turn that did not stop on a limit or login ends the streak.
         ...(job.limit_recovery && !completion.aborted ? { failure_class: null, resume_at: null, limit_recovery: null } : {}),
         ...(completion.exitCode !== 0 && !completion.aborted ? { last_error: `The last turn ended with exit code ${completion.exitCode}` } : {}),
+        // A later successful turn clears the previous turn's error (exit code, usage
+        // limit or login), so health's dead-slot check sees the last turn.
+        ...(completion.exitCode === 0 && !completion.aborted && job.last_error ? { last_error: null } : {}),
       });
       if (job.state === 'active') {
         appendHubEvent({

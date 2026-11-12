@@ -6,7 +6,10 @@ export type { HubEventInput, HubEventState } from './services/hub-events.service
 // HubWakeService: wakes the orchestrating hub session on job events.
 export { createHubWakeService } from './services/hub-wake.service.js';
 export type { HubWakeService, HubWakeDependencies, LoggedHubEvent } from './services/hub-wake.service.js';
+// HealthService: job health alerts (no commit, overtime, dead slot) for the orchestrator tick and status.
+export { createHealthService, NO_COMMIT_NUDGE } from './services/health.service.js';
+export type { HealthCondition, HealthDependencies, HealthFlag, HealthService, WorktreeHead } from './services/health.service.js';
 // HubService: `tjob hub` status and switching (use / new) for the orchestrator routes.
 export { createHubService } from './services/hub.service.js';
 export type { HubService, HubStatus, HubSessionCreated } from './services/hub.service.js';
-export type { HubWakeConfig } from './services/orchestrator-config.service.js';
+export type { HealthConfig, HubWakeConfig } from './services/orchestrator-config.service.js';

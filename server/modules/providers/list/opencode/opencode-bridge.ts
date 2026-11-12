@@ -9,10 +9,13 @@
  * as flat `{ type: 'text', part, delta }` events for the runtime's line parser.
  *
  * The bridge owns the server: it drains serve output, kills serve on normal,
- * error and signal exit, and never leaves an unmanaged daemon behind.
+ * error and signal exit, and never leaves an unmanaged daemon behind. If the
+ * private server or its event stream cannot start, the bridge falls back to an
+ * ordinary authoritative `opencode run` instead of failing the turn.
  */
 
-import type { ChildProcess } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
+import type { ChildProcess, SpawnOptions } from 'node:child_process';
 import net from 'node:net';
 
 import crossSpawn from 'cross-spawn';
@@ -21,12 +24,18 @@ const SERVE_START_TIMEOUT_MS = 10_000;
 const SSE_ATTEMPT_TIMEOUT_MS = 2_000;
 const SSE_RETRY_MS = 100;
 const CLEANUP_TIMEOUT_MS = 2_000;
+const MAX_BUFFERED_DELTAS = 1_000;
 
 type SseDelta = {
   sessionId: string;
   messageId: string;
   partId: string;
   delta: string;
+};
+
+type SseEvent = {
+  id: string | null;
+  data: unknown;
 };
 
 type RunEvent = {
@@ -90,20 +99,73 @@ const waitForExit = (child: ChildProcess, timeoutMs: number): Promise<boolean> =
   });
 };
 
-const stopServe = async (serve: ChildProcess): Promise<void> => {
-  if (serve.exitCode !== null || serve.signalCode !== null) {
+/**
+ * Spawns a child in its own process group on POSIX so cleanup can reach
+ * grandchildren that inherited the run's stdout. Windows keeps the default
+ * process handling and falls back to a direct child kill.
+ */
+const spawnChild = (command: string, args: string[], options: SpawnOptions): ChildProcess => {
+  return crossSpawn(command, args, {
+    ...options,
+    detached: process.platform !== 'win32',
+  });
+};
+
+const killGroup = (child: ChildProcess | null, signal: NodeJS.Signals): void => {
+  if (!child || !child.pid) {
     return;
   }
   try {
-    serve.kill('SIGTERM');
-  } catch {
+    process.kill(-child.pid, signal);
+  } catch {}
+};
+
+/**
+ * Windows has no process groups, so use the built-in `taskkill /T` to reach
+ * the private SDK's descendants. Bounded by the same cleanup timeout; if the
+ * utility is unavailable, fall back to killing the leader.
+ */
+const killWindowsTree = (child: ChildProcess, signal: NodeJS.Signals): void => {
+  if (!child.pid) {
     return;
   }
-  if (!(await waitForExit(serve, CLEANUP_TIMEOUT_MS))) {
+  try {
+    const result = spawnSync('taskkill', ['/PID', String(child.pid), '/T', '/F'], {
+      stdio: 'ignore',
+      timeout: CLEANUP_TIMEOUT_MS,
+      windowsHide: true,
+    });
+    if (result.error) {
+      child.kill(signal);
+    }
+  } catch {
     try {
-      serve.kill('SIGKILL');
+      child.kill(signal);
     } catch {}
   }
+};
+
+/**
+ * Bounded process-tree teardown. On POSIX the group is signalled even when the
+ * leader already exited, because a grandchild may still hold the inherited
+ * stdout. On Windows `taskkill /T` walks the tree.
+ */
+const terminate = async (child: ChildProcess | null): Promise<void> => {
+  if (!child) {
+    return;
+  }
+  if (process.platform === 'win32') {
+    killWindowsTree(child, 'SIGTERM');
+    if (!(await waitForExit(child, CLEANUP_TIMEOUT_MS))) {
+      try {
+        child.kill('SIGKILL');
+      } catch {}
+    }
+    return;
+  }
+  killGroup(child, 'SIGTERM');
+  await waitForExit(child, CLEANUP_TIMEOUT_MS);
+  killGroup(child, 'SIGKILL');
 };
 
 const connectSse = async (
@@ -145,9 +207,15 @@ const connectSse = async (
   throw lastError instanceof Error ? lastError : new Error('OpenCode event stream connection timed out');
 };
 
+/**
+ * Parses a complete SSE stream. Events are accumulated across split chunks and
+ * multiline `data:` fields; the SSE `id:` field is carried as the event
+ * identity so replayed deltas can be suppressed without dropping legitimate
+ * repeated chunks that have different ids.
+ */
 const consumeSse = async (
   response: Response,
-  onEvent: (event: unknown) => void,
+  onEvent: (event: SseEvent) => void,
   signal: AbortSignal,
 ): Promise<void> => {
   const reader = response.body?.getReader();
@@ -156,6 +224,47 @@ const consumeSse = async (
   }
   const decoder = new TextDecoder();
   let buffer = '';
+  let dataLines: string[] = [];
+  let eventId: string | null = null;
+
+  const dispatch = () => {
+    if (dataLines.length === 0) {
+      eventId = null;
+      return;
+    }
+    const data = dataLines.join('\n');
+    const id = eventId;
+    dataLines = [];
+    eventId = null;
+    if (!data) {
+      return;
+    }
+    try {
+      onEvent({ id, data: JSON.parse(data) });
+    } catch {}
+  };
+
+  const processLine = (line: string) => {
+    if (line === '') {
+      dispatch();
+      return;
+    }
+    if (line.startsWith(':')) {
+      return;
+    }
+    const colon = line.indexOf(':');
+    const field = colon === -1 ? line : line.slice(0, colon);
+    let value = colon === -1 ? '' : line.slice(colon + 1);
+    if (value.startsWith(' ')) {
+      value = value.slice(1);
+    }
+    if (field === 'data') {
+      dataLines.push(value);
+    } else if (field === 'id') {
+      eventId = value || null;
+    }
+  };
+
   try {
     while (!signal.aborted) {
       const { value, done } = await reader.read();
@@ -165,19 +274,20 @@ const consumeSse = async (
       buffer += decoder.decode(value, { stream: true });
       let newline = buffer.indexOf('\n');
       while (newline >= 0) {
-        const line = buffer.slice(0, newline).replace(/\r$/, '');
+        let line = buffer.slice(0, newline);
         buffer = buffer.slice(newline + 1);
-        if (line.startsWith('data:')) {
-          const data = line.slice(5).trim();
-          if (data) {
-            try {
-              onEvent(JSON.parse(data));
-            } catch {}
-          }
+        if (line.endsWith('\r')) {
+          line = line.slice(0, -1);
         }
+        processLine(line);
         newline = buffer.indexOf('\n');
       }
     }
+    if (buffer) {
+      processLine(buffer.replace(/\r$/, ''));
+      buffer = '';
+    }
+    dispatch();
   } catch (error) {
     if (!signal.aborted) {
       throw error;
@@ -233,6 +343,66 @@ const forwardRunStdout = (
   });
 };
 
+const readDelta = (event: unknown): SseDelta | null => {
+  if (!event || typeof event !== 'object') {
+    return null;
+  }
+  const record = event as {
+    type?: unknown;
+    properties?: {
+      sessionID?: unknown;
+      messageID?: unknown;
+      partID?: unknown;
+      assistantMessageID?: unknown;
+      textID?: unknown;
+      field?: unknown;
+      delta?: unknown;
+    };
+  };
+  const properties = record.properties;
+  if (!properties) {
+    return null;
+  }
+  if (record.type === 'message.part.delta') {
+    if (properties.field !== 'text') {
+      return null;
+    }
+    if (
+      typeof properties.sessionID !== 'string'
+      || typeof properties.messageID !== 'string'
+      || typeof properties.partID !== 'string'
+      || typeof properties.delta !== 'string'
+      || !properties.delta
+    ) {
+      return null;
+    }
+    return {
+      sessionId: properties.sessionID,
+      messageId: properties.messageID,
+      partId: properties.partID,
+      delta: properties.delta,
+    };
+  }
+  if (record.type === 'session.next.text.delta') {
+    if (
+      typeof properties.sessionID !== 'string'
+      || typeof properties.assistantMessageID !== 'string'
+      || typeof properties.textID !== 'string'
+      || typeof properties.delta !== 'string'
+      || !properties.delta
+    ) {
+      return null;
+    }
+    return {
+      sessionId: properties.sessionID,
+      messageId: properties.assistantMessageID,
+      partId: properties.textID,
+      delta: properties.delta,
+    };
+  }
+  return null;
+};
+
 const runBridge = async (): Promise<number> => {
   const rawArgs = process.argv.slice(2);
   const args = rawArgs[0] === '--' ? rawArgs.slice(1) : rawArgs;
@@ -243,59 +413,32 @@ const runBridge = async (): Promise<number> => {
   const baseUrl = `http://127.0.0.1:${port}`;
   const sseUrl = `${baseUrl}/event?directory=${encodeURIComponent(workingDir)}`;
 
-  const serve = crossSpawn(
-    'opencode',
-    ['serve', '--hostname', '127.0.0.1', '--port', String(port)],
-    { cwd: workingDir, env: process.env, stdio: ['ignore', 'pipe', 'pipe'] },
-  );
-  // Serve output is not part of the run protocol; drain it so it cannot block.
-  serve.stdout?.resume();
-  serve.stderr?.resume();
-  let serveExited = false;
-  serve.once('exit', () => {
-    serveExited = true;
-  });
-  serve.once('error', () => {
-    serveExited = true;
-  });
-
   const abortController = new AbortController();
+  let serve: ChildProcess | null = null;
   let run: ChildProcess | null = null;
   let runFinished = false;
+  let runExited = false;
   let shuttingDown = false;
   let shutdownPromise: Promise<void> | null = null;
-
-  const shutdown = (code: number): Promise<void> => {
-    if (shutdownPromise) {
-      return shutdownPromise;
-    }
-    shuttingDown = true;
-    shutdownPromise = (async () => {
-      abortController.abort();
-      if (run && run.exitCode === null && run.signalCode === null) {
-        try {
-          run.kill('SIGTERM');
-        } catch {}
-      }
-      await stopServe(serve);
-      process.exit(code);
-    })();
-    return shutdownPromise;
-  };
-
-  process.once('SIGTERM', () => {
-    void shutdown(143);
-  });
-  process.once('SIGINT', () => {
-    void shutdown(130);
-  });
+  let sseDone: Promise<void> | null = null;
+  let usingServe = false;
 
   let targetSessionId = sessionArg;
+  let rootSelected = Boolean(sessionArg);
+  const bufferedDeltas: SseDelta[] = [];
   const completedTextPartIds = new Set<string>();
+  const seenEventIds = new Set<string>();
+
+  const emitReset = (): void => {
+    writeLine(JSON.stringify({ type: 'stream_reset' }));
+  };
 
   const emitDelta = (delta: SseDelta): void => {
     writeLine(JSON.stringify({
       type: 'text',
+      // Internal marker: the parser may drop these stale synthetic deltas
+      // after a stream reset while still accepting authoritative run stdout.
+      bridge: true,
       sessionID: delta.sessionId,
       part: {
         id: delta.partId,
@@ -307,53 +450,57 @@ const runBridge = async (): Promise<number> => {
     }));
   };
 
-  const handleSseEvent = (event: unknown): void => {
-    if (!event || typeof event !== 'object') {
-      return;
-    }
-    const record = event as {
-      type?: unknown;
-      properties?: {
-        sessionID?: unknown;
-        messageID?: unknown;
-        partID?: unknown;
-        field?: unknown;
-        delta?: unknown;
-      };
-    };
-    if (record.type !== 'message.part.delta' || !record.properties) {
-      return;
-    }
-    const properties = record.properties;
-    if (properties.field !== 'text') {
-      return;
-    }
-    if (
-      typeof properties.sessionID !== 'string'
-      || typeof properties.messageID !== 'string'
-      || typeof properties.partID !== 'string'
-      || typeof properties.delta !== 'string'
-      || !properties.delta
-    ) {
-      return;
-    }
-    // The first owned-server event identifies the turn when run did not pass --session.
-    if (!targetSessionId) {
-      targetSessionId = properties.sessionID;
-    }
-    if (properties.sessionID !== targetSessionId) {
-      return;
-    }
+  const forwardDelta = (delta: SseDelta): void => {
     // Run stdout is authoritative for completed parts; a late delta would duplicate it.
-    if (completedTextPartIds.has(properties.partID)) {
+    if (completedTextPartIds.has(delta.partId)) {
       return;
     }
-    emitDelta({
-      sessionId: properties.sessionID,
-      messageId: properties.messageID,
-      partId: properties.partID,
-      delta: properties.delta,
-    });
+    emitDelta(delta);
+  };
+
+  const flushBufferedDeltas = (): void => {
+    const pending = bufferedDeltas.splice(0);
+    for (const delta of pending) {
+      if (delta.sessionId === targetSessionId) {
+        forwardDelta(delta);
+      }
+    }
+  };
+
+  const handleSseEvent = (event: SseEvent): void => {
+    if (shuttingDown || runFinished || runExited) {
+      return;
+    }
+    // Real OpenCode events carry their identity in the JSON body
+    // (`{ id, type, properties }`); the SSE `id:` field is a compatibility
+    // fallback for older/simpler producers.
+    const data = event.data;
+    const jsonId = data && typeof data === 'object' && typeof (data as { id?: unknown }).id === 'string'
+      ? (data as { id: string }).id
+      : null;
+    const identity = jsonId || event.id;
+    if (identity) {
+      if (seenEventIds.has(identity)) {
+        return;
+      }
+      seenEventIds.add(identity);
+    }
+    const delta = readDelta(data);
+    if (!delta) {
+      return;
+    }
+    // Without --session the root is only known from run stdout. Buffer until
+    // then so a subagent's first event cannot become the target.
+    if (!rootSelected) {
+      if (bufferedDeltas.length < MAX_BUFFERED_DELTAS) {
+        bufferedDeltas.push(delta);
+      }
+      return;
+    }
+    if (delta.sessionId !== targetSessionId) {
+      return;
+    }
+    forwardDelta(delta);
   };
 
   const handleRunLine = (line: string): void => {
@@ -371,9 +518,6 @@ const runBridge = async (): Promise<number> => {
       : typeof event.sessionId === 'string'
         ? event.sessionId
         : null;
-    if (sessionId && !targetSessionId) {
-      targetSessionId = sessionId;
-    }
     if (
       event.type === 'text'
       && event.part
@@ -382,20 +526,84 @@ const runBridge = async (): Promise<number> => {
     ) {
       completedTextPartIds.add(event.part.id);
     }
+    if (sessionId && !rootSelected) {
+      targetSessionId = sessionId;
+      rootSelected = true;
+      flushBufferedDeltas();
+    }
   };
 
-  try {
-    const response = await connectSse(sseUrl, abortController.signal, () => serveExited);
-    const sseDone = consumeSse(response, handleSseEvent, abortController.signal).catch(() => {
-      if (!shuttingDown && !runFinished) {
-        // The run's completed text is authoritative. Drop the partial-delta
-        // dedupe so a broken stream cannot leave the client with half a part.
-        writeLine(JSON.stringify({ type: 'stream_reset' }));
-      }
-    });
+  const shutdown = (code: number): Promise<void> => {
+    if (shutdownPromise) {
+      return shutdownPromise;
+    }
+    shuttingDown = true;
+    shutdownPromise = (async () => {
+      abortController.abort();
+      await terminate(run);
+      await terminate(serve);
+      process.exit(code);
+    })();
+    return shutdownPromise;
+  };
 
-    const runArgs = withAttach(args, baseUrl);
-    run = crossSpawn('opencode', runArgs, {
+  process.once('SIGTERM', () => {
+    void shutdown(143);
+  });
+  process.once('SIGINT', () => {
+    void shutdown(130);
+  });
+
+  try {
+    try {
+      serve = spawnChild(
+        'opencode',
+        ['serve', '--hostname', '127.0.0.1', '--port', String(port)],
+        { cwd: workingDir, env: process.env, stdio: ['ignore', 'pipe', 'pipe'] },
+      );
+      // Serve output is not part of the run protocol; drain it so it cannot block.
+      serve.stdout?.resume();
+      serve.stderr?.resume();
+      let serveExited = false;
+      serve.once('exit', () => {
+        serveExited = true;
+      });
+      serve.once('error', () => {
+        serveExited = true;
+      });
+
+      const response = await connectSse(sseUrl, abortController.signal, () => serveExited);
+      usingServe = true;
+      sseDone = consumeSse(response, handleSseEvent, abortController.signal)
+        .then(() => {
+          if (!shuttingDown && !runFinished) {
+            // A clean early EOF is still a broken live stream: stdout must win.
+            bufferedDeltas.length = 0;
+            emitReset();
+          }
+        })
+        .catch(() => {
+          if (!shuttingDown && !runFinished) {
+            bufferedDeltas.length = 0;
+            emitReset();
+          }
+        });
+    } catch (error) {
+      if (shuttingDown) {
+        // The signal handler owns teardown; do not race it with process.exit.
+        await shutdownPromise;
+        return 1;
+      }
+      // Startup transport failure: fall back to an ordinary authoritative run.
+      await terminate(serve);
+      serve = null;
+      usingServe = false;
+      bufferedDeltas.length = 0;
+      emitReset();
+    }
+
+    const runArgs = usingServe ? withAttach(args, baseUrl) : args;
+    run = spawnChild('opencode', runArgs, {
       cwd: workingDir,
       env: process.env,
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -407,22 +615,39 @@ const runBridge = async (): Promise<number> => {
     });
     const exitCode = await new Promise<number>((resolve) => {
       run!.once('error', (error) => {
+        runExited = true;
         writeError(error.message);
         resolve(1);
       });
       run!.once('exit', (code, signal) => {
+        runExited = true;
         resolve(code ?? (signal ? 1 : 0));
       });
     });
-    await runDone;
+
+    // Kill descendants that inherited stdout, then let the reader drain.
+    await terminate(run);
+    await Promise.race([runDone, delay(CLEANUP_TIMEOUT_MS)]);
+    run.stdout?.destroy();
+    await Promise.race([runDone, delay(100)]);
+
     abortController.abort();
     // Bounded: a stuck reader must not keep the turn's unit alive.
-    await Promise.race([sseDone, delay(1000)]);
-    await stopServe(serve);
+    await Promise.race([sseDone ?? Promise.resolve(), delay(1000)]);
+    await terminate(serve);
+    if (shuttingDown) {
+      // The signal handler owns teardown; do not race it with process.exit.
+      await shutdownPromise;
+    }
     return exitCode;
   } catch (error) {
+    if (shuttingDown) {
+      await shutdownPromise;
+      return 1;
+    }
     writeError(error instanceof Error ? error.message : String(error));
-    await shutdown(1);
+    await terminate(run);
+    await terminate(serve);
     return 1;
   }
 };

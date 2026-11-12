@@ -1,0 +1,48 @@
+name: CLI Tests
+
+on:
+  push:
+
+permissions:
+  contents: read
+
+jobs:
+  full-test-gate:
+    name: Full CLI test gate
+    runs-on: archsv
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install dependencies
+        run: env -u GITHUB_TOKEN npm ci
+
+      - name: Prepare runner environment
+        run: |
+          mkdir -p "$HOME/Tribeira" "$HOME/.config/cli"
+          printf 'ci-test-token\n' > "$HOME/.config/cli/labs.token"
+          nohup node -e 'require("http").createServer((req, res) => { res.writeHead(200, { "Content-Type": "application/json" }); res.end("[]"); }).listen(18190, "127.0.0.1")' >/tmp/labs-stub.log 2>&1 &
+          sleep 1
+
+      - name: Run full CLI test gate
+        env:
+          CLI_HUB_EVENTS_LOG: ${{ runner.temp }}/cli-hub-events.log
+          LANG: C
+          LC_ALL: C
+          TZ: UTC
+          LABS_CONTROL_URL: http://127.0.0.1:18190
+        run: |
+          env -u CLAUDE_CLI_PATH -u CLAUDE_CODE_EXECUTABLE -u CLAUDE_CODE_EXECPATH \
+            npm run typecheck && \
+            npm run lint && \
+            npm test && \
+            NODE_ENV=test npm run test:client

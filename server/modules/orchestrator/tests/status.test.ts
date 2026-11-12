@@ -49,6 +49,7 @@ function job(overrides: Partial<OrchestratorJobRow> & Pick<OrchestratorJobRow, '
     resume_at: null,
     limit_recovery: null,
     backend_history: null,
+    title_history: null,
     created_at: sqliteAgo(2 * HOUR),
     updated_at: sqliteAgo(MINUTE),
     ...overrides,
@@ -366,6 +367,143 @@ test('status JSON from fixtures: needsYou, 24 h filtering, capacity, hub and eff
 
     const written = service.writeMarkdown();
     assert.equal(written, statusFilePath);
+  });
+});
+
+test('status flags Kimi calls over either budget and does not count unavailable usage as zero', async () => {
+  await withFixtures(async ({ goalsPath, databasePath, ledgerPath, hubEventsLogPath, statusFilePath }) => {
+    const database = new Database(databasePath);
+    try {
+      const insert = database.prepare('INSERT INTO message (id, session_id, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?)');
+      const add = (id: string, msAgo: number, tokens: Record<string, unknown>) => {
+        const ts = NOW.getTime() - msAgo;
+        insert.run(id, 's', ts, ts, JSON.stringify({
+          role: 'assistant', providerID: 'morph', modelID: 'morph-kimik31', agent: 'morph-hub', tokens,
+        }));
+      };
+      add('k-over-output', 5 * MINUTE, { input: 100, output: 801, reasoning: 0, cache: { read: 0 } });
+      add('k-over-input', 6 * MINUTE, { input: 5_001, output: 100, reasoning: 0, cache: { read: 0 } });
+      add('k-no-usage', 7 * MINUTE, {});
+    } finally {
+      database.close();
+    }
+
+    const config = loadOrchestratorConfig('/nonexistent/orchestrator.json');
+    const service = createStatusService({
+      config: () => config,
+      jobs: {
+        list: () => [],
+        loads: () => ({ claude: 0, codex: 0, glm: 0, agy: 0, zcode: 0, morph: 0 }) as Record<OrchestratorBackend, number>,
+        backendStatus: () => ({ glm: null, zcode: null }),
+      },
+      morphUsage: { usage: () => MORPH_USAGE, admitted: () => true } as MorphUsageService,
+      hub: { status: () => HUB } as unknown as HubService,
+      now: () => NOW,
+      goalsPath,
+      databasePath,
+      ledgerPath,
+      hubEventsLogPath,
+      statusFilePath,
+    });
+
+    const hour = service.snapshot().efficiency.hour;
+    assert.equal(hour.kimi.overOutput, 1);
+    assert.equal(hour.kimi.overUncachedInput, 1);
+    assert.equal(hour.kimi.usageUnavailable, 1);
+    assert.equal(hour.kimi.budgetWarnings.length, 2);
+    assert.deepEqual(hour.kimi.budgetWarnings.map((warning) => warning.violations).sort(), [['output'], ['uncachedInput']]);
+
+    const markdown = formatStatusMarkdown(service.snapshot());
+    assert.match(markdown, /kimi budget: \d+ calls \| over output 1/);
+    assert.match(markdown, /over uncached input 1/);
+    assert.match(markdown, /usage unavailable 1/);
+    assert.match(markdown, /split tasks <=30m/);
+  });
+});
+
+test('status digest marks a preparing job with a live process as alive', async () => {
+  await withFixtures(async ({ goalsPath, databasePath, ledgerPath, hubEventsLogPath, statusFilePath }) => {
+    const rows: OrchestratorJobRow[] = [
+      job({ id: 'j1', title: 'Running job', state: 'active', created_at: sqliteAgo(2 * HOUR) }),
+      job({ id: 'j10', title: 'Preparing live', state: 'preparing', in_turn: 1, created_at: sqliteAgo(5 * MINUTE), updated_at: sqliteAgo(MINUTE) }),
+      job({ id: 'j11', title: 'Preparing idle', state: 'preparing', in_turn: 0, created_at: sqliteAgo(5 * MINUTE), updated_at: sqliteAgo(MINUTE) }),
+    ];
+
+    const config = loadOrchestratorConfig('/nonexistent/orchestrator.json');
+    const service = createStatusService({
+      config: () => config,
+      jobs: {
+        list: () => rows,
+        loads: () => ({ claude: 0, codex: 0, glm: 0, agy: 0, zcode: 0, morph: 1 }) as Record<OrchestratorBackend, number>,
+        backendStatus: () => ({ glm: null, zcode: null }),
+      },
+      morphUsage: { usage: () => MORPH_USAGE, admitted: () => true } as MorphUsageService,
+      hub: { status: () => HUB } as unknown as HubService,
+      now: () => NOW,
+      goalsPath,
+      databasePath,
+      ledgerPath,
+      hubEventsLogPath,
+      statusFilePath,
+      getJobTokens: () => null,
+    });
+
+    const status = service.snapshot();
+    assert.deepEqual(status.jobs.running.map((entry) => entry.id), ['j1', 'j10', 'j11']);
+    assert.equal(status.jobs.running[1].alive, true, 'a preparing job with a live turn is alive');
+    assert.equal(status.jobs.running[2].alive, false, 'a preparing job with no worker is not alive');
+    assert.match(formatStatusMarkdown(status), /preparing \(alive\)/);
+  });
+});
+
+test('Kimi budget warnings: over either budget is flagged, ordinary calls are not, unavailable usage is not zero', async () => {
+  await withFixtures(async ({ goalsPath, databasePath, ledgerPath, hubEventsLogPath, statusFilePath }) => {
+    const database = new Database(databasePath);
+    try {
+      const insert = database.prepare('INSERT INTO message (id, session_id, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?)');
+      const add = (id: string, msAgo: number, tokens: Record<string, unknown>) => {
+        const ts = NOW.getTime() - msAgo;
+        insert.run(id, 's', ts, ts, JSON.stringify({
+          role: 'assistant', providerID: 'morph', modelID: 'morph-kimik31', agent: 'morph-hub', tokens,
+        }));
+      };
+      add('over-output', 5 * MINUTE, { input: 100, output: 801, reasoning: 0, cache: { read: 0 } });
+      add('over-input', 6 * MINUTE, { input: 5_001, output: 100, reasoning: 0, cache: { read: 0 } });
+      add('no-usage', 7 * MINUTE, {});
+    } finally {
+      database.close();
+    }
+
+    const config = loadOrchestratorConfig('/nonexistent/orchestrator.json');
+    const service = createStatusService({
+      config: () => config,
+      jobs: {
+        list: () => [],
+        loads: () => ({ claude: 0, codex: 0, glm: 0, agy: 0, zcode: 0, morph: 0 }) as Record<OrchestratorBackend, number>,
+        backendStatus: () => ({ glm: null, zcode: null }),
+      },
+      morphUsage: { usage: () => MORPH_USAGE, admitted: () => true } as MorphUsageService,
+      hub: { status: () => HUB } as unknown as HubService,
+      now: () => NOW,
+      goalsPath,
+      databasePath,
+      ledgerPath,
+      hubEventsLogPath,
+      statusFilePath,
+    });
+
+    const hour = service.snapshot().efficiency.hour;
+    assert.equal(hour.kimi.overOutput, 1);
+    assert.equal(hour.kimi.overUncachedInput, 1);
+    assert.equal(hour.kimi.usageUnavailable, 1);
+    assert.equal(hour.kimi.budgetWarnings.length, 2);
+    assert.deepEqual(hour.kimi.budgetWarnings.map((warning) => warning.violations).sort(), [['output'], ['uncachedInput']]);
+
+    const markdown = formatStatusMarkdown(service.snapshot());
+    assert.match(markdown, /kimi budget: 8 calls/);
+    assert.match(markdown, /over output 1/);
+    assert.match(markdown, /over uncached input 1/);
+    assert.match(markdown, /usage unavailable 1/);
   });
 });
 

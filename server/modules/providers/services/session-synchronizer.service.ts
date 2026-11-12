@@ -1,5 +1,5 @@
+import fs from 'node:fs';
 import path from 'node:path';
-import { access } from 'node:fs/promises';
 
 import { scanStateDb, sessionsDb } from '@/modules/database/index.js';
 import { providerRegistry } from '@/modules/providers/provider.registry.js';
@@ -12,13 +12,105 @@ type SessionSynchronizeResult = {
   failures: string[];
 };
 
-const pathExists = async (target: string): Promise<boolean> => {
+type TranscriptProbe = 'present' | 'absent' | 'unknown';
+
+/**
+ * A directory listing validated against the directory's own identity and
+ * timestamps. `entries` is only trusted while the directory still has the same
+ * device/inode and modification/change times.
+ */
+type DirectoryManifest = {
+  dev: bigint;
+  ino: bigint;
+  mtimeNs: bigint;
+  ctimeNs: bigint;
+  capturedAtMs: number;
+  entries: Set<string>;
+};
+
+/**
+ * Directory manifests survive between syncs so an unchanged project costs one
+ * `stat` per directory instead of one `access` per indexed transcript. The
+ * cache is bounded to directories that still have indexed rows.
+ */
+const directoryManifests = new Map<string, DirectoryManifest>();
+
+/**
+ * Filesystems with coarse timestamps can report the same directory mtime for
+ * changes made within the same tick. A manifest captured this close to the
+ * directory's last change is re-listed rather than trusted.
+ */
+const COARSE_TIMESTAMP_WINDOW_MS = 2_000;
+
+const probeTranscript = async (target: string): Promise<TranscriptProbe> => {
   try {
-    await access(target);
-    return true;
-  } catch {
+    await fs.promises.access(target);
+    return 'present';
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    return code === 'ENOENT' || code === 'ENOTDIR' ? 'absent' : 'unknown';
+  }
+};
+
+const isManifestTrustworthy = (manifest: DirectoryManifest, stats: fs.BigIntStats): boolean => {
+  if (
+    manifest.dev !== stats.dev ||
+    manifest.ino !== stats.ino ||
+    manifest.mtimeNs !== stats.mtimeNs ||
+    manifest.ctimeNs !== stats.ctimeNs
+  ) {
     return false;
   }
+
+  const mtimeMs = Number(stats.mtimeNs / 1_000_000n);
+  return mtimeMs < manifest.capturedAtMs - COARSE_TIMESTAMP_WINDOW_MS;
+};
+
+/**
+ * Returns the current entries of `directory`, reusing a previously validated
+ * listing when the directory identity and timestamps are unchanged.
+ *
+ * Returns `null` when the directory cannot be statted or listed. Callers must
+ * treat that as "unknown" and keep every row in the directory: an unmounted,
+ * denied or replaced root must never be read as "all transcripts were deleted".
+ */
+const getDirectoryManifest = async (directory: string): Promise<DirectoryManifest | null> => {
+  let stats: fs.BigIntStats;
+  try {
+    stats = await fs.promises.stat(directory, { bigint: true });
+  } catch {
+    directoryManifests.delete(directory);
+    return null;
+  }
+
+  if (!stats.isDirectory()) {
+    directoryManifests.delete(directory);
+    return null;
+  }
+
+  const cached = directoryManifests.get(directory);
+  if (cached && isManifestTrustworthy(cached, stats)) {
+    return cached;
+  }
+
+  let names: string[];
+  try {
+    names = await fs.promises.readdir(directory);
+  } catch {
+    directoryManifests.delete(directory);
+    return null;
+  }
+
+  const manifest: DirectoryManifest = {
+    dev: stats.dev,
+    ino: stats.ino,
+    mtimeNs: stats.mtimeNs,
+    ctimeNs: stats.ctimeNs,
+    capturedAtMs: Date.now(),
+    entries: new Set(names),
+  };
+  directoryManifests.set(directory, manifest);
+  return manifest;
 };
 
 /**
@@ -29,32 +121,54 @@ const pathExists = async (target: string): Promise<boolean> => {
  * hand — or written by a test run that pointed at the real `~/.claude` — left a
  * permanent sidebar entry that opened an empty "Untitled" session.
  *
- * A row is only dropped when its *containing directory* still exists. That
- * keeps an unmounted or not-yet-created home from being read as "every
- * transcript was deleted" and wiping the whole index.
+ * Existence is established from a validated directory listing, not from a
+ * per-row probe. A row is only dropped when its containing directory was
+ * listed successfully, the listing does not contain the transcript, and a
+ * final direct probe confirms the file is absent. A missing, unreadable or
+ * replaced directory keeps every row in it.
  */
 const pruneOrphanedSessions = async (): Promise<number> => {
-  const knownDirectoryExists = new Map<string, boolean>();
-  let pruned = 0;
+  const rowsByDirectory = new Map<string, Array<{ sessionId: string; jsonlPath: string }>>();
 
   for (const { session_id: sessionId, jsonl_path: jsonlPath } of sessionsDb.getSessionsWithTranscriptPath()) {
-    if (await pathExists(jsonlPath)) {
-      continue;
-    }
-
     const directory = path.dirname(jsonlPath);
-    let directoryExists = knownDirectoryExists.get(directory);
-    if (directoryExists === undefined) {
-      directoryExists = await pathExists(directory);
-      knownDirectoryExists.set(directory, directoryExists);
+    const rows = rowsByDirectory.get(directory);
+    if (rows) {
+      rows.push({ sessionId, jsonlPath });
+    } else {
+      rowsByDirectory.set(directory, [{ sessionId, jsonlPath }]);
     }
+  }
 
-    if (!directoryExists) {
+  let pruned = 0;
+
+  for (const [directory, rows] of rowsByDirectory) {
+    const manifest = await getDirectoryManifest(directory);
+    if (!manifest) {
       continue;
     }
 
-    if (sessionsDb.deleteSessionById(sessionId)) {
-      pruned += 1;
+    for (const { sessionId, jsonlPath } of rows) {
+      if (manifest.entries.has(path.basename(jsonlPath))) {
+        continue;
+      }
+
+      // The listing says the file is gone. Revalidate the candidate directly so
+      // a stale listing or a file recreated after the listing cannot delete a
+      // live row. Only a confirmed absence is allowed to prune.
+      if ((await probeTranscript(jsonlPath)) !== 'absent') {
+        continue;
+      }
+
+      if (sessionsDb.deleteSessionById(sessionId)) {
+        pruned += 1;
+      }
+    }
+  }
+
+  for (const directory of directoryManifests.keys()) {
+    if (!rowsByDirectory.has(directory)) {
+      directoryManifests.delete(directory);
     }
   }
 

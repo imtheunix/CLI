@@ -27,3 +27,12 @@ export { clearScanCache } from './services/usage-scan-cache.service.js';
 
 export { initializeSessionsWatcher } from './services/sessions-watcher.service.js';
 export { closeSessionsWatcher } from './services/sessions-watcher.service.js';
+
+// Kimi turn budgets: used by the Orchestrator status efficiency report.
+export {
+  evaluateKimiCallUsage,
+  KIMI_CALL_UNCACHED_INPUT_TOKENS,
+  KIMI_TASK_SPLIT_MS,
+  KIMI_TURN_OUTPUT_TOKENS,
+  type KimiBudgetWarning,
+} from './shared/kimi-turn-budget.js';

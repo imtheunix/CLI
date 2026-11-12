@@ -13,7 +13,7 @@ export function getCheckLogPath(worktreePath: string): string {
 
 /** Stream both descriptors to the same file, keeping order and avoiding execFile's maxBuffer cutoff. */
 async function runLoggedCommand(file: string, argv: string[], options: {
-  cwd: string; timeoutMs?: number; env?: NodeJS.ProcessEnv; logPath: string;
+  cwd: string; timeoutMs?: number; env?: NodeJS.ProcessEnv; logPath: string; onSpawn?: (pid: number) => void;
 }): Promise<CommandResult> {
   await fs.mkdir(path.dirname(options.logPath), { recursive: true });
   const log = await fs.open(options.logPath, 'w', 0o600);
@@ -29,6 +29,7 @@ async function runLoggedCommand(file: string, argv: string[], options: {
         stdio: ['ignore', log.fd, log.fd],
         detached: true,
       });
+      if (child.pid) options.onSpawn?.(child.pid);
       let escalation: ReturnType<typeof setTimeout> | undefined;
       const killGroup = (signal: NodeJS.Signals) => {
         if (!child.pid) return;
@@ -76,7 +77,7 @@ async function runLoggedCommand(file: string, argv: string[], options: {
 export function runCommand(
   command: string,
   args: string[],
-  options: { cwd: string; timeoutMs?: number; shell?: boolean; env?: NodeJS.ProcessEnv; logPath?: string } = { cwd: process.cwd() },
+  options: { cwd: string; timeoutMs?: number; shell?: boolean; env?: NodeJS.ProcessEnv; logPath?: string; onSpawn?: (pid: number) => void } = { cwd: process.cwd() },
 ): Promise<CommandResult> {
   if (options.logPath) {
     return runLoggedCommand(options.shell ? '/bin/bash' : command, options.shell ? ['-lc', command] : args, { ...options, logPath: options.logPath });
@@ -84,7 +85,7 @@ export function runCommand(
   return new Promise((resolve) => {
     const file = options.shell ? '/bin/bash' : command;
     const argv = options.shell ? ['-lc', command] : args;
-    execFile(file, argv, {
+    const child = execFile(file, argv, {
       cwd: options.cwd,
       timeout: options.timeoutMs ?? 10 * 60_000,
       maxBuffer: 32 * 1024 * 1024,
@@ -93,6 +94,7 @@ export function runCommand(
       const code = error ? (typeof (error as { code?: unknown }).code === 'number' ? (error as { code: number }).code : 1) : 0;
       resolve({ code, stdout: String(stdout), stderr: String(stderr) + (error && code === 1 && !stderr ? error.message : '') });
     });
+    if (child.pid) options.onSpawn?.(child.pid);
   });
 }
 

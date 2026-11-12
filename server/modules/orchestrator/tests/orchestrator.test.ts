@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-import { closeConnection, initializeDatabase, orchestratorEffectsDb, orchestratorJobsDb, readBackendHandovers, sessionsDb, userDb } from '@/modules/database/index.js';
+import { closeConnection, initializeDatabase, orchestratorEffectsDb, orchestratorJobsDb, readBackendHandovers, readMergeStepHistory, sessionsDb, userDb } from '@/modules/database/index.js';
 import type { OrchestratorJobRow } from '@/modules/database/index.js';
 import { chatRunRegistry } from '@/modules/websocket/index.js';
 import type { NormalizedMessage } from '@/shared/types.js';
@@ -16,7 +16,8 @@ import { createMergeQueueService } from '../services/merge-queue.service.js';
 import { computeMorphUsage } from '../services/morph-usage.service.js';
 import { loadOrchestratorConfig } from '../services/orchestrator-config.service.js';
 import type { OrchestratorConfig } from '../services/orchestrator-config.service.js';
-import { checkEnvironment, resolveCheckCommand, runCommand } from '../services/workspace.service.js';
+import { checkEnvironment, getCheckLogPath, resolveCheckCommand, runCommand } from '../services/workspace.service.js';
+import type { CommandResult } from '../services/workspace.service.js';
 import { getHubEventsLogPath, onHubEvent } from '../services/hub-events.service.js';
 import { buildHubWakeMessage, parseHubEventLine } from '../services/hub-wake.service.js';
 
@@ -70,6 +71,19 @@ async function eventually(check: () => boolean, what: string): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
   assert.fail(`timed out waiting for ${what}`);
+}
+
+/** Awaits a promise, failing the test if it has not settled by `ms`; the timer never keeps the process alive. */
+async function settleWithin<T>(promise: Promise<T>, ms: number, what: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`timed out after ${ms} ms waiting for ${what}`)), ms);
+  });
+  try {
+    return await Promise.race([promise, deadline]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 /** A workspace with an origin, its main checkout, and an orchestrator wired to both. */
@@ -195,7 +209,7 @@ test('jobs go to the least busy backend, each a named session in its own worktre
     assert.ok(existsSync(path.join(first.worktree_path, 'app.txt')));
     assert.equal(git(first.worktree_path, 'rev-parse', '--abbrev-ref', 'HEAD'), first.branch);
     const session = sessionsDb.getSessionById(first.session_id!) as { custom_name: string; provider: string; model: string; project_path: string };
-    assert.equal(session.custom_name, 'GLM Flash · one');
+    assert.equal(session.custom_name, `GLM Flash · ${first.id} · one`);
     assert.equal(session.provider, 'opencode');
     assert.equal(session.model, 'zai-coding-plan/glm-5.3-flash');
     assert.equal(first.model, 'zai-coding-plan/glm-5.3-flash');
@@ -219,7 +233,7 @@ test('GLM runs Flash by default and the full model on request, kept on every lat
     assert.equal(job(full.id).backend, 'glm');
     assert.equal(job(full.id).model, 'zai-coding-plan/glm-5.3');
     const session = sessionsDb.getSessionById(job(full.id).session_id!) as { custom_name: string; model: string; effort: string };
-    assert.equal(session.custom_name, 'GLM · hard');
+    assert.equal(session.custom_name, `GLM · ${full.id} · hard`);
     assert.equal(session.model, 'zai-coding-plan/glm-5.3');
     assert.equal(session.effort, 'medium');
 
@@ -251,7 +265,7 @@ test('a morph job launches opencode with DeepSeek flash at medium effort', async
     assert.equal(session.provider, 'opencode');
     assert.equal(session.model, 'morph/morph-dsv41flash');
     assert.equal(session.effort, 'medium');
-    assert.equal(session.custom_name, 'Morph DeepSeek · morph');
+    assert.equal(session.custom_name, `Morph DeepSeek · ${created.id} · morph`);
 
     const turn = runtime.turns.find((t) => t.sessionId === job(created.id).session_id)!;
     assert.equal(turn.options.model, 'morph/morph-dsv41flash');
@@ -700,6 +714,184 @@ test('main moving during the queue sends the job back to rebase, not to a failed
   });
 });
 
+test('tjob cancel during the check stops the check by its pid, leaves the queue and keeps the branch', async () => {
+  await withWorkspace(async (ctx) => {
+    const id = await finishedJob(ctx, (worktree) => commitFile(worktree, 'feature.txt', 'f\n', 'feature'));
+    const next = await finishedJob(ctx, (worktree) => commitFile(worktree, 'next.txt', 'n\n', 'next'));
+    const queue = createMergeQueueService({ jobs: ctx.jobs, config: () => ctx.config });
+    await drain(queue, () => ctx.job(id), ['check']);
+
+    const events: string[] = [];
+    const off = onHubEvent((event) => { if (event.jobId === id) events.push(event.state); });
+    try {
+      const ticking = queue.tick();
+      await eventually(() => {
+        try {
+          return readFileSync(getCheckLogPath(ctx.job(id).worktree_path), 'utf8').includes('check started');
+        } catch {
+          return false;
+        }
+      }, 'the check to start');
+      const result = await queue.cancel(ctx.job(id));
+      assert.equal(result.cancelled, true);
+      await ticking;
+    } finally {
+      off();
+    }
+
+    const cancelled = ctx.job(id);
+    assert.equal(cancelled.state, 'cancelled');
+    assert.equal(cancelled.merge_step, 'none');
+    assert.equal(git(ctx.repo, 'rev-parse', '--verify', cancelled.branch), git(cancelled.worktree_path, 'rev-parse', 'HEAD'));
+    assert.ok(readMergeStepHistory(cancelled).some((event) => event.step === 'cancelled' && event.by === 'tjob cancel'));
+    assert.ok(events.includes('cancelled'));
+
+    // The cancelled job no longer holds the repository's lane: the next queued job moves on.
+    await drain(queue, () => ctx.job(next), ['check', 'deploy']);
+    assert.notEqual(ctx.job(next).merge_step, 'queued');
+  }, (config) => { config.checks = { demo: 'echo check started; sleep 30' }; });
+});
+
+test('tjob cancel during the rebase stops the step and leaves the queue', async () => {
+  await withWorkspace(async (ctx) => {
+    const id = await finishedJob(ctx, (worktree) => commitFile(worktree, 'feature.txt', 'f\n', 'feature'));
+    let release!: (result: CommandResult) => void;
+    const blocked = new Promise<CommandResult>((resolve) => { release = resolve; });
+    let rebaseStarted!: () => void;
+    const started = new Promise<void>((resolve) => { rebaseStarted = resolve; });
+    const run: typeof runCommand = (command, args, options) => {
+      if (command === 'git' && args[0] === 'rebase' && args[1] === 'origin/main') {
+        rebaseStarted();
+        return blocked;
+      }
+      return runCommand(command, args, options);
+    };
+    const queue = createMergeQueueService({ jobs: ctx.jobs, config: () => ctx.config, run });
+    await queue.tick();
+    assert.equal(ctx.job(id).merge_step, 'rebase');
+
+    const ticking = queue.tick();
+    await started;
+    const result = await queue.cancel(ctx.job(id));
+    assert.equal(result.cancelled, true);
+    release({ code: 1, stdout: '', stderr: 'terminated' });
+    await ticking;
+
+    const cancelled = ctx.job(id);
+    assert.equal(cancelled.state, 'cancelled');
+    assert.equal(cancelled.merge_step, 'none');
+    assert.ok(git(ctx.repo, 'rev-parse', '--verify', cancelled.branch));
+    assert.ok(readMergeStepHistory(cancelled).some((event) => event.step === 'cancelled' && event.by === 'tjob cancel'));
+  });
+});
+
+for (const step of ['push', 'deploy'] as const) {
+  test(`tjob cancel at ${step} is refused: a push cannot be undone`, async () => {
+    await withWorkspace(async (ctx) => {
+      const id = await finishedJob(ctx, (worktree) => commitFile(worktree, 'feature.txt', 'f\n', 'feature'));
+      const queue = createMergeQueueService({ jobs: ctx.jobs, config: () => ctx.config });
+      await drain(queue, () => ctx.job(id), [step]);
+      assert.equal(ctx.job(id).merge_step, step);
+
+      const result = await queue.cancel(ctx.job(id));
+      assert.equal(result.cancelled, false);
+      assert.match(result.reason ?? '', /already pushing; it will merge/);
+      assert.equal(ctx.job(id).merge_step, step);
+      assert.equal(ctx.job(id).state, 'done');
+    });
+  });
+}
+
+test('tjob cancel through the jobs service withdraws a job from the queue', async () => {
+  await withWorkspace(async (ctx) => {
+    const id = await finishedJob(ctx, (worktree) => commitFile(worktree, 'feature.txt', 'f\n', 'feature'));
+    const queue = createMergeQueueService({ jobs: ctx.jobs, config: () => ctx.config });
+    const jobs = ctx.createJobs({ withdrawFromMergeQueue: (job) => queue.cancel(job) });
+    await drain(queue, () => ctx.job(id), ['check']);
+
+    const view = await jobs.cancel(id);
+    assert.equal(view.state, 'cancelled');
+    assert.equal(view.merge_step, 'none');
+    assert.ok(readMergeStepHistory(ctx.job(id)).some((event) => event.step === 'cancelled' && event.by === 'tjob cancel'));
+  });
+});
+
+for (const step of ['rebase', 'check'] as const) {
+  test(`tjob cancel then a rejected in-flight ${step} cannot resurrect the job`, async () => {
+    await withWorkspace(async (ctx) => {
+      const id = await finishedJob(ctx, (worktree) => commitFile(worktree, 'feature.txt', 'f\n', 'feature'));
+      const worktree = ctx.job(id).worktree_path;
+      const originBefore = git(ctx.repo, 'rev-parse', 'origin/main');
+      const turnsBefore = ctx.runtime.turns.length;
+
+      let rejectOperation!: (error: Error) => void;
+      const blocked = new Promise<CommandResult>((_, reject) => { rejectOperation = reject; });
+      let operationStarted!: () => void;
+      const started = new Promise<void>((resolve) => { operationStarted = resolve; });
+      // The deferred operation returns a promise and never calls options.onSpawn: by construction it has no child.
+      let afterCancel = false;
+      const postCancelSpawns: number[] = [];
+      const isBlocked = (command: string, args: string[]) =>
+        step === 'rebase'
+          ? command === 'git' && args[0] === 'rebase' && args[1] === 'origin/main'
+          : command === 'nice';
+      const run: typeof runCommand = (command, args, options) => {
+        if (isBlocked(command, args)) {
+          operationStarted();
+          return blocked;
+        }
+        if (!afterCancel) return runCommand(command, args, options);
+        // A command after cancellation must not leave a child behind: record it, kill it, and fail below.
+        return runCommand(command, args, {
+          ...(options ?? { cwd: process.cwd() }),
+          onSpawn: (pid) => {
+            postCancelSpawns.push(pid);
+            try { process.kill(pid, 'SIGKILL'); } catch { /* already gone */ }
+            options?.onSpawn?.(pid);
+          },
+        });
+      };
+      const queue = createMergeQueueService({ jobs: ctx.jobs, config: () => ctx.config, run });
+      if (step === 'rebase') {
+        await queue.tick();
+        assert.equal(ctx.job(id).merge_step, 'rebase');
+      } else {
+        await drain(queue, () => ctx.job(id), ['check']);
+        assert.equal(ctx.job(id).merge_step, 'check');
+      }
+
+      const ticking = queue.tick();
+      await started;
+      assert.equal(ctx.job(id).merge_step, step);
+
+      // The real orchestrator.module.ts wiring: jobs.cancel withdraws through the queue, then its own
+      // tick performs the automatic cleanup of the cancelled job's owned worktree.
+      const jobs = ctx.createJobs({ withdrawFromMergeQueue: (job) => queue.cancel(job) });
+      const view = await jobs.cancel(id);
+      assert.equal(view.state, 'cancelled');
+      assert.equal(view.merge_step, 'none');
+      assert.equal(existsSync(worktree), false, 'the owned worktree is removed before the operation rejects');
+
+      afterCancel = true;
+      rejectOperation(new Error(`injected ${step} rejection after cancellation`));
+      await settleWithin(ticking, 5_000, 'the queue tick to settle after the rejection');
+      // Later ticks must not advance the cancelled job to push or deploy.
+      await settleWithin(queue.tick(), 5_000, 'a later queue tick to settle');
+
+      const cancelled = ctx.job(id);
+      assert.equal(cancelled.state, 'cancelled');
+      assert.equal(cancelled.merge_step, 'none');
+      assert.equal(cancelled.pushed_sha, null);
+      assert.equal(git(ctx.repo, 'rev-parse', 'origin/main'), originBefore);
+      assert.equal(ctx.runtime.turns.length, turnsBefore, 'no new runtime turn or model notification');
+      assert.deepEqual(postCancelSpawns, [], 'no command after cancellation spawned a child');
+      // The rejection reaches the tick catch (merge-queue.service.ts:531-536), which records it as bookkeeping only.
+      assert.match(cancelled.last_error ?? '', new RegExp(`injected ${step} rejection after cancellation`));
+      assert.ok(readMergeStepHistory(cancelled).some((event) => event.step === 'cancelled' && event.by === 'tjob cancel'));
+    });
+  });
+}
+
 test('a restart between the push and recording it resumes at the deploy, without pushing twice', async () => {
   await withWorkspace(async (ctx) => {
     const id = await finishedJob(ctx, (worktree) => commitFile(worktree, 'feature.txt', 'f\n', 'feature'));
@@ -728,7 +920,7 @@ async function stackedJobs(ctx: Parameters<Parameters<typeof withWorkspace>[0]>[
   return { parent, child: created.id, parentBranch: parentRow.branch };
 }
 
-test('a job stacked on a cancelled job\'s branch is blocked, never merged into that dead branch (88328da6)', async () => {
+test('a job stacked on a cancelled job\'s preserved branch lands on that job\'s base, never into the dead branch (88328da6)', async () => {
   await withWorkspace(async (ctx) => {
     const { parent, child, parentBranch } = await stackedJobs(ctx);
     const queue = createMergeQueueService({ jobs: ctx.jobs, config: () => ctx.config });
@@ -736,13 +928,14 @@ test('a job stacked on a cancelled job\'s branch is blocked, never merged into t
     await queue.tick();
     assert.equal(ctx.job(child).merge_step, 'queued', 'waits while its parent is on its way');
 
-    orchestratorJobsDb.update(parent, { state: 'cancelled' });
-    await drain(queue, () => ctx.job(child), ['merged', 'blocked']);
-    assert.equal(ctx.job(child).merge_step, 'blocked');
-    assert.match(ctx.job(child).last_error ?? '', /cancelled.*never reaches main/);
-    assert.equal(ctx.job(child).pushed_sha, null);
     const parentTip = git(ctx.repo, 'ls-remote', 'origin', `refs/heads/${parentBranch}`).split('\t')[0];
-    assert.equal(parentTip, git(ctx.job(parent).worktree_path, 'rev-parse', 'HEAD'), 'nothing pushed onto the parent branch');
+    orchestratorJobsDb.update(parent, { state: 'cancelled' });
+    ctx.config.waitForDeploy = { demo: false };
+    await drain(queue, () => ctx.job(child), ['merged', 'blocked']);
+    assert.equal(ctx.job(child).merge_step, 'merged');
+    assert.equal(ctx.job(child).base_branch, 'main');
+    assert.equal(ctx.job(parent).state, 'cancelled');
+    assert.equal(git(ctx.repo, 'ls-remote', 'origin', `refs/heads/${parentBranch}`).split('\t')[0], parentTip, 'nothing pushed onto the parent branch');
   });
 });
 
@@ -973,7 +1166,7 @@ test('a message from a session goes to the load balancer as a job in that sessio
     assert.equal(job(sent.id).repo_path, repo);
     assert.equal(job(sent.id).title, 'Add a dark mode toggle to the settings page');
     assert.equal(job(sent.id).backend, 'glm');
-    assert.match(runtime.turns.at(-1)!.command, /Keep the current theme as default\.[\s\S]*Sent to the load balancer from the session "Claude · parent"/);
+    assert.match(runtime.turns.at(-1)!.command, new RegExp(`Keep the current theme as default\\.[\\s\\S]*Sent to the load balancer from the session "Claude · ${parent.id} · parent"`));
 
     await assert.rejects(jobs.createFromSession({ sessionId: 'missing', content: 'x', backend: null }), /not found/);
   });
@@ -1745,3 +1938,80 @@ test('a handed-over job whose first GLM turn never started resumes a login wait 
     probeZcode: async () => (loginOk ? { ok: true } : { ok: false, error: 'login_failed', message: 'injected login failure' }),
   });
 });
+
+
+test('a job based on a cancelled job\'s preserved branch lands independently on that job\'s base', async () => {
+  await withWorkspace(async (ctx) => {
+    const parent = await finishedJob(ctx, (worktree) => commitFile(worktree, 'parent.txt', 'p\n', 'parent'));
+    const parentRow = ctx.job(parent);
+    git(parentRow.worktree_path, 'push', '-q', 'origin', `HEAD:refs/heads/${parentRow.branch}`);
+    await ctx.jobs.cancel(parent);
+    assert.equal(ctx.job(parent).state, 'cancelled');
+    const parentTip = git(ctx.repo, 'ls-remote', 'origin', `refs/heads/${parentRow.branch}`).split('\t')[0];
+
+    const child = await ctx.jobs.create({ title: 'follow-up', prompt: 'p', repoPath: ctx.repo, backend: 'glm', baseBranch: parentRow.branch });
+    await eventually(() => ctx.job(child.id).state === 'active', 'child start');
+    commitFile(ctx.job(child.id).worktree_path, 'child.txt', 'c\n', 'child');
+    ctx.runtime.finish(ctx.job(child.id).session_id!);
+    await ctx.jobs.markDone(child.id);
+
+    ctx.config.waitForDeploy = { demo: false };
+    const queue = createMergeQueueService({ jobs: ctx.jobs, config: () => ctx.config });
+    await drain(queue, () => ctx.job(child.id), ['merged', 'blocked']);
+
+    const merged = ctx.job(child.id);
+    assert.equal(merged.merge_step, 'merged');
+    assert.equal(merged.base_branch, 'main');
+    git(ctx.upstream, 'pull', '-q', 'origin', 'main');
+    assert.ok(existsSync(path.join(ctx.upstream, 'parent.txt')), 'the preserved parent commit lands too');
+    assert.ok(existsSync(path.join(ctx.upstream, 'child.txt')));
+    assert.equal(ctx.job(parent).state, 'cancelled', 'the old job is not resumed or cancelled again');
+    assert.equal(git(ctx.repo, 'ls-remote', 'origin', `refs/heads/${parentRow.branch}`).split('\t')[0], parentTip, 'nothing pushed onto the cancelled branch');
+  });
+});
+
+test('a job based on a cancelled job\'s branch is blocked when that branch is gone from origin', async () => {
+  await withWorkspace(async (ctx) => {
+    const parent = await finishedJob(ctx, (worktree) => commitFile(worktree, 'parent.txt', 'p\n', 'parent'));
+    const parentRow = ctx.job(parent);
+    git(parentRow.worktree_path, 'push', '-q', 'origin', `HEAD:refs/heads/${parentRow.branch}`);
+    const child = await ctx.jobs.create({ title: 'follow-up', prompt: 'p', repoPath: ctx.repo, backend: 'glm', baseBranch: parentRow.branch });
+    await eventually(() => ctx.job(child.id).state === 'active', 'child start');
+    commitFile(ctx.job(child.id).worktree_path, 'child.txt', 'c\n', 'child');
+    ctx.runtime.finish(ctx.job(child.id).session_id!);
+    await ctx.jobs.markDone(child.id);
+    await ctx.jobs.cancel(parent);
+    git(ctx.repo, 'push', '-q', 'origin', '--delete', parentRow.branch);
+
+    const queue = createMergeQueueService({ jobs: ctx.jobs, config: () => ctx.config });
+    await drain(queue, () => ctx.job(child.id), ['merged', 'blocked']);
+    assert.equal(ctx.job(child.id).merge_step, 'blocked');
+    assert.match(ctx.job(child.id).last_error ?? '', /no longer on origin/);
+  });
+});
+
+test('a job that does not contain the cancelled branch\'s preserved tip is blocked, not landed', async () => {
+  await withWorkspace(async (ctx) => {
+    const parent = await finishedJob(ctx, (worktree) => commitFile(worktree, 'parent.txt', 'p\n', 'parent'));
+    const parentRow = ctx.job(parent);
+    git(parentRow.worktree_path, 'push', '-q', 'origin', `HEAD:refs/heads/${parentRow.branch}`);
+    const child = await ctx.jobs.create({ title: 'follow-up', prompt: 'p', repoPath: ctx.repo, backend: 'glm', baseBranch: parentRow.branch });
+    await eventually(() => ctx.job(child.id).state === 'active', 'child start');
+    commitFile(ctx.job(child.id).worktree_path, 'child.txt', 'c\n', 'child');
+    ctx.runtime.finish(ctx.job(child.id).session_id!);
+    await ctx.jobs.markDone(child.id);
+    // The preserved branch moves on after the follow-up was created: its new tip is not in the child.
+    git(ctx.upstream, 'fetch', '-q', 'origin', parentRow.branch);
+    git(ctx.upstream, 'checkout', '-q', '-B', parentRow.branch, `origin/${parentRow.branch}`);
+    commitFile(ctx.upstream, 'later.txt', 'l\n', 'later');
+    git(ctx.upstream, 'push', '-q', 'origin', `HEAD:refs/heads/${parentRow.branch}`);
+    git(ctx.upstream, 'checkout', '-q', 'main');
+    await ctx.jobs.cancel(parent);
+
+    const queue = createMergeQueueService({ jobs: ctx.jobs, config: () => ctx.config });
+    await drain(queue, () => ctx.job(child.id), ['merged', 'blocked']);
+    assert.equal(ctx.job(child.id).merge_step, 'blocked');
+    assert.match(ctx.job(child.id).last_error ?? '', /does not contain its preserved tip/);
+  });
+});
+

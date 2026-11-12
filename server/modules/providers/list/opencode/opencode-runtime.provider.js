@@ -13,6 +13,7 @@ import {
   normalizeAttachmentDescriptors
 } from '@/shared/image-attachments.js';
 import { createCompleteMessage, createNormalizedMessage, flattenPromptForWindowsShell, getOpenCodeDatabasePath, stripAnsiSequences } from '@/shared/utils.js';
+import { checkKimiTurnInput, mergeKimiOutputLimitConfig } from '@/modules/providers/shared/kimi-turn-budget.js';
 
 // cross-spawn resolves .cmd shims/PATHEXT on Windows and delegates to
 // child_process.spawn everywhere else.
@@ -152,17 +153,22 @@ function readOpenCodeTokenUsage(sessionId) {
  *
  * Used by the live runtime and by detached-turn reattachment (registered in
  * opencode.provider.ts) so both paths normalize identically. It tracks the
- * part ids whose text already reached the client as `stream_delta` events:
- * OpenCode can follow those deltas with the same part completed, and emitting
- * that completed text again would duplicate the assistant message. A part
- * that never streamed still falls back to its completed text.
+ * text already delivered for each part as `stream_delta` events: OpenCode can
+ * follow those deltas with the same part completed, and emitting that
+ * completed text again would duplicate the assistant message. A completed
+ * part that only extends the streamed prefix emits just the remainder; an
+ * equal completion is suppressed; a part that never streamed falls back to
+ * its completed text. A `stream_reset` marks the live stream as broken so
+ * late deltas are ignored while stdout remains authoritative.
  *
  * @param {(raw: unknown, sessionId: string | null) => Array<object>} normalizeMessage
  */
 export function createOpenCodeTurnLineParser(normalizeMessage) {
   let capturedSessionId = null;
-  // Part ids whose text was already delivered incrementally.
-  const streamedPartIds = new Set();
+  // Part id -> text already delivered incrementally.
+  const streamedTextByPart = new Map();
+  // A broken live stream must not accept more deltas; stdout is authoritative.
+  let streamBroken = false;
 
   const parse = (line) => {
     try {
@@ -174,6 +180,16 @@ export function createOpenCodeTurnLineParser(normalizeMessage) {
   };
 
   const readPart = (event) => (event.part && typeof event.part === 'object' ? event.part : null);
+
+  const readDeltaText = (event) => {
+    if (typeof event.delta === 'string') {
+      return event.delta;
+    }
+    if (typeof event.text === 'string') {
+      return event.text;
+    }
+    return '';
+  };
 
   const captureSession = (event, writer) => {
     const nextSessionId = event.sessionID || event.sessionId;
@@ -196,6 +212,29 @@ export function createOpenCodeTurnLineParser(normalizeMessage) {
     }
   };
 
+  // The completed part extends the streamed prefix: send only the remainder as
+  // a delta so the client's live buffer reaches the authoritative text without
+  // a second assistant bubble.
+  const emitCompletedRemainder = (event, part, remainder, sid, writer) => {
+    const deltaEvent = {
+      type: 'text',
+      sessionID: event.sessionID,
+      sessionId: event.sessionId,
+      time: event.time,
+      timestamp: event.timestamp,
+      part: {
+        id: part.id,
+        messageID: part.messageID,
+        sessionID: part.sessionID,
+        type: part.type,
+      },
+      delta: remainder,
+    };
+    for (const message of normalizeMessage(deltaEvent, sid)) {
+      writer?.send(message);
+    }
+  };
+
   const handleLine = (line, writer, sessionId) => {
     const event = parse(line);
     if (!event) {
@@ -208,24 +247,65 @@ export function createOpenCodeTurnLineParser(normalizeMessage) {
     const part = readPart(event);
     const partId = typeof part?.id === 'string' ? part.id : null;
 
-    // The bridge emits this when its live stream breaks: the completed part
-    // from run stdout must be sent instead of being suppressed as a duplicate.
+    // The bridge emits this when its live stream breaks. Keep the streamed
+    // prefix so a partial completion can still send only its remainder, but
+    // ignore any further deltas from the dead stream.
     if (type === 'stream_reset') {
-      streamedPartIds.clear();
+      streamBroken = true;
       return;
     }
 
     if (type === 'text') {
       // A nested `part.text` is the completed part; flat `delta`/`text` is a
-      // live increment. Suppress the completion when its deltas already went out.
+      // live increment.
       const isCompletedPart = typeof part?.text === 'string';
-      if (isCompletedPart && partId && streamedPartIds.has(partId)) {
+      if (isCompletedPart) {
+        if (!partId) {
+          for (const message of normalizeMessage(event, sid)) {
+            writer?.send(message);
+          }
+          return;
+        }
+
+        const streamed = streamedTextByPart.get(partId) || '';
+        if (!streamed) {
+          for (const message of normalizeMessage(event, sid)) {
+            writer?.send(message);
+          }
+          return;
+        }
+
+        streamedTextByPart.delete(partId);
+        if (part.text === streamed) {
+          return;
+        }
+        if (part.text.startsWith(streamed)) {
+          const remainder = part.text.slice(streamed.length);
+          if (remainder) {
+            emitCompletedRemainder(event, part, remainder, sid, writer);
+          }
+          return;
+        }
+        // Diverged from the streamed prefix. The normalized protocol has no
+        // replace/rewind event, so the already-streamed prefix cannot be
+        // retracted without a client change. Emit the authoritative text
+        // rather than lose it; this is the one case where the client may see
+        // both the divergent prefix and the completed text.
+        for (const message of normalizeMessage(event, sid)) {
+          writer?.send(message);
+        }
+        return;
+      }
+
+      // After a reset, stale synthetic bridge deltas must not print, but
+      // authoritative run stdout may still use the same flat delta shape.
+      if (streamBroken && event.bridge === true) {
         return;
       }
 
       for (const message of normalizeMessage(event, sid)) {
         if (message.kind === 'stream_delta' && partId) {
-          streamedPartIds.add(partId);
+          streamedTextByPart.set(partId, (streamedTextByPart.get(partId) || '') + readDeltaText(event));
         }
         writer?.send(message);
       }
@@ -238,7 +318,7 @@ export function createOpenCodeTurnLineParser(normalizeMessage) {
   };
 
   // The part of the log delivered before a restart: re-establish the session
-  // id and which parts already streamed, without sending any of it again.
+  // id and the text already delivered, without sending any of it again.
   handleLine.prime = (lines, writer, sessionId) => {
     for (const line of lines) {
       const event = parse(line);
@@ -250,17 +330,25 @@ export function createOpenCodeTurnLineParser(normalizeMessage) {
       const part = readPart(event);
       const partId = typeof part?.id === 'string' ? part.id : null;
       if (type === 'stream_reset') {
-        streamedPartIds.clear();
+        streamBroken = true;
         continue;
       }
-      if (type === 'text' && partId && typeof part?.text !== 'string') {
-        streamedPartIds.add(partId);
+      if (type === 'text' && partId) {
+        if (streamBroken && event.bridge === true) {
+          continue;
+        }
+        if (typeof part.text === 'string') {
+          streamedTextByPart.set(partId, part.text);
+        } else {
+          streamedTextByPart.set(partId, (streamedTextByPart.get(partId) || '') + readDeltaText(event));
+        }
       }
     }
   };
 
   handleLine.finish = () => {
-    streamedPartIds.clear();
+    streamedTextByPart.clear();
+    streamBroken = false;
   };
 
   return handleLine;
@@ -399,6 +487,29 @@ async function spawnOpenCode(command, options = {}, ws, context) {
       }
 
       const resolvedEffort = resolveOpenCodeEffort(resolvedModel, effort, effortModels);
+      const hasAttachments =
+        normalizeAttachmentDescriptors(images).length > 0
+        || normalizeAttachmentDescriptors(files).length > 0;
+      const promptWithAttachments = appendFilesInputTag(
+        appendImagesInputTag(command?.trim() || '', images),
+        files
+      );
+      // Kimi's per-call uncached-input budget is enforced before the turn
+      // starts. Refuse an over-budget prompt; never truncate it.
+      const kimiInput = checkKimiTurnInput({ model: resolvedModel, prompt: promptWithAttachments });
+      if (!kimiInput.allowed) {
+        const refusedSessionId = sessionId || capturedSessionId || processKey;
+        ws.send(createNormalizedMessage({
+          kind: 'error',
+          content: kimiInput.reason,
+          sessionId: refusedSessionId,
+          provider: 'opencode',
+        }));
+        ws.send(createCompleteMessage({ provider: 'opencode', sessionId: refusedSessionId, exitCode: 1 }));
+        notifyTerminalState({ code: 1, error: kimiInput.reason });
+        reject(new Error(kimiInput.reason));
+        return;
+      }
       const args = ['run', '--format', 'json'];
       // OpenCode's `run` command owns workspace selection through `--dir`.
       // Relying on the child-process cwd alone is not enough on Linux, where
@@ -422,25 +533,19 @@ async function spawnOpenCode(command, options = {}, ws, context) {
       if (sessionAgent && !permissionOptions.args.includes('--agent')) {
         args.push('--agent', sessionAgent);
       }
-      const hasAttachments =
-        normalizeAttachmentDescriptors(images).length > 0
-        || normalizeAttachmentDescriptors(files).length > 0;
       if ((command && command.trim()) || hasAttachments) {
         // Image attachments ride along as an <images_input> path list appended
         // to the prompt; the session history reader strips the tag back out.
         // opencode is a .cmd shim on Windows, so the whole argument must be
         // newline-free or cmd.exe silently truncates it at the first newline.
-        const promptWithAttachments = appendFilesInputTag(
-          appendImagesInputTag(command?.trim() || '', images),
-          files
-        );
         args.push(flattenPromptForWindowsShell(promptWithAttachments));
       }
 
       if (options.abortController?.signal.aborted) { resolve(); return; }
 
       const bridge = resolveOpenCodeBridge();
-      const turnExecution = spawnDetachedTurn({
+      const kimiConfigContent = mergeKimiOutputLimitConfig(process.env.OPENCODE_CONFIG_CONTENT, resolvedModel);
+      const turnExecution = await spawnDetachedTurn({
         command: process.execPath,
         args: [...bridge.args, '--', ...args],
         cwd: workingDir,
@@ -449,7 +554,13 @@ async function spawnOpenCode(command, options = {}, ws, context) {
         // (provider lookup, abort), so a foreign label here would break both.
         backend: 'opencode',
         jobId: typeof options.jobId === 'string' ? options.jobId : null,
-        env: { ...permissionOptions.env, ...bridge.env },
+        env: {
+          ...permissionOptions.env,
+          ...bridge.env,
+          // Kimi's output budget rides as a per-turn model limit; the user's
+          // global OpenCode config is never modified.
+          ...(kimiConfigContent ? { OPENCODE_CONFIG_CONTENT: kimiConfigContent } : {}),
+        },
         onLine: (line) => {
           const trimmed = line.trim();
           if (trimmed.startsWith('{')) {

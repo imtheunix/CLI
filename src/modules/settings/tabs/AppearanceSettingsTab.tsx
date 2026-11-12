@@ -67,6 +67,7 @@ export default function AppearanceSettingsTab({
           {([
             ['showRawParameters', 'Show raw tool parameters'],
             ['showThinking', 'Show thinking'],
+            ['showReasoningExpanded', 'Show reasoning expanded'],
             ['sendByCtrlEnter', 'Send with Ctrl / Cmd + Enter'],
           ] as const).map(([key, label]) => (
             <SettingsRow key={key} label={t(`chatDisplay.${key}`, { defaultValue: label })}>

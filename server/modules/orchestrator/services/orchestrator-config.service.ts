@@ -128,6 +128,8 @@ export type OrchestratorConfig = {
    * Low-risk diffs take the ordinary `tjob approve` path; everything else waits for the hub.
    */
   review: ReviewConfig;
+  /** Job health alerts (no commit, overtime, dead slot) and their thresholds. */
+  health: HealthConfig;
   /**
    * Hub session notification configuration. When present and wake is true,
    * the orchestrator wakes the hub session on job events (reviews, waiting turns,
@@ -138,6 +140,20 @@ export type OrchestratorConfig = {
 
 /** Default bound on an undecided hub wake turn before it is abandoned. */
 export const DEFAULT_WAKE_ABANDON_MS = 10 * 60_000;
+
+/**
+ * Job health alerts: a busy job whose worktree HEAD has not moved, a run past its wall-time budget, and a
+ * failed or waiting job that keeps holding a backend slot. Events go through the hub wake debounce.
+ */
+export type HealthConfig = {
+  enabled: boolean;
+  /** A busy active job whose HEAD has not moved this long gets a nudge, then a hub event. */
+  noCommitMin: number;
+  /** An active job running longer than this gets a hub event, repeated at most every 30 min. */
+  maxRunMin: number;
+  /** A failed or hub-waiting job that still holds a slot this long gets a hub event. */
+  deadSlotMin: number;
+};
 
 /** Hub notification configuration options. */
 export type HubWakeConfig = {
@@ -232,6 +248,7 @@ function defaults(): OrchestratorConfig {
       },
       refuteBackendFor: { morph: 'glm', glm: 'morph', zcode: 'morph', claude: 'glm', codex: 'glm', agy: 'glm' },
     },
+    health: { enabled: true, noCommitMin: 45, maxRunMin: 30, deadSlotMin: 20 },
   };
 }
 
@@ -358,6 +375,14 @@ export function loadOrchestratorConfig(file = path.join(os.homedir(), '.config/c
           config.review.refuteBackendFor[producer as OrchestratorBackend] = refuter as OrchestratorBackend;
         }
       }
+    }
+  }
+  if (override.health && typeof override.health === 'object' && !Array.isArray(override.health)) {
+    const health = override.health as Record<string, unknown>;
+    if (typeof health.enabled === 'boolean') config.health.enabled = health.enabled;
+    for (const key of ['noCommitMin', 'maxRunMin', 'deadSlotMin'] as const) {
+      const value = health[key];
+      if (typeof value === 'number' && Number.isFinite(value) && value > 0) config.health[key] = value;
     }
   }
   if (override.hub && typeof override.hub === 'object') {

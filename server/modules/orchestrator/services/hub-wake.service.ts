@@ -14,6 +14,7 @@ import {
   type OrchestratorJobRow,
   type SessionRow,
 } from '@/modules/database/index.js';
+import { isTurnAlive } from '@/modules/detached-turns/index.js';
 import { chatRunRegistry, runDetachedChatTurn } from '@/modules/websocket/index.js';
 import type { ProviderRuntimeGateway } from '@/modules/websocket/index.js';
 import { AppError, getZcodeTranscriptPath } from '@/shared/index.js';
@@ -28,6 +29,7 @@ import {
 import type { HubEventState } from './hub-events.service.js';
 import { getEffectOutbox } from './effect-outbox.service.js';
 import type { EffectOutbox } from './effect-outbox.service.js';
+import { isPreparingJobAlive } from './job-activity.service.js';
 import { DEFAULT_WAKE_ABANDON_MS } from './orchestrator-config.service.js';
 import type { OrchestratorConfig } from './orchestrator-config.service.js';
 
@@ -90,6 +92,8 @@ export type LoggedHubEvent = {
   state: HubEventState;
   title: string;
   reason: string;
+  /** A preparing job with a live worker: the event line says alive, not waiting/unknown. */
+  alive?: boolean;
 };
 
 /** Used by HubWakeService and tests to parse a tab-separated line from hub-events.log. */
@@ -108,7 +112,10 @@ export function parseHubEventLine(line: string): LoggedHubEvent | null {
 
 /** Formats the status description portion of a hub wake event line. */
 export function formatHubEventStateDescription(event: LoggedHubEvent): string {
+  if (event.alive) return event.reason && event.reason !== '-' ? `alive, ${event.reason}` : 'alive, preparing';
   switch (event.state) {
+    case 'preparing':
+      return event.reason && event.reason !== '-' ? `alive, ${event.reason}` : 'alive, preparing';
     case 'review':
       return event.reason === 'waiting for review' ? 'done, waiting for review' : `done, ${event.reason}`;
     case 'review_fyi':
@@ -124,6 +131,8 @@ export function formatHubEventStateDescription(event: LoggedHubEvent): string {
       return `merge failed, ${event.reason}`;
     case 'merged':
       return `merged, ${event.reason}`;
+    case 'cancelled':
+      return `cancelled, ${event.reason}`;
     case 'stalled':
       return `stalled, ${event.reason}`;
     default:
@@ -190,6 +199,8 @@ export type HubWakeDependencies = {
   zcodeTranscriptsDir?: string;
   /** Optional hook to check if zcode child process is alive. */
   isZcodeProcessAlive?: (sessionId: string) => boolean;
+  /** Optional hook to check whether a recorded detached cli-turn unit is alive (tests). */
+  isTurnAlive?: (unitName: string) => Promise<boolean>;
 };
 
 /**
@@ -609,7 +620,9 @@ export function createHubWakeService(deps: HubWakeDependencies) {
         if (!parsed) continue;
         // Do not generate or forward events originated by the hub session itself
         if (hubSessionId && parsed.jobId === hubSessionId) continue;
-        pendingEvents.push({ ...parsed, endOffset });
+        const job = orchestratorJobsDb.get(parsed.jobId);
+        const alive = job ? isPreparingJobAlive(job) : false;
+        pendingEvents.push({ ...parsed, ...(alive ? { alive: true } : {}), endOffset });
         newlyAdded += 1;
 
         const eventTime = Date.parse(parsed.timestamp);
@@ -663,6 +676,27 @@ export function createHubWakeService(deps: HubWakeDependencies) {
     if (deps.runtime.hasBackgroundWork?.(sessionId)) return true;
     if (isUserTyping(sessionId, nowMs)) return true;
     return false;
+  }
+
+  /**
+   * True when the hub's provider session already has a live turn: a chat run
+   * the server tracks, or a running cli-turn unit recorded for the session.
+   * A wake must not start a second turn on top of either.
+   */
+  async function hasLiveTurn(sessionId: string): Promise<boolean> {
+    if (chatRunRegistry.isProcessing(sessionId)) return true;
+    const turn = runningTurnsDb.getRunningTurnBySession(sessionId);
+    if (!turn) return false;
+    return (deps.isTurnAlive ?? isTurnAlive)(turn.unit_name);
+  }
+
+  /** Re-reads liveness just before formatting: a preparing job may have started or stopped since the event was read. */
+  function refreshPendingLiveness(): void {
+    for (const event of pendingEvents) {
+      const job = orchestratorJobsDb.get(event.jobId);
+      if (job && isPreparingJobAlive(job)) event.alive = true;
+      else delete event.alive;
+    }
   }
 
   /** Checks active jobs for stall conditions (no transcript activity for stallMin minutes). */
@@ -852,6 +886,13 @@ export function createHubWakeService(deps: HubWakeDependencies) {
       return 'refused';
     }
 
+    // Single-flight: an older turn may still own the provider session after its
+    // start was abandoned. Starting another would stack turns on one session.
+    if (await hasLiveTurn(hubSessionId)) {
+      console.warn(`[HubWake] turn already in flight for ${hubSessionId}; refusing to start another.`);
+      return 'refused';
+    }
+
     // Recorded before the turn (process-bound: a wake cut by a restart is dropped, its events were not
     // committed and go out again). Done when reserved: the same events reach the hub at most once.
     const effectKey = commit ? `hub-wake:${hubSessionId}:${commit.generation}:${commit.offset}` : null;
@@ -910,18 +951,30 @@ export function createHubWakeService(deps: HubWakeDependencies) {
     }, timeoutMs);
 
     const abandonMs = deps.config().hub?.wakeAbandonMs ?? DEFAULT_WAKE_ABANDON_MS;
-    abandonTimer = setTimeout(() => {
-      abandonTimer = null;
-      if (decided || wakeInFlight !== wakeId) return;
-      // Release the hub: the events were never committed, so the next tick
-      // offers them again. A rare duplicate is cheaper than a silent hub.
-      wakeInFlight = null;
-      if (effectKey) outbox.finish(effectKey, { ok: false, error: 'abandoned while undecided; events released' });
-      console.warn(
-        `[HubWake] Abandoned wake turn #${wakeId} (${commit?.eventCount ?? 0} events) still undecided after ${abandonMs} ms; its events are released for redelivery.`,
-      );
-    }, abandonMs);
-    abandonTimer.unref?.();
+    const scheduleAbandon = (): void => {
+      abandonTimer = setTimeout(() => {
+        void (async () => {
+          abandonTimer = null;
+          if (decided || wakeInFlight !== wakeId) return;
+          // A live turn still owns the provider session: keep this wake in flight
+          // and look again later instead of letting a second turn stack on it.
+          if (await hasLiveTurn(hubSessionId)) {
+            console.warn(`[HubWake] turn already in flight for ${hubSessionId}; keeping wake turn #${wakeId} in flight.`);
+            if (!decided && wakeInFlight === wakeId) scheduleAbandon();
+            return;
+          }
+          // Release the hub: the events were never committed, so the next tick
+          // offers them again. A rare duplicate is cheaper than a silent hub.
+          wakeInFlight = null;
+          if (effectKey) outbox.finish(effectKey, { ok: false, error: 'abandoned while undecided; events released' });
+          console.warn(
+            `[HubWake] Abandoned wake turn #${wakeId} (${commit?.eventCount ?? 0} events) still undecided after ${abandonMs} ms; its events are released for redelivery.`,
+          );
+        })();
+      }, abandonMs);
+      abandonTimer.unref?.();
+    };
+    scheduleAbandon();
 
     const runTurn = deps.runTurn ?? runDetachedChatTurn;
     let turn: ReturnType<typeof runDetachedChatTurn>;
@@ -989,6 +1042,7 @@ export function createHubWakeService(deps: HubWakeDependencies) {
         return false;
       }
 
+      refreshPendingLiveness();
       const message = buildHubWakeMessage(pendingEvents);
       const commit = { offset: targetEndOffset, generation: logGeneration, eventCount: pendingEvents.length };
 
@@ -1052,6 +1106,7 @@ export function createHubWakeService(deps: HubWakeDependencies) {
       let commit: { offset: number; generation: number; eventCount: number } | null = null;
       if (pendingEvents.length > 0) {
         commit = { offset: targetEndOffset, generation: logGeneration, eventCount: pendingEvents.length };
+        refreshPendingLiveness();
         message = buildHubWakeMessage(pendingEvents);
       } else if (options.test) {
         message = '[tjob] test wake: hub wake is active and responding';

@@ -1,0 +1,11 @@
+[Unit]
+Description=Update tribeira-recall every 10 minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=10min
+Persistent=true
+Unit=tribeira-recall-index.service
+
+[Install]
+WantedBy=timers.target

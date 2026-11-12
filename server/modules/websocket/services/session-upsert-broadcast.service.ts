@@ -112,5 +112,19 @@ export async function broadcastSessionUpsertedBatch(
   sendToConnectedClients(payloads);
 }
 
+/**
+ * Tells clients that a background provider scan indexed sessions they may not
+ * have in their current snapshot. The initial `/api/projects` read no longer
+ * waits for that scan, so this is how the sidebar learns to re-read the DB
+ * once the scan has something new. It carries no session payload: a bootstrap
+ * can index tens of thousands of rows, and one refresh is cheaper than that
+ * many deltas.
+ */
+export function broadcastProjectsRefresh(): void {
+  sendToConnectedClients([
+    JSON.stringify({ kind: 'projects_refresh', timestamp: new Date().toISOString() }),
+  ]);
+}
+
 /** @internal Exported for the broadcast tests, which assert the payload shape directly. */
 export { buildSessionUpsertedEvent };

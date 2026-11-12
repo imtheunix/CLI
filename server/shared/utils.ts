@@ -1136,9 +1136,16 @@ export function sanitizeLeafDirectoryName(inputName: string, label = 'directory 
  * Recursively discovers files that match one extension, with optional incremental filtering.
  *
  * Provider synchronizers call this to find transcript artifacts under provider
- * home directories. Pass `lastScanAt` to include only files created after the
- * previous scan, or pass `null` to perform a full rescan. Missing directories
- * are treated as empty because not every provider exists on every machine.
+ * home directories. Pass `lastScanAt` to include only files created or modified
+ * after the previous scan, or pass `null` to perform a full rescan. Missing
+ * directories are treated as empty because not every provider exists on every
+ * machine; other read errors are rethrown so a failed scan cannot advance the
+ * cursor and silently skip sessions.
+ *
+ * Both timestamps matter: a transcript written while the app was down keeps its
+ * old birthtime but gets a fresh mtime, and the watcher cannot replay changes
+ * that happened before it started. Comparing only birthtime would miss those
+ * files forever.
  */
 export async function findFilesRecursivelyCreatedAfter(
   rootDir: string,
@@ -1146,32 +1153,52 @@ export async function findFilesRecursivelyCreatedAfter(
   lastScanAt: Date | null,
   fileList: string[] = []
 ): Promise<string[]> {
+  let entries;
   try {
-    const entries = await readdir(rootDir, { withFileTypes: true });
-    for (const entry of entries) {
-      const fullPath = path.join(rootDir, entry.name);
-
-      if (entry.isDirectory()) {
-        await findFilesRecursivelyCreatedAfter(fullPath, extension, lastScanAt, fileList);
-        continue;
-      }
-
-      if (!entry.isFile() || !entry.name.endsWith(extension)) {
-        continue;
-      }
-
-      if (!lastScanAt) {
-        fileList.push(fullPath);
-        continue;
-      }
-
-      const fileStat = await stat(fullPath);
-      if (fileStat.birthtime > lastScanAt) {
-        fileList.push(fullPath);
-      }
+    entries = await readdir(rootDir, { withFileTypes: true });
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT' || code === 'ENOTDIR') {
+      // Missing provider folders are expected in first-run or partial setups.
+      return fileList;
     }
-  } catch {
-    // Missing provider folders are expected in first-run or partial setups.
+    throw error;
+  }
+
+  for (const entry of entries) {
+    const fullPath = path.join(rootDir, entry.name);
+
+    if (entry.isDirectory()) {
+      await findFilesRecursivelyCreatedAfter(fullPath, extension, lastScanAt, fileList);
+      continue;
+    }
+
+    if (!entry.isFile() || !entry.name.endsWith(extension)) {
+      continue;
+    }
+
+    if (!lastScanAt) {
+      fileList.push(fullPath);
+      continue;
+    }
+
+    let fileStat;
+    try {
+      fileStat = await stat(fullPath);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === 'ENOENT' || code === 'ENOTDIR') {
+        // The file was removed between readdir and stat; the next scan will
+        // see the deletion, and failing the whole scan here would be worse.
+        continue;
+      }
+      throw error;
+    }
+
+    const lastChangedAt = Math.max(fileStat.birthtime.getTime(), fileStat.mtime.getTime());
+    if (lastChangedAt > lastScanAt.getTime()) {
+      fileList.push(fullPath);
+    }
   }
 
   return fileList;

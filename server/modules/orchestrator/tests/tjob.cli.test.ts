@@ -156,6 +156,16 @@ test('tjob status prints needs-you first, then goals, jobs, capacity, hub and ef
   assert.match(result.stdout, /contract-1 Contract job  subagents explore:1 morph-scout:2 \| edits 1 \| reads 2 \| bash 1 \| out 200 \| guidance yes/);
 });
 
+test('tjob status shows a preparing job with a live process as alive', () => {
+  const body = JSON.parse(statusBody);
+  const running = body.data.status.jobs.running[0];
+  running.state = 'preparing';
+  running.alive = true;
+  const result = runTjob(['status'], { body: JSON.stringify(body) });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /preparing \(alive\)/);
+});
+
 test('tjob status --md prints the markdown rendering', () => {
   const markdown = '# Status  (2026-11-10 12:00)\n\n## Needs you\n- the restart\n';
   const result = runTjob(['status', '--md'], { body: markdown });
@@ -210,6 +220,114 @@ test('tjob show displays review details alongside existing fields', () => {
   assert.match(result.stdout, /^  review_verdict: approved$/m);
   assert.match(result.stdout, /^  review_risk: low$/m);
   assert.match(result.stdout, /^  review_tier: deep$/m);
+});
+
+test('tjob show keeps an existing worktree unchanged', () => {
+  const body = JSON.stringify({
+    success: true,
+    data: {
+      job: {
+        id: 'live-1',
+        state: 'active',
+        merge_step: 'none',
+        title: 'Live worktree',
+        repo_path: '/repo',
+        branch: 'feature/live-1',
+        worktree_path: '/work/live-1',
+        worktree: { exists: true, pushedSha: null, branch: 'feature/live-1', branchLocal: null, branchOrigin: null },
+      },
+    },
+  });
+  const result = runTjob(['show', 'live-1'], { body });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /^  worktree_path: \/work\/live-1$/m);
+  assert.doesNotMatch(result.stdout, /worktree: removed/);
+});
+
+test('tjob show says a merged job\'s worktree is removed and where its code is', () => {
+  const body = JSON.stringify({
+    success: true,
+    data: {
+      job: {
+        id: 'merged-1',
+        state: 'done',
+        merge_step: 'merged',
+        title: 'Merged job',
+        repo_path: '/repo',
+        branch: 'feature/merged-1',
+        worktree_path: '/work/merged-1',
+        pushed_sha: 'abc1234',
+        worktree: { exists: false, pushedSha: 'abc1234', branch: 'feature/merged-1', branchLocal: null, branchOrigin: null },
+      },
+    },
+  });
+  const result = runTjob(['show', 'merged-1'], { body });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /^  worktree: removed \(merged as abc1234; read it with git -C \/repo show abc1234\)$/m);
+});
+
+test('tjob show says a cancelled job\'s branch still exists locally or on origin', () => {
+  const body = JSON.stringify({
+    success: true,
+    data: {
+      job: {
+        id: 'cancelled-1',
+        state: 'cancelled',
+        merge_step: 'none',
+        title: 'Cancelled job',
+        repo_path: '/repo',
+        branch: 'feature/cancelled-1',
+        worktree_path: '/work/cancelled-1',
+        worktree: { exists: false, pushedSha: null, branch: 'feature/cancelled-1', branchLocal: true, branchOrigin: false },
+      },
+    },
+  });
+  const result = runTjob(['show', 'cancelled-1'], { body });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /^  worktree: removed \(branch feature\/cancelled-1 still exists locally\)$/m);
+});
+
+test('tjob show says a cancelled job\'s branch is gone when neither local nor origin has it', () => {
+  const body = JSON.stringify({
+    success: true,
+    data: {
+      job: {
+        id: 'cancelled-2',
+        state: 'cancelled',
+        merge_step: 'none',
+        title: 'Cancelled job without branch',
+        repo_path: '/repo',
+        branch: 'feature/cancelled-2',
+        worktree_path: '/work/cancelled-2',
+        worktree: { exists: false, pushedSha: null, branch: 'feature/cancelled-2', branchLocal: false, branchOrigin: false },
+      },
+    },
+  });
+  const result = runTjob(['show', 'cancelled-2'], { body });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /^  worktree: removed \(branch feature\/cancelled-2 no longer exists locally or on origin\)$/m);
+});
+
+test('tjob rename posts the new title and prints the renamed job', () => {
+  const body = JSON.stringify({
+    success: true,
+    data: { job: { id: 'j1', title: 'Plain outcome', state: 'active', merge_step: 'none' } },
+  });
+  const result = runTjob(['rename', 'j1', 'Plain outcome'], { body });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Plain outcome/);
+});
+
+test('tjob status shows health flags per job', () => {
+  const body = JSON.parse(statusBody);
+  body.data.status.jobs.running[0].health = ['no commit 47m', 'over 30m'];
+  const result = runTjob(['status'], { body: JSON.stringify(body) });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Running job.*! no commit 47m, over 30m/);
 });
 
 test('tjob hub exits nonzero when the API reports failure', () => {

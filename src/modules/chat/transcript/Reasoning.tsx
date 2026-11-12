@@ -11,6 +11,7 @@ type ReasoningContextValue = {
   isOpen: boolean;
   setIsOpen: (open: boolean) => void;
   duration: number | undefined;
+  wordCount: number | undefined;
 };
 
 const ReasoningContext = React.createContext<ReasoningContextValue | null>(null);
@@ -25,7 +26,6 @@ const useReasoning = () => {
 
 /* ─── Reasoning (root) ───────────────────────────────────────────── */
 
-const AUTO_CLOSE_DELAY = 1000;
 const MS_IN_S = 1000;
 
 export type ReasoningProps = {
@@ -34,25 +34,30 @@ export type ReasoningProps = {
   defaultOpen?: boolean;
   onOpenChange?: (open: boolean) => void;
   duration?: number;
+  wordCount?: number;
 } & React.HTMLAttributes<HTMLDivElement>;
 
-/** Discloses an assistant turn's reasoning text; used by MessageComponent. */
+/**
+ * Discloses an assistant turn's reasoning text; used by MessageComponent.
+ *
+ * Reasoning is collapsed by default and never opens itself while streaming:
+ * a long chain of thought would otherwise push the answer off screen. The
+ * caller decides the initial state (the "Show reasoning expanded" setting).
+ */
 export const Reasoning = React.memo<ReasoningProps>(
   ({
     className,
     isStreaming = false,
     open: controlledOpen,
-    defaultOpen,
+    defaultOpen = false,
     onOpenChange,
     duration: durationProp,
+    wordCount,
     children,
     ...props
   }) => {
-    const resolvedDefaultOpen = defaultOpen ?? isStreaming;
-    const isExplicitlyClosed = defaultOpen === false;
-
     // Controllable open state
-    const [internalOpen, setInternalOpen] = React.useState(resolvedDefaultOpen);
+    const [internalOpen, setInternalOpen] = React.useState(defaultOpen);
     const isControlled = controlledOpen !== undefined;
     const isOpen = isControlled ? controlledOpen : internalOpen;
     const setIsOpen = React.useCallback(
@@ -65,8 +70,6 @@ export const Reasoning = React.memo<ReasoningProps>(
 
     // Duration tracking
     const [duration, setDuration] = React.useState<number | undefined>(durationProp);
-    const hasEverStreamedRef = React.useRef(isStreaming);
-    const [hasAutoClosed, setHasAutoClosed] = React.useState(false);
     const startTimeRef = React.useRef<number | null>(null);
 
     // Sync external duration prop
@@ -77,7 +80,6 @@ export const Reasoning = React.memo<ReasoningProps>(
     // Track streaming start/end for duration
     React.useEffect(() => {
       if (isStreaming) {
-        hasEverStreamedRef.current = true;
         if (startTimeRef.current === null) {
           startTimeRef.current = Date.now();
         }
@@ -87,27 +89,9 @@ export const Reasoning = React.memo<ReasoningProps>(
       }
     }, [isStreaming]);
 
-    // Auto-open when streaming starts
-    React.useEffect(() => {
-      if (isStreaming && !isOpen && !isExplicitlyClosed) {
-        setIsOpen(true);
-      }
-    }, [isStreaming, isOpen, setIsOpen, isExplicitlyClosed]);
-
-    // Auto-close after streaming ends
-    React.useEffect(() => {
-      if (hasEverStreamedRef.current && !isStreaming && isOpen && !hasAutoClosed) {
-        const timer = setTimeout(() => {
-          setIsOpen(false);
-          setHasAutoClosed(true);
-        }, AUTO_CLOSE_DELAY);
-        return () => clearTimeout(timer);
-      }
-    }, [isStreaming, isOpen, setIsOpen, hasAutoClosed]);
-
     const contextValue = React.useMemo(
-      () => ({ duration, isOpen, isStreaming, setIsOpen }),
-      [duration, isOpen, isStreaming, setIsOpen]
+      () => ({ duration, isOpen, isStreaming, setIsOpen, wordCount }),
+      [duration, isOpen, isStreaming, setIsOpen, wordCount]
     );
 
     return (
@@ -129,17 +113,27 @@ Reasoning.displayName = 'Reasoning';
 /* ─── ReasoningTrigger ───────────────────────────────────────────── */
 
 export type ReasoningTriggerProps = {
-  getThinkingMessage?: (isStreaming: boolean, duration?: number) => React.ReactNode;
+  getThinkingMessage?: (isStreaming: boolean, duration?: number, wordCount?: number) => React.ReactNode;
 } & React.ButtonHTMLAttributes<HTMLButtonElement>;
 
-const defaultGetThinkingMessage = (isStreaming: boolean, duration?: number): React.ReactNode => {
-  if (isStreaming || duration === 0) {
-    return <Shimmer>Thinking...</Shimmer>;
+const formatWordCount = (wordCount: number | undefined): string => {
+  const count = wordCount ?? 0;
+  return `${count} ${count === 1 ? 'word' : 'words'}`;
+};
+
+const defaultGetThinkingMessage = (
+  isStreaming: boolean,
+  duration?: number,
+  wordCount?: number,
+): React.ReactNode => {
+  const words = formatWordCount(wordCount);
+  if (isStreaming) {
+    return <Shimmer>{`Thinking… (${words})`}</Shimmer>;
   }
   if (duration === undefined) {
-    return <p>Thought for a few seconds</p>;
+    return <p>Thought for a few seconds ({words})</p>;
   }
-  return <p>Thought for {duration} seconds</p>;
+  return <p>Thought for {duration} s ({words})</p>;
 };
 
 /** Toggle of Reasoning, used by MessageComponent. */
@@ -150,7 +144,7 @@ export const ReasoningTrigger = React.memo<ReasoningTriggerProps>(
     getThinkingMessage = defaultGetThinkingMessage,
     ...props
   }) => {
-    const { isStreaming, isOpen, duration } = useReasoning();
+    const { isStreaming, isOpen, duration, wordCount } = useReasoning();
 
     return (
       <CollapsibleTrigger
@@ -163,7 +157,7 @@ export const ReasoningTrigger = React.memo<ReasoningTriggerProps>(
         {children ?? (
           <>
             <BrainIcon className="h-4 w-4" />
-            {getThinkingMessage(isStreaming, duration)}
+            {getThinkingMessage(isStreaming, duration, wordCount)}
             <ChevronDownIcon
               className={cn(
                 'h-4 w-4 transition-transform',

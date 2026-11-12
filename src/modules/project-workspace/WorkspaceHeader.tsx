@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 
 import type { AppTab, Project, ProjectSession } from '@/shared/types';
 import { cn } from '@/shared/utils';
+import { TurnPhaseBadge, useTurnPhase } from '@/modules/chat';
 import MobileMenuButton from '@/modules/project-workspace/MobileMenuButton';
 import WorkspaceConnectionStatus from '@/modules/project-workspace/WorkspaceConnectionStatus';
 import WorkspaceTabs from '@/modules/project-workspace/WorkspaceTabs';
@@ -35,6 +36,7 @@ export default function WorkspaceHeader({
   onRenameSession,
 }: WorkspaceHeaderProps) {
   const { t } = useTranslation();
+  const turnPhase = useTurnPhase(activeTab === 'chat' ? selectedSession?.id ?? null : null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const [canScrollLeft, setCanScrollLeft] = useState(false);
   const [canScrollRight, setCanScrollRight] = useState(false);
@@ -107,6 +109,7 @@ export default function WorkspaceHeader({
             shouldShowTasksTab={shouldShowTasksTab}
             onRenameSession={onRenameSession}
           />
+          <TurnPhaseBadge phase={turnPhase} />
           <WorkspaceConnectionStatus />
         </div>
 

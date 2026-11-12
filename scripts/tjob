@@ -7,10 +7,12 @@
 #   tjob meter [--watch]    Morph Ultra's rolling 60 s usage against its caps (--watch: refresh every 5 s)
 #   tjob status [--md]      goals, jobs, capacity, hub and efficiency in one place (--md: markdown, e.g. > file)
 #   tjob show <id>
+#   tjob rename <id> "<new title>"  give a job a plain-outcome title (the old title stays in its history)
 #   tjob done <id>          the agent's code is complete and committed: it waits at review for the orchestrating session
 #   tjob approve <id>       the orchestrating session (the hub) reviewed the branch: hand it to the CI/CD queue
 #   tjob retry <id>         a blocked merge goes on from where it stopped
 #   tjob cancel <id>        the person does not want the job anymore: frees its slot, leaves the CI/CD queue
+#                           (before the push; once it is pushing, the push cannot be undone and it will merge)
 #   tjob resume <id>        a cancelled or failed job takes a slot again
 #   tjob rollback <id> <turn> [--discard-untracked]  reset the job's worktree files to how an earlier turn left them (per-turn
 #                              checkpoint; refuses while the job runs, and when untracked files would be lost unless
@@ -45,7 +47,7 @@ if not body.get("success", False):
 data = body["data"]
 mode = sys.argv[1]
 def line(j):
-    doing = j.get("activity") or j["state"]
+    doing = j.get("activity") or ("preparing (alive)" if j.get("alive") else j["state"])
     review_step = j.get("review_step")
     if j["merge_step"] == "review" and review_step and review_step != "none":
         merge = "  rv:" + review_step
@@ -112,12 +114,13 @@ elif mode == "status":
         print("    jobs: " + (" ".join(g["jobs"]) if g["jobs"] else "none"))
         if g.get("needs"): print("    needs: " + g["needs"])
     def jobline(j):
-        where = ("ci:" + j["step"]) if j.get("step") else (j["mergeStep"] if j["mergeStep"] != "none" else j["state"])
+        where = ("ci:" + j["step"]) if j.get("step") else (j["mergeStep"] if j["mergeStep"] != "none" else ("preparing (alive)" if j.get("alive") else j["state"]))
         extra = ""
         if j.get("ageMs") is not None: extra = " (%s)" % dur(j["ageMs"])
         elif j.get("waitingMs") is not None: extra = " (waiting %s)" % dur(j["waitingMs"])
         elif j.get("at"): extra = " (%s)" % j["at"][:16].replace("T", " ")
-        return "  %s  %-6s %-14s %-12s%s  %s" % (j["id"], j.get("backend") or "-", (j.get("model") or "-").split("/")[-1], where, extra, j["title"])
+        health = ("  ! " + ", ".join(j["health"])) if j.get("health") else ""
+        return "  %s  %-6s %-14s %-12s%s  %s%s" % (j["id"], j.get("backend") or "-", (j.get("model") or "-").split("/")[-1], where, extra, j["title"], health)
     print("\nJobs:")
     for label in ("running", "review", "queue"):
         jobs = s["jobs"][label]
@@ -184,6 +187,28 @@ else:
     if mode == "show":
         for k in ("repo_path", "base_branch", "branch", "worktree_path", "session_id", "model", "pushed_sha", "checkLogPath", "last_error", "review_step", "review_verdict", "review_risk", "review_tier"):
             if j.get(k): print("  %s: %s" % (k, j[k]))
+        wt = j.get("worktree")
+        if wt and not wt.get("exists"):
+            sha = wt.get("pushedSha") or j.get("pushed_sha")
+            branch = wt.get("branch") or j.get("branch")
+            repo = j.get("repo_path")
+            if sha:
+                how = "merged" if j.get("merge_step") == "merged" else "pushed"
+                print("  worktree: removed (%s as %s; read it with git -C %s show %s)" % (how, sha, repo, sha))
+            elif j.get("state") == "cancelled":
+                local = wt.get("branchLocal")
+                origin = wt.get("branchOrigin")
+                if local and origin:
+                    where = "still exists locally and on origin"
+                elif local:
+                    where = "still exists locally"
+                elif origin:
+                    where = "still exists on origin"
+                else:
+                    where = "no longer exists locally or on origin"
+                print("  worktree: removed (branch %s %s)" % (branch, where))
+            else:
+                print("  worktree: removed")
         u = j.get("usage")
         if u:
             cost = u.get("notionalCostUsd")
@@ -253,6 +278,12 @@ case "$cmd" in
       api GET "/status" | render status
     fi ;;
   show) api GET "/${1:?id}" | render show ;;
+  rename)
+    usage="usage: tjob rename <id> \"<new title>\""
+    id=${1:?$usage}; shift
+    title=${1:?$usage}; shift
+    [ $# -eq 0 ] || { echo "$usage" >&2; exit 2; }
+    api POST "/$id/rename" "$(json_body title "$title")" | render rename ;;
   done|approve|retry|resume|cancel) api POST "/${1:?id}/$cmd" '{}' | render "$cmd" ;;
   rollback)
     usage="usage: tjob rollback <id> <turn> [--discard-untracked]"

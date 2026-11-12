@@ -27,6 +27,11 @@ type SynchronizeRowsResult = {
   firstSessionId: string | null;
 };
 
+type UpsertSessionResult = {
+  sessionId: string | null;
+  changed: boolean;
+};
+
 type ZcodeChildSessionRow = {
   id: string;
 };
@@ -119,22 +124,26 @@ export class ZcodeSessionSynchronizer implements IProviderSessionSynchronizer {
       let processed = 0;
       let firstSessionId: string | null = null;
       for (const row of rows) {
-        const indexedSessionId = this.upsertSession(row);
-        if (!indexedSessionId) {
+        const result = this.upsertSession(row);
+        if (!result.sessionId) {
           continue;
         }
 
         if (!firstSessionId) {
-          firstSessionId = indexedSessionId;
+          firstSessionId = result.sessionId;
         }
-        processed += 1;
+        if (result.changed) {
+          processed += 1;
+        }
       }
 
       return { processed, firstSessionId };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.warn('[ZcodeSessionSynchronizer] Failed to synchronize sessions:', message);
-      return { processed: 0, firstSessionId: null };
+      // Rethrow so the orchestrator records a failed scan and does not advance
+      // the persisted cursor past sessions this scan never indexed.
+      throw error;
     } finally {
       db?.close();
     }
@@ -152,11 +161,11 @@ export class ZcodeSessionSynchronizer implements IProviderSessionSynchronizer {
     }
   }
 
-  private upsertSession(row: ZcodeSessionRow): string | null {
+  private upsertSession(row: ZcodeSessionRow): UpsertSessionResult {
     const sessionId = readOptionalString(row.id);
     const projectPath = readOptionalString(row.directory) || readOptionalString(row.path);
     if (!sessionId || !projectPath) {
-      return null;
+      return { sessionId: null, changed: false };
     }
 
     const fallbackTitle = 'Untitled ZCode Session';
@@ -181,16 +190,30 @@ export class ZcodeSessionSynchronizer implements IProviderSessionSynchronizer {
     const timeUpdated = parseZcodeTimestamp(row.time_updated);
     const timeCreated = parseZcodeTimestamp(row.time_created);
 
+    const normalizedName = normalizeSessionName(nextName, fallbackTitle);
+
+    // A cursor window can include a row whose timestamp sits exactly on the
+    // boundary. Skip the write when the indexed row already matches it.
+    if (
+      existingSession
+      && sessionsDb.isSessionUnchanged(sessionId, this.provider, projectPath, normalizedName, timeUpdated, null)
+    ) {
+      return { sessionId: existingSession.session_id, changed: false };
+    }
+
     // zcode stores conversations in SQLite db; jsonl_path must stay null
     // so individual app session deletion does not destroy shared database stores.
-    return sessionsDb.createSession(
-      sessionId,
-      this.provider,
-      projectPath,
-      normalizeSessionName(nextName, fallbackTitle),
-      timeCreated,
-      timeUpdated,
-      null,
-    );
+    return {
+      sessionId: sessionsDb.createSession(
+        sessionId,
+        this.provider,
+        projectPath,
+        normalizedName,
+        timeCreated,
+        timeUpdated,
+        null,
+      ),
+      changed: true,
+    };
   }
 }

@@ -9,7 +9,7 @@ export type OrchestratorJobState = 'queued' | 'preparing' | 'active' | 'done' | 
 export type OrchestratorMergeStep = 'none' | 'review' | 'queued' | 'rebase' | 'check' | 'push' | 'deploy' | 'merged' | 'blocked';
 
 /** One entry of a job's CI/CD queue history: a step (or `check:run`, its check starting) and when it began. */
-export type OrchestratorMergeStepEvent = { step: OrchestratorMergeStep | 'check:run'; at: string };
+export type OrchestratorMergeStepEvent = { step: OrchestratorMergeStep | 'check:run' | 'cancelled'; at: string; by?: string };
 
 /** Automatic-review stages persisted on a job so the orchestrator can resume after a restart. */
 export type OrchestratorReviewStep = 'none' | 'gate' | 'refute' | 'policy' | 'fix' | 'hub' | 'approved';
@@ -56,6 +56,9 @@ export type OrchestratorBackendHandover = {
   pendingPrompt?: string | null;
 };
 
+/** One `tjob rename`: the title before and after, and when it changed. */
+export type OrchestratorTitleChange = { at: string; from: string; to: string };
+
 export type OrchestratorJobRow = {
   id: string;
   title: string;
@@ -93,6 +96,8 @@ export type OrchestratorJobRow = {
   limit_recovery: string | null;
   /** JSON array of OrchestratorBackendHandover; read it with `readBackendHandovers`. */
   backend_history: string | null;
+  /** JSON array of OrchestratorTitleChange; read it with `readTitleHistory`. */
+  title_history: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -101,13 +106,13 @@ type JobPatch = Partial<Pick<OrchestratorJobRow,
   'backend' | 'model' | 'session_id' | 'state' | 'in_turn' | 'merge_step' | 'merge_attempts'
   | 'pushed_sha' | 'deploy_waiting_since' | 'last_error' | 'base_branch'
   | 'review_step' | 'review_verdict' | 'review_risk' | 'review_tier' | 'review_round' | 'review_head_sha' | 'review_session_id'
-  | 'failure_class' | 'resume_at' | 'limit_recovery' | 'backend_history'>>;
+  | 'failure_class' | 'resume_at' | 'limit_recovery' | 'backend_history' | 'title' | 'title_history'>>;
 
 const PATCHABLE_COLUMNS: Array<keyof JobPatch> = [
   'backend', 'model', 'session_id', 'state', 'in_turn', 'merge_step', 'merge_attempts',
   'pushed_sha', 'deploy_waiting_since', 'last_error', 'base_branch',
   'review_step', 'review_verdict', 'review_risk', 'review_tier', 'review_round', 'review_head_sha', 'review_session_id',
-  'failure_class', 'resume_at', 'limit_recovery', 'backend_history',
+  'failure_class', 'resume_at', 'limit_recovery', 'backend_history', 'title', 'title_history',
 ];
 
 /** Used by the Orchestrator's views: a job's backend handovers, oldest first. */
@@ -115,6 +120,16 @@ export function readBackendHandovers(job: Pick<OrchestratorJobRow, 'backend_hist
   try {
     const parsed = JSON.parse(job.backend_history ?? '[]') as unknown;
     return Array.isArray(parsed) ? parsed as OrchestratorBackendHandover[] : [];
+  } catch {
+    return [];
+  }
+}
+
+/** Used by the Orchestrator's views: a job's title changes, oldest first. */
+export function readTitleHistory(job: Pick<OrchestratorJobRow, 'title_history'>): OrchestratorTitleChange[] {
+  try {
+    const parsed = JSON.parse(job.title_history ?? '[]') as unknown;
+    return Array.isArray(parsed) ? parsed as OrchestratorTitleChange[] : [];
   } catch {
     return [];
   }
@@ -210,10 +225,10 @@ export const orchestratorJobsDb = {
   },
 
   /** Appends to the step history without changing the step (`check:run`: the check got its slot). */
-  recordMergeStep(id: string, step: OrchestratorMergeStepEvent['step'], at = new Date().toISOString()): void {
+  recordMergeStep(id: string, step: OrchestratorMergeStepEvent['step'], at = new Date().toISOString(), by?: string): void {
     const current = this.get(id);
     if (!current) return;
-    const history = [...readMergeStepHistory(current), { step, at }];
+    const history = [...readMergeStepHistory(current), { step, at, ...(by ? { by } : {}) }];
     getConnection().prepare('UPDATE orchestrator_jobs SET merge_step_history = ? WHERE id = ?').run(JSON.stringify(history), id);
   },
 };

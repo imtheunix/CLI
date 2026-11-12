@@ -388,6 +388,42 @@ export function normalizedToChatMessages(messages: NormalizedMessage[]): ChatMes
       model: msg.model,
     };
 
+    // Reasoning arrives as one row per part. The transcript shows a single
+    // collapsed "Thinking" row per run, so consecutive parts are folded into
+    // the row above instead of each becoming its own block. These rows are
+    // deliberately not cached: the first part's projection changes every time
+    // a later part joins it.
+    if (msg.kind === 'thinking') {
+      const content = msg.content || '';
+      if (!content.trim()) {
+        continue;
+      }
+
+      const previous = converted[converted.length - 1];
+      if (previous?.isThinking) {
+        const startMs = new Date(previous.timestamp).getTime();
+        const endMs = new Date(msg.timestamp).getTime();
+        const duration = Number.isFinite(startMs) && Number.isFinite(endMs) && endMs > startMs
+          ? Math.ceil((endMs - startMs) / 1000)
+          : previous.reasoningDurationSeconds;
+        converted[converted.length - 1] = {
+          ...previous,
+          content: `${previous.content || ''}${previous.content ? '\n\n' : ''}${content}`,
+          reasoningDurationSeconds: duration,
+        };
+      } else {
+        converted.push({
+          type: 'assistant',
+          id: msg.id,
+          content,
+          timestamp: msg.timestamp,
+          isThinking: true,
+          ...sharedMetadata,
+        });
+      }
+      continue;
+    }
+
     if (appendCompactionRow(msg, converted, sharedMetadata, {
       hasCompactionRow,
       foldedSummaries,
@@ -495,18 +531,6 @@ export function normalizedToChatMessages(messages: NormalizedMessage[]): ChatMes
         });
         break;
       }
-
-      case 'thinking':
-        if (msg.content?.trim()) {
-          converted.push({
-            type: 'assistant',
-            content: msg.content,
-            timestamp: msg.timestamp,
-            isThinking: true,
-            ...sharedMetadata,
-          });
-        }
-        break;
 
       case 'error':
         converted.push({

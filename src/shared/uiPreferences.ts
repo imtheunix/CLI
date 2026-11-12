@@ -12,6 +12,8 @@ import { readUserPreference } from '@/shared/userSettings';
 export type UiPreferences = {
   showRawParameters: boolean;
   showThinking: boolean;
+  /** Opens reasoning rows expanded instead of the default collapsed row. */
+  showReasoningExpanded: boolean;
   sendByCtrlEnter: boolean;
   sidebarVisible: boolean;
   voiceEnabled: boolean;
@@ -26,6 +28,7 @@ export type UiPreferencesAction =
 const DEFAULTS: UiPreferences = {
   showRawParameters: false,
   showThinking: true,
+  showReasoningExpanded: false,
   sendByCtrlEnter: false,
   sidebarVisible: true,
   voiceEnabled: false,

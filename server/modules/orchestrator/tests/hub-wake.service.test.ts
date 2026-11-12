@@ -18,7 +18,7 @@ import {
 import { chatRunRegistry } from '@/modules/websocket/index.js';
 
 import { appendHubEvent, getLiveHubEventsLogPath } from '../services/hub-events.service.js';
-import { buildHubWakeMessage, createHubWakeService, hubWakeTestGuard } from '../services/hub-wake.service.js';
+import { buildHubWakeMessage, createHubWakeService, formatHubEventLine, hubWakeTestGuard } from '../services/hub-wake.service.js';
 import type { LoggedHubEvent } from '../services/hub-wake.service.js';
 import { loadOrchestratorConfig } from '../services/orchestrator-config.service.js';
 import type { OrchestratorConfig } from '../services/orchestrator-config.service.js';
@@ -1379,6 +1379,144 @@ test('a wake undecided past wakeAbandonMs releases its events; the next wake del
   });
 });
 
+test('single-flight: refuses a second wake while a cli-turn unit is still running for the hub session', async () => {
+  await withTestContext(async ({ dir, config, runtime, eventsLogPath, offsetPath, hubSessionId, clock }) => {
+    const warnings: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (...args: unknown[]) => { warnings.push(args.map(String).join(' ')); };
+    try {
+      const service = createHubWakeService({
+        config: () => config,
+        runtime: runtime.gateway,
+        now: () => clock.now,
+        eventsLogPath,
+        offsetPath,
+        isTurnAlive: async () => true,
+      });
+      service.start();
+
+      runningTurnsDb.recordTurn({
+        unitName: 'cli-turn-hub-live-test',
+        sessionId: hubSessionId,
+        backend: 'claude',
+        logPath: path.join(dir, 'hub-turn.log'),
+      });
+
+      appendHubEvent({ jobId: 'job-stacked', state: 'review', title: 'Stacked', reason: 'waiting for review' });
+      const result = await service.triggerWake();
+
+      assert.equal(result.success, false);
+      assert.equal(runtime.turns.length, 0, 'no second turn may start on a session that already has one');
+      assert.ok(warnings.some((line) => line.includes(`[HubWake] turn already in flight for ${hubSessionId}`)));
+    } finally {
+      console.warn = originalWarn;
+      runningTurnsDb.deleteTurn('cli-turn-hub-live-test');
+    }
+  });
+});
+
+test('single-flight: after wakeAbandonMs a still-live turn keeps the wake in flight instead of releasing it', async () => {
+  await withTestContext(async ({ dir, config, runtime, eventsLogPath, offsetPath, stallsPath, hubSessionId, clock }) => {
+    config.hub = { ...config.hub!, wakeAbandonMs: 250 };
+    const turns = createLateStartingTurns();
+    const warnings: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (...args: unknown[]) => { warnings.push(args.map(String).join(' ')); };
+    try {
+      const service = createHubWakeService({
+        config: () => config,
+        runtime: runtime.gateway,
+        now: () => clock.now,
+        eventsLogPath,
+        offsetPath,
+        stallsPath,
+        turnTimeoutMs: 20,
+        runTurn: turns.runTurn,
+        isTurnAlive: async () => true,
+      });
+      service.start();
+
+      appendHubEvent({ jobId: 'job-live', state: 'review', title: 'Live', reason: 'waiting for review', timestamp: clock.now.toISOString() });
+      clock.advance(100);
+      await service.tick();
+      assert.equal(turns.contents.length, 1);
+
+      // The abandoned turn is actually alive: a cli-turn unit now records it.
+      runningTurnsDb.recordTurn({
+        unitName: 'cli-turn-hub-abandon-test',
+        sessionId: hubSessionId,
+        backend: 'claude',
+        logPath: path.join(dir, 'hub-abandon.log'),
+      });
+      await waitForTimers(300);
+
+      assert.equal(service.isHubBusy(hubSessionId), true, 'a live turn keeps the wake in flight');
+      assert.equal(turns.contents.length, 1, 'no second turn while the first is alive');
+      assert.ok(warnings.some((line) => line.includes(`[HubWake] turn already in flight for ${hubSessionId}`)));
+
+      turns.release(0);
+      await waitForTimers();
+    } finally {
+      console.warn = originalWarn;
+      runningTurnsDb.deleteTurn('cli-turn-hub-abandon-test');
+    }
+  });
+});
+
+test('hub event lines describe a preparing job with a live worker as alive', () => {
+  const line = formatHubEventLine({
+    jobId: 'job-prep',
+    state: 'turn_ended',
+    title: 'Preparing job',
+    reason: 'turn ended without tjob done',
+    timestamp: '2026-11-10T12:00:00.000Z',
+    alive: true,
+  });
+  assert.equal(line, '[tjob] job-prep Preparing job: alive, turn ended without tjob done');
+});
+
+test('a wake line for a preparing job with a live turn reads alive, not waiting', async () => {
+  await withTestContext(async ({ dir, config, runtime, eventsLogPath, offsetPath, hubSessionId, clock }) => {
+    const service = createHubWakeService({
+      config: () => config,
+      runtime: runtime.gateway,
+      now: () => clock.now,
+      eventsLogPath,
+      offsetPath,
+      turnTimeoutMs: 20,
+    });
+    service.start();
+
+    const job = orchestratorJobsDb.create({
+      id: 'job-prep-live',
+      title: 'Preparing live',
+      prompt: 'Do work',
+      repoPath: dir,
+      baseBranch: 'main',
+      branch: 'feature/job-prep-live',
+      worktreePath: dir,
+      requestedBackend: 'claude',
+    });
+    orchestratorJobsDb.update(job.id, { state: 'preparing', in_turn: 1 });
+
+    appendHubEvent({
+      jobId: job.id,
+      state: 'turn_ended',
+      title: job.title,
+      reason: 'turn ended without tjob done',
+      timestamp: clock.now.toISOString(),
+    });
+    clock.advance(100);
+    await service.tick();
+
+    assert.equal(runtime.turns.length, 1);
+    assert.ok(runtime.turns[0].command.includes('alive, turn ended without tjob done'));
+    assert.ok(!runtime.turns[0].command.includes('waiting, turn ended without tjob done'));
+    runtime.finish(hubSessionId);
+    service.stop();
+  });
+});
+
 test('under test, a wake never reaches the configured real hub: no live DB, no live events log', async () => {
   // Regression (2026-11-06): a test run delivered fixture events to the live hub session.
   const previousDatabasePath = process.env.DATABASE_PATH;
@@ -1575,4 +1713,25 @@ test('mixed wakes cap decisions before adding the FYI overflow', () => {
   assert.match(message, /\+5 more decisions/);
   assert.match(message, /\+1 more FYI/);
   assert.doesNotMatch(message, /decision-20/);
+});
+
+test('a preparing job with a live worker reads as alive in hub event lines', () => {
+  const preparing = formatHubEventLine({
+    timestamp: 'now',
+    jobId: 'prep-1',
+    state: 'preparing',
+    title: 'Preparing job',
+    reason: 'worker running',
+  });
+  assert.equal(preparing, '[tjob] prep-1 Preparing job: alive, worker running');
+
+  const enriched = formatHubEventLine({
+    timestamp: 'now',
+    jobId: 'prep-2',
+    state: 'waiting',
+    title: 'Preparing job',
+    reason: 'worker running',
+    alive: true,
+  });
+  assert.equal(enriched, '[tjob] prep-2 Preparing job: alive, worker running');
 });

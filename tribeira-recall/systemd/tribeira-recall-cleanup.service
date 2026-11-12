@@ -1,0 +1,8 @@
+[Unit]
+Description=Expire old tribeira-recall artifacts
+Documentation=file://%h/Tribeira/tribeiracli/docs/recall.md
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/Tribeira/tribeiracli/tribeira-recall
+ExecStart=%h/Tribeira/tribeiracli/tribeira-recall/.venv/bin/python -m tribeira_recall cleanup --days 30

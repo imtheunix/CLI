@@ -2,6 +2,7 @@ import { sessionsDb, sessionDraftsDb } from '@/modules/database/index.js';
 import { ChatSessionWriter } from '@/modules/websocket/services/chat-session-writer.service.js';
 import { WS_OPEN_STATE } from '@/modules/websocket/services/websocket-state.service.js';
 import { broadcastSessionUpserted } from '@/modules/websocket/services/session-upsert-broadcast.service.js';
+import { clearTurnPhase, setTurnPhase } from '@/modules/websocket/services/turn-phase.service.js';
 import type {
   LLMProvider,
   NormalizedMessage,
@@ -145,11 +146,21 @@ function decorateAndRecordEvent(run: ChatRun, message: NormalizedMessage): Norma
     sessionDraftsDb.pauseQueue(run.appSessionId);
   }
 
+  if (message.kind === 'stream_delta') {
+    setTurnPhase(run.appSessionId, 'streaming');
+  } else if (message.kind === 'tool_use') {
+    setTurnPhase(run.appSessionId, `tool:${message.toolName || 'unknown'}`);
+  } else if (message.kind === 'status' && typeof message.text === 'string'
+    && /pacer|rate.?limit|waiting/i.test(message.text)) {
+    setTurnPhase(run.appSessionId, 'pacer-wait', message.text);
+  }
+
   if (message.kind === 'complete') {
     // The provider may report its own id here; the frontend only ever knows
     // the app id, so the "actual" id is by definition the app id as well.
     outbound.actualSessionId = run.appSessionId;
     run.status = 'completed';
+    clearTurnPhase(run.appSessionId);
     run.completedAt = Date.now();
     evictRunLater(run);
     const completion: RunCompletion = {

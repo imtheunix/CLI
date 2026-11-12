@@ -385,7 +385,7 @@ export class AgyProvider extends AbstractProvider {
         record(event);
       };
 
-      const turnExecution = spawnDetachedTurn({
+      const turnExecution = await spawnDetachedTurn({
         command: 'agy',
         args,
         cwd: options.cwd || options.projectPath || process.cwd(),

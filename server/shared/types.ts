@@ -241,9 +241,33 @@ export type MessageKind =
  */
 export type GatewayEventKind =
   | 'chat_subscribed'
+  | 'chat_resync'
+  | 'turn_phase'
   | 'session_upserted'
   | 'loading_progress'
   | 'protocol_error';
+
+/**
+ * Where a live turn stands, as the chat gateway reports it.
+ *
+ * `tool:<name>` names the tool the turn is currently running; `pacer-wait` is
+ * emitted only when a provider status line says the turn is waiting on the
+ * pacer. The phase is ephemeral: a reconnect gets the current one in its
+ * resync snapshot, and `complete` clears it.
+ */
+export type TurnPhase =
+  | 'queued'
+  | 'dispatching'
+  | 'prefill'
+  | 'streaming'
+  | `tool:${string}`
+  | 'pacer-wait';
+
+export type TurnPhaseState = {
+  phase: TurnPhase;
+  detail?: string;
+  at: string;
+};
 
 /**
  * Complete set of `kind` values emitted to websocket clients.

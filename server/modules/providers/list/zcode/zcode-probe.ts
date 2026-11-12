@@ -62,7 +62,7 @@ export async function probeZcodeLogin(options: ZcodeProbeOptions = {}): Promise<
   const tempDir = await mkdtemp(path.join(os.tmpdir(), 'zcode-probe-'));
   try {
     // A throwaway home: the probe's session never touches a job's db or the shared one.
-    const home = prepareZcodeHome(path.join(tempDir, 'home'));
+    const home = await prepareZcodeHome(path.join(tempDir, 'home'));
     const cwd = path.join(tempDir, 'cwd');
     await mkdir(cwd);
     const { stdout, stderr, error } = await new Promise<{

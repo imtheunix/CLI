@@ -114,6 +114,11 @@ function upstreamHeaders(
   return headers;
 }
 
+function headerValue(value: string | string[] | undefined): string | null {
+  if (Array.isArray(value)) return value[0] ?? null;
+  return value ?? null;
+}
+
 function parseRequestJson(body: Buffer): Record<string, unknown> | null {
   if (body.length === 0) return null;
   try {
@@ -162,20 +167,67 @@ export function createProxyServer(options: ProxyOptions): http.Server {
 
     const rawBody = await readBody(request);
     const parsed = parseRequestJson(rawBody);
-    const model = typeof parsed?.model === 'string' ? parsed.model : 'unknown';
+    let model = typeof parsed?.model === 'string' ? parsed.model : 'unknown';
+    let alias: string | null = null;
     const requestedStream = parsed?.stream === true;
+    const isChatCompletions =
+      request.method === 'POST' && url.pathname === '/v1/chat/completions';
+    const isMessages = request.method === 'POST' && url.pathname === '/v1/messages';
 
     let body = rawBody;
-    if (parsed && requestedStream) {
-      const streamOptions =
-        parsed.stream_options && typeof parsed.stream_options === 'object'
-          ? (parsed.stream_options as Record<string, unknown>)
-          : {};
-      if (streamOptions.include_usage === undefined) {
-        streamOptions.include_usage = true;
+    let cacheTtl: string | null = null;
+    let runIdSet = false;
+    if (parsed) {
+      let changed = false;
+
+      const aliasTarget = config.modelAliases?.[model];
+      if (aliasTarget) {
+        alias = model;
+        model = aliasTarget.model;
+        parsed.model = model;
+        // Verified 2026-11-11 against Morph: /v1/messages ignores chat_template_kwargs, so the
+        // OpenAI thinking-off body cannot be applied there (a {"thinking":false} probe still
+        // emitted thinking content). On the Anthropic wire an alias maps the model only;
+        // thinking-off stays available on /v1/chat/completions.
+        if (!isMessages) {
+          for (const [key, value] of Object.entries(aliasTarget.body ?? {})) {
+            if (parsed[key] === undefined) parsed[key] = value;
+          }
+        }
+        changed = true;
       }
-      parsed.stream_options = streamOptions;
-      body = Buffer.from(JSON.stringify(parsed), 'utf8');
+
+      if (isChatCompletions) {
+        if (parsed.cache_ttl === undefined && config.cacheTtl !== '') {
+          parsed.cache_ttl = config.cacheTtl;
+          changed = true;
+        }
+        if (parsed.run_id === undefined && config.runIdModels.includes(model)) {
+          const sessionId =
+            headerValue(request.headers['x-session-id']) ??
+            headerValue(request.headers['x-opencode-session-id']);
+          if (sessionId) {
+            parsed.run_id = sessionId;
+            changed = true;
+          }
+        }
+      }
+
+      if (isChatCompletions && requestedStream) {
+        const streamOptions =
+          parsed.stream_options && typeof parsed.stream_options === 'object'
+            ? (parsed.stream_options as Record<string, unknown>)
+            : {};
+        if (streamOptions.include_usage === undefined) {
+          streamOptions.include_usage = true;
+        }
+        parsed.stream_options = streamOptions;
+        changed = true;
+      }
+
+      if (changed) body = Buffer.from(JSON.stringify(parsed), 'utf8');
+      cacheTtl = typeof parsed.cache_ttl === 'string' ? parsed.cache_ttl : null;
+      runIdSet = parsed.run_id !== undefined;
     }
 
     const admission = await pacer.admit(model, body.length);
@@ -202,6 +254,9 @@ export function createProxyServer(options: ProxyOptions): http.Server {
         wait_ms: admission.waitMs,
         retries,
         stream,
+        cache_ttl: cacheTtl,
+        run_id_set: runIdSet,
+        alias,
       };
       try {
         await ledger.append(entry);

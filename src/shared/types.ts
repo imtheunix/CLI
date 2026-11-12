@@ -286,6 +286,18 @@ export type ServerEvent = {
   [key: string]: unknown;
 };
 
+/**
+ * Where a live turn stands, as the chat gateway reports it on `turn_phase`
+ * frames and in the `chat_subscribed` / `chat_resync` snapshots.
+ */
+export type TurnPhase =
+  | 'queued'
+  | 'dispatching'
+  | 'prefill'
+  | 'streaming'
+  | `tool:${string}`
+  | 'pacer-wait';
+
 
 // ---------------------------
 
@@ -375,6 +387,8 @@ export type SubagentInfo = {
 /** One rendered entry in a chat transcript — user turn, assistant turn, tool call and result, local command output, or subagent container — and the shape the chat message list and message components consume. */
 export type ChatMessage = {
   type: string;
+  /** Stable provider row id, used to key a merged reasoning row across its growing parts. */
+  id?: string;
   content?: string;
   displayText?: string;
   timestamp: string | number | Date;
@@ -399,6 +413,8 @@ export type ChatMessage = {
    */
   model?: string;
   isThinking?: boolean;
+  /** Seconds the reasoning behind a merged thinking row took, when its parts carried timestamps. */
+  reasoningDurationSeconds?: number;
   isStreaming?: boolean;
   isToolUse?: boolean;
   toolName?: string;

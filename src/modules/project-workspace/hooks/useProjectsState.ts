@@ -732,6 +732,14 @@ export function useProjectsState({
         return;
       }
 
+      // The initial projects read returns the cached index immediately and
+      // starts an incremental provider scan in the background. This event says
+      // that scan indexed something, so re-read the DB once it is done.
+      if (event.kind === 'projects_refresh') {
+        void refreshProjectsSilently();
+        return;
+      }
+
       if (event.kind === 'loading_progress') {
         if (loadingProgressTimeoutRef.current) {
           clearTimeout(loadingProgressTimeoutRef.current);

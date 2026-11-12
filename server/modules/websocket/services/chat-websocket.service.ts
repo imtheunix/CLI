@@ -9,6 +9,7 @@ import type { WebSocket } from 'ws';
 import { sessionsDb } from '@/modules/database/index.js';
 import { providerModelsService, sessionsService } from '@/modules/providers/index.js';
 import { chatRunRegistry } from '@/modules/websocket/services/chat-run-registry.service.js';
+import { getTurnPhase, setTurnPhase } from '@/modules/websocket/services/turn-phase.service.js';
 import { connectedClients, WS_OPEN_STATE } from '@/modules/websocket/services/websocket-state.service.js';
 import {
   getGlobalImageAssetsDir,
@@ -244,6 +245,8 @@ async function dispatchRun(
     return { started: false, error: 'A run is already in progress for this session.' };
   }
 
+  setTurnPhase(sessionId, 'dispatching');
+
   const clientOptions = (data.options ?? {}) as AnyRecord;
   const command = typeof data.content === 'string' ? data.content : '';
 
@@ -318,6 +321,7 @@ async function dispatchRun(
       });
     }
     run.writer.send({ kind: 'status', provider, text: 'Processing', canInterrupt: true });
+    setTurnPhase(sessionId, 'prefill');
     await dependencies.runtime.run(provider, command, runtimeOptions, run.writer);
   } catch (error) {
     failure = error instanceof Error ? error.message : String(error);
@@ -573,6 +577,7 @@ function handleChatSubscribe(
       isProcessing,
       lastSeq: run?.lastSeq ?? 0,
       pendingPermissions,
+      phase: getTurnPhase(sessionId),
       timestamp: new Date().toISOString(),
     });
 

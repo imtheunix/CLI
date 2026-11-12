@@ -91,7 +91,7 @@ setTimeout(() => {
     const sessionId = 'session-survive-1';
     sessionsDb.createSession(sessionId, 'agy', root, 'Survive Turn Test');
 
-    const execution = spawnDetachedTurn({
+    const execution = await spawnDetachedTurn({
       command: agentScript,
       args: [],
       cwd: root,
@@ -109,12 +109,12 @@ setTimeout(() => {
     assert.equal(recorded.completed_at, null);
 
     // Verify it is alive
-    assert.ok(isTurnAlive(unitName));
+    assert.ok(await isTurnAlive(unitName));
 
     // Wait for the turn to complete on its own
     await execution.promise;
 
-    assert.equal(isTurnAlive(unitName), false);
+    assert.equal(await isTurnAlive(unitName), false);
     assert.equal(getUnitExitCode(unitName), 0);
 
     const logPath = getTurnLogPath(unitName);
@@ -132,13 +132,13 @@ test('restart stops a cancelled job instead of reattaching its live turn', async
     orchestratorJobsDb.create({ id: 'cancelled-job', title: 'Cancelled', prompt: 'work', repoPath: root,
       worktreePath: root, baseBranch: 'main', branch: 'feature/cancelled', requestedBackend: 'agy', model: null });
     orchestratorJobsDb.update('cancelled-job', { session_id: sessionId, state: 'cancelled' });
-    const execution = spawnDetachedTurn({ command: agent, args: [], cwd: root, sessionId, backend: 'agy', jobId: 'cancelled-job' });
+    const execution = await spawnDetachedTurn({ command: agent, args: [], cwd: root, sessionId, backend: 'agy', jobId: 'cancelled-job' });
     await eventually(() => isTurnAlive(execution.unitName), 'agent alive');
     await reattachActiveTurns();
     await execution.promise;
     assert.equal(orchestratorJobsDb.get('cancelled-job')?.state, 'cancelled');
     assert.equal(chatRunRegistry.isProcessing(sessionId), false);
-    assert.equal(isTurnAlive(execution.unitName), false);
+    assert.equal(await isTurnAlive(execution.unitName), false);
   });
 });
 
@@ -162,7 +162,7 @@ setTimeout(() => {
     sessionsDb.createSession(sessionId, 'agy', root, 'Reattach Stream Test');
 
     // Start a turn
-    const execution = spawnDetachedTurn({
+    const execution = await spawnDetachedTurn({
       command: agentScript,
       args: [],
       cwd: root,
@@ -252,7 +252,7 @@ process.exit(0);
       in_turn: 1,
     });
 
-    const execution = spawnDetachedTurn({
+    const execution = await spawnDetachedTurn({
       command: agentScript,
       args: [],
       cwd: root,
@@ -263,7 +263,7 @@ process.exit(0);
 
     // Wait until it completely finishes on disk while "server is down"
     await execution.promise;
-    assert.equal(isTurnAlive(execution.unitName), false);
+    assert.equal(await isTurnAlive(execution.unitName), false);
 
     // Turn is not yet marked completed in running_turns DB (simulating server was killed before reading completion)
     // We update DB directly to simulate interrupted state where exit wasn't caught
@@ -334,7 +334,7 @@ process.exit(42);
       in_turn: 1,
     });
 
-    const execution = spawnDetachedTurn({
+    const execution = await spawnDetachedTurn({
       command: agentScript,
       args: [],
       cwd: root,
@@ -344,7 +344,7 @@ process.exit(42);
     });
 
     await execution.promise;
-    assert.equal(isTurnAlive(execution.unitName), false);
+    assert.equal(await isTurnAlive(execution.unitName), false);
 
     // Reset turn row to incomplete
     runningTurnsDb.recordTurn({
@@ -387,7 +387,7 @@ process.exit(0);
       sessionsDb.createSession(sessionId, 'agy', root, 'Fallback Test');
 
       const lines: string[] = [];
-      const execution = spawnDetachedTurn({
+      const execution = await spawnDetachedTurn({
         command: agentScript,
         args: [],
         cwd: root,
@@ -420,7 +420,7 @@ setInterval(() => {}, 1000);
     const sessionId = 'session-abort-test';
     sessionsDb.createSession(sessionId, 'agy', root, 'Abort Test');
 
-    const execution = spawnDetachedTurn({
+    const execution = await spawnDetachedTurn({
       command: agentScript,
       args: [],
       cwd: root,
@@ -434,6 +434,6 @@ setInterval(() => {}, 1000);
     assert.ok(aborted);
 
     await execution.promise;
-    assert.equal(isTurnAlive(execution.unitName), false);
+    assert.equal(await isTurnAlive(execution.unitName), false);
   });
 });

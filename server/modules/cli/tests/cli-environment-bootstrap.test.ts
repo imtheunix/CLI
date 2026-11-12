@@ -31,7 +31,13 @@ async function runCliBootstrapFixture(isPlatform: boolean): Promise<BootstrapRes
   const fixtureDatabasePath = path.join(fixtureRoot, 'auth.db');
 
   try {
-    await mkdir(fixtureCliDirectory, { recursive: true });
+    await Promise.all([
+      mkdir(fixtureCliDirectory, { recursive: true }),
+      mkdir(path.join(fixtureRoot, '.config', 'cli'), { recursive: true }),
+      mkdir(path.join(fixtureRoot, '.cache'), { recursive: true }),
+      mkdir(path.join(fixtureRoot, '.local', 'share'), { recursive: true }),
+      mkdir(path.join(fixtureRoot, 'tmp'), { recursive: true }),
+    ]);
     await Promise.all([
       copyFile(
         path.join(applicationRoot, 'server', 'load-env.ts'),
@@ -53,9 +59,11 @@ async function runCliBootstrapFixture(isPlatform: boolean): Promise<BootstrapRes
 
     const fixtureIndexSource = `
 import { createCliService } from ${JSON.stringify(sourceModuleUrl('server', 'modules', 'cli', 'cli.service.ts'))};
-import { authenticateToken } from ${JSON.stringify(sourceModuleUrl('server', 'modules', 'auth', 'index.ts'))};
-import { getBrowserUseRuntime } from ${JSON.stringify(sourceModuleUrl('server', 'modules', 'browser-use', 'index.ts'))};
-import { closeConnection, initializeDatabase, userDb } from ${JSON.stringify(sourceModuleUrl('server', 'modules', 'database', 'index.ts'))};
+import { authenticateToken } from ${JSON.stringify(sourceModuleUrl('server', 'modules', 'auth', 'auth.middleware.ts'))};
+import { getBrowserUseRuntime } from ${JSON.stringify(sourceModuleUrl('server', 'modules', 'browser-use', 'browser-use-runtime.ts'))};
+import { initializeDatabase } from ${JSON.stringify(sourceModuleUrl('server', 'modules', 'database', 'init-db.ts'))};
+import { closeConnection } from ${JSON.stringify(sourceModuleUrl('server', 'modules', 'database', 'connection.ts'))};
+import { userDb } from ${JSON.stringify(sourceModuleUrl('server', 'modules', 'database', 'repositories', 'users.ts'))};
 
 let environmentFileReads = 0;
 
@@ -129,24 +137,68 @@ export function createCliApplication() {
     await writeFile(path.join(fixtureCliDirectory, 'index.ts'), fixtureIndexSource, 'utf8');
 
     const childEnvironment = { ...process.env };
-    delete childEnvironment.VITE_IS_PLATFORM;
-    delete childEnvironment.DATABASE_PATH;
-    const stdout = execFileSync(
-      process.execPath,
-      [
-        path.join(applicationRoot, 'node_modules', 'tsx', 'dist', 'cli.mjs'),
-        '--tsconfig',
-        path.join(applicationRoot, 'server', 'tsconfig.json'),
-        path.join(fixtureCliDirectory, 'cli.ts'),
-        'status',
-      ],
-      {
-        cwd: applicationRoot,
-        encoding: 'utf8',
-        env: childEnvironment,
-        timeout: 30_000,
-      },
-    );
+    for (const name of [
+      'VITE_IS_PLATFORM',
+      'DATABASE_PATH',
+      'NODE_OPTIONS',
+      'NODE_TEST_CONTEXT',
+      'CLI_HUB_EVENTS_LOG',
+      'WORKSPACES_ROOT',
+      'LABS_CONTROL_URL',
+      'LABS_CONTROL_TOKEN',
+      'LABS_TOKEN',
+      'TOKEN_URL',
+      'TRIPAM_API_URL',
+      'TRIPAM_PLANS_CLIENT_ID',
+      'TRIPAM_PLANS_CLIENT_SECRET',
+      'HTTP_PROXY',
+      'HTTPS_PROXY',
+      'ALL_PROXY',
+      'NO_PROXY',
+      'http_proxy',
+      'https_proxy',
+      'all_proxy',
+      'no_proxy',
+    ]) {
+      delete childEnvironment[name];
+    }
+    childEnvironment.HOME = fixtureRoot;
+    childEnvironment.USERPROFILE = fixtureRoot;
+    childEnvironment.XDG_CONFIG_HOME = path.join(fixtureRoot, '.config');
+    childEnvironment.XDG_CACHE_HOME = path.join(fixtureRoot, '.cache');
+    childEnvironment.XDG_DATA_HOME = path.join(fixtureRoot, '.local', 'share');
+    childEnvironment.TMPDIR = path.join(fixtureRoot, 'tmp');
+    childEnvironment.TEMP = childEnvironment.TMPDIR;
+    childEnvironment.TMP = childEnvironment.TMPDIR;
+    childEnvironment.NODE_ENV = 'test';
+    let stdout: string;
+    try {
+      stdout = execFileSync(
+        process.execPath,
+        [
+          path.join(applicationRoot, 'node_modules', 'tsx', 'dist', 'cli.mjs'),
+          '--no-cache',
+          '--tsconfig',
+          path.join(applicationRoot, 'server', 'tsconfig.json'),
+          path.join(fixtureCliDirectory, 'cli.ts'),
+          'status',
+        ],
+        {
+          cwd: applicationRoot,
+          encoding: 'utf8',
+          env: childEnvironment,
+          timeout: 30_000,
+        },
+      );
+    } catch (error) {
+      const failure = error as { message?: string; stdout?: string | Buffer; stderr?: string | Buffer };
+      const childStdout = failure.stdout?.toString() ?? '';
+      const childStderr = failure.stderr?.toString() ?? '';
+      throw new Error(
+        `CLI bootstrap fixture failed: ${failure.message ?? String(error)}\n`
+        + `stdout:\n${childStdout}\nstderr:\n${childStderr}`,
+      );
+    }
     const resultLine = stdout
       .split(/\r?\n/)
       .find((line) => line.startsWith(RESULT_PREFIX));

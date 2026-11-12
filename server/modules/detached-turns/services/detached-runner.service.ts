@@ -1,4 +1,4 @@
-import { spawn, spawnSync } from 'node:child_process';
+import { execFile, spawn, spawnSync } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -120,8 +120,39 @@ export function getTurnLogPath(unitName: string): string {
   return path.join(getTurnsDirectory(), `${unitName}.log`);
 }
 
-/** Checks whether a systemd user unit or fallback child process is currently active. */
-export function isTurnAlive(unitName: string): boolean {
+/**
+ * In-flight `systemctl is-active` probes, keyed by unit. The log tail polls
+ * liveness every 50 ms; sharing one probe per unit keeps a slow systemctl from
+ * piling up child processes while several turns are live.
+ */
+const inFlightLivenessProbes = new Map<string, Promise<boolean>>();
+
+/** Runs `systemctl --user is-active` without blocking the event loop. */
+function probeUnitActive(unitName: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    execFile(
+      'systemctl',
+      ['--user', 'is-active', `${unitName}.service`],
+      { encoding: 'utf8', timeout: 2000 },
+      (error, stdout) => {
+        // `is-active` exits non-zero for inactive units but still prints the
+        // state; only a missing/failed probe has no output to read.
+        if (error && !stdout) {
+          resolve(false);
+          return;
+        }
+        const state = String(stdout || '').trim();
+        resolve(state === 'active' || state === 'activating');
+      },
+    );
+  });
+}
+
+/**
+ * Checks whether a systemd user unit or fallback child process is currently active.
+ * Asynchronous so the 50 ms log-tail poll never blocks the event loop on systemctl.
+ */
+export async function isTurnAlive(unitName: string): Promise<boolean> {
   const fallbackChild = fallbackProcesses.get(unitName);
   if (fallbackChild) {
     if (fallbackChild.exitCode !== null || fallbackChild.signalCode !== null || fallbackChild.pid === undefined) {
@@ -135,21 +166,22 @@ export function isTurnAlive(unitName: string): boolean {
     }
   }
 
-  if (isSystemdRunAvailable()) {
-    try {
-      const result = spawnSync('systemctl', ['--user', 'is-active', `${unitName}.service`], {
-        encoding: 'utf8',
-        stdio: ['ignore', 'pipe', 'ignore'],
-        timeout: 2000,
-      });
-      const state = (result.stdout || '').trim();
-      return state === 'active' || state === 'activating';
-    } catch {
-      return false;
-    }
+  if (!isSystemdRunAvailable()) {
+    return false;
   }
 
-  return false;
+  const existing = inFlightLivenessProbes.get(unitName);
+  if (existing) {
+    return existing;
+  }
+  let probe: Promise<boolean>;
+  probe = probeUnitActive(unitName).finally(() => {
+    if (inFlightLivenessProbes.get(unitName) === probe) {
+      inFlightLivenessProbes.delete(unitName);
+    }
+  });
+  inFlightLivenessProbes.set(unitName, probe);
+  return probe;
 }
 
 /** Retrieves exit code of a completed unit from systemd or process/log inspection. */
@@ -269,7 +301,7 @@ export function getUnitExitCode(unitName: string, logPath?: string): number {
 export async function tailLogFile(
   logPath: string,
   options: {
-    isAlive: () => boolean;
+    isAlive: () => boolean | Promise<boolean>;
     onLine: (line: string) => void;
     pollIntervalMs?: number;
     startOffset?: number;
@@ -307,9 +339,22 @@ export async function tailLogFile(
     }
   };
 
-  while (options.isAlive()) {
-    drain();
-    await new Promise((resolve) => setTimeout(resolve, pollInterval));
+  // The timer is tracked so a liveness error or an early stop never leaves a
+  // pending poll behind; the loop exits as soon as the unit is gone.
+  let pollTimer: NodeJS.Timeout | undefined;
+  try {
+    while (await options.isAlive()) {
+      drain();
+      await new Promise<void>((resolve) => {
+        pollTimer = setTimeout(resolve, pollInterval);
+      });
+      pollTimer = undefined;
+    }
+  } finally {
+    if (pollTimer) {
+      clearTimeout(pollTimer);
+      pollTimer = undefined;
+    }
   }
 
   // Drain any remaining output after termination
@@ -326,7 +371,7 @@ export async function tailLogFile(
  * Records the turn in the DB, redirects stdout/stderr to a per-turn log file,
  * and streams parsed lines to onLine.
  */
-export function spawnDetachedTurn(input: {
+export async function spawnDetachedTurn(input: {
   command: string;
   args: string[];
   cwd: string;
@@ -336,7 +381,7 @@ export function spawnDetachedTurn(input: {
   env?: Record<string, string>;
   onLine?: (line: string) => void;
   signal?: AbortSignal;
-}): DetachedTurnExecution {
+}): Promise<DetachedTurnExecution> {
   const unitName = generateUnitName(input.jobId || input.sessionId);
   const logPath = getTurnLogPath(unitName);
   const turnsDir = path.dirname(logPath);
@@ -385,7 +430,7 @@ export function spawnDetachedTurn(input: {
   }
 
   let childError: Error | null = null;
-  if (!useSystemd || !isTurnAlive(unitName)) {
+  if (!useSystemd || !(await isTurnAlive(unitName))) {
     const fd = fs.openSync(logPath, 'a');
     fallbackChild = spawn(input.command, input.args, {
       cwd: input.cwd,
@@ -515,7 +560,7 @@ export function prepareDetachedExec(input: {
   sessionId: string | null | undefined;
   backend: string;
   jobId?: string | null;
-}): { executable: string; env: Record<string, string>; unitName: string; complete: () => void } | null {
+}): { executable: string; env: Record<string, string>; unitName: string; complete: () => Promise<void> } | null {
   if (!input.command || !input.sessionId || !isSystemdRunAvailable()) {
     return null;
   }
@@ -553,9 +598,9 @@ export function prepareDetachedExec(input: {
     executable: DETACHED_EXEC,
     env,
     unitName,
-    complete: () => {
+    complete: async () => {
       attachedUnits.delete(unitName);
-      if (runningTurnsDb.getTurn(unitName)?.status !== 'running' || isTurnAlive(unitName)) {
+      if (runningTurnsDb.getTurn(unitName)?.status !== 'running' || await isTurnAlive(unitName)) {
         return;
       }
       if (!readRelayExit(logPath) && !fs.existsSync(logPath)) {
@@ -594,7 +639,7 @@ export async function retireDetachedSessionTurns(
     && !fallbackProcesses.has(turn.unit_name)
   ));
   for (const turn of turns) {
-    if (isTurnAlive(turn.unit_name)) {
+    if (await isTurnAlive(turn.unit_name)) {
       console.log(`[DetachedTurns] Retiring reattached ${backend} turn ${turn.unit_name} for session ${sessionId}`);
       await stopUnit(turn.unit_name);
     }
@@ -725,7 +770,7 @@ export async function reattachActiveTurns(options: {
       abortTurn(turn.session_id);
       continue;
     }
-    const alive = isTurnAlive(turn.unit_name);
+    const alive = await isTurnAlive(turn.unit_name);
 
     if (alive) {
       console.log(`[DetachedTurns] Reattaching to live turn: ${turn.unit_name} (session: ${turn.session_id}, backend: ${turn.backend})`);

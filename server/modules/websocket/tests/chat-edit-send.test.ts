@@ -198,7 +198,7 @@ test('an edit without an anchor is refused', async () => {
       sessionId: SESSION_ID,
       content: 'no anchor',
     }));
-    await settle();
+    await until(() => socket.frames.length > 0);
 
     assert.equal(runs.length, 0);
     assert.equal(socket.frames.at(-1)?.code, 'ANCHOR_REQUIRED');
@@ -213,7 +213,7 @@ test('an anchor the transcript does not hold is refused', async () => {
       anchorId: 'not-in-transcript',
       content: 'replacement',
     }));
-    await settle();
+    await until(() => socket.frames.length > 0);
 
     assert.equal(runs.length, 0);
     assert.equal(socket.frames.at(-1)?.code, 'ANCHOR_NOT_FOUND');

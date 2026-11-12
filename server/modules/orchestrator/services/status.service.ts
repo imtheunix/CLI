@@ -6,10 +6,19 @@ import Database from 'better-sqlite3';
 
 import { readMergeStepHistory } from '@/modules/database/index.js';
 import type { OrchestratorBackend, OrchestratorJobRow } from '@/modules/database/index.js';
-import { providerTokenUsageService } from '@/modules/providers/index.js';
+import {
+  evaluateKimiCallUsage,
+  KIMI_CALL_UNCACHED_INPUT_TOKENS,
+  KIMI_TASK_SPLIT_MS,
+  KIMI_TURN_OUTPUT_TOKENS,
+  providerTokenUsageService,
+  type KimiBudgetWarning,
+} from '@/modules/providers/index.js';
 import { getOpenCodeDatabasePath } from '@/shared/utils.js';
 
+import type { HealthService } from './health.service.js';
 import type { HubService, HubStatus } from './hub.service.js';
+import { isPreparingJobAlive } from './job-activity.service.js';
 import type { MorphUsage, MorphUsageService } from './morph-usage.service.js';
 import type { OrchestratorConfig } from './orchestrator-config.service.js';
 
@@ -37,6 +46,8 @@ export type StatusJob = {
   tier: string | null;
   /** Running/preparing: how long since the job was created. */
   ageMs: number | null;
+  /** A preparing job with a live worker, so the digest does not read it as waiting or unknown. */
+  alive: boolean;
   /** At review: how long since `tjob done` parked it. */
   waitingMs: number | null;
   /** In the CI/CD queue: the step it is on. */
@@ -45,6 +56,8 @@ export type StatusJob = {
   at: string | null;
   /** Why the person is needed, when this job is in `needsYou.jobs`. */
   reason: string | null;
+  /** Current health flags, e.g. `no commit 47m`, `over 30m`, `holding slot 25m`. */
+  health: string[];
 };
 
 /** What the person has to decide or do, gathered from goals and jobs. */
@@ -116,6 +129,14 @@ export type StatusEfficiencyWindow = {
     cacheHit: number;
     /** Uncached input per hub assistant call. */
     uncachedInputPerHubCall: number;
+    /** Kimi calls in the window and how many exceeded each budget. */
+    calls: number;
+    overOutput: number;
+    overUncachedInput: number;
+    /** Calls whose provider usage was not reported; never counted as zero. */
+    usageUnavailable: number;
+    /** Up to 20 over-budget calls, newest first, with their role and values. */
+    budgetWarnings: KimiBudgetWarning[];
   };
   flow: {
     leadTimeMedianMs: number | null;
@@ -285,7 +306,7 @@ function jobNeedsPerson(job: OrchestratorJobRow): string | null {
   return null;
 }
 
-function toStatusJob(job: OrchestratorJobRow, nowMs: number, reason: string | null = null): StatusJob {
+function toStatusJob(job: OrchestratorJobRow, nowMs: number, reason: string | null = null, health: string[] = []): StatusJob {
   const created = parseTimestamp(job.created_at);
   const updated = parseTimestamp(job.updated_at);
   const merged = mergedAt(job);
@@ -298,17 +319,31 @@ function toStatusJob(job: OrchestratorJobRow, nowMs: number, reason: string | nu
     mergeStep: job.merge_step,
     tier: job.review_tier,
     ageMs: job.state === 'preparing' || job.state === 'active' ? (created === null ? null : Math.max(0, nowMs - created)) : null,
+    alive: isPreparingJobAlive(job),
     waitingMs: job.state === 'done' && job.merge_step === 'review' ? (updated === null ? null : Math.max(0, nowMs - updated)) : null,
     step: QUEUE_STEPS.has(job.merge_step) ? job.merge_step : null,
     at: job.state === 'failed' || job.merge_step === 'blocked'
       ? isoOrNull(job.updated_at)
       : merged === null ? null : new Date(merged).toISOString(),
     reason,
+    health,
   };
 }
 
 /** One OpenCode assistant message, reduced to what the efficiency metrics need. */
-type OpenCodeMessage = { sessionId: string; ts: number; agent: string; model: string; input: number; output: number; reasoning: number; cacheRead: number };
+type OpenCodeMessage = {
+  sessionId: string;
+  ts: number;
+  agent: string;
+  model: string;
+  input: number;
+  output: number;
+  reasoning: number;
+  cacheRead: number;
+  /** Whether the provider reported each field; a missing value is not zero. */
+  inputAvailable: boolean;
+  outputAvailable: boolean;
+};
 
 /** One OpenCode session, reduced to what the delegation metrics need. */
 type OpenCodeSession = {
@@ -381,6 +416,8 @@ function readOpenCodeData(databasePath: string, sinceMs: number): OpenCodeData {
           output: readNumber(data.tokens.output),
           reasoning: readNumber(data.tokens.reasoning),
           cacheRead: readNumber(data.tokens.cache?.read),
+          inputAvailable: typeof data.tokens.input === 'number' && Number.isFinite(data.tokens.input),
+          outputAvailable: typeof data.tokens.output === 'number' && Number.isFinite(data.tokens.output),
         });
       } catch {
         // A malformed message row is not usage.
@@ -677,16 +714,33 @@ export function computeEfficiencyWindow(input: {
   let kimiCacheRead = 0;
   let hubCalls = 0;
   let hubInput = 0;
+  let overOutput = 0;
+  let overUncachedInput = 0;
+  let usageUnavailable = 0;
+  const budgetWarnings: KimiBudgetWarning[] = [];
   for (const message of kimi) {
+    const role = kimiRole(message.agent);
     const billed = message.output + message.reasoning;
-    outputByRole[kimiRole(message.agent)] += billed;
+    outputByRole[role] += billed;
     kimiOutput += message.output;
     kimiReasoning += message.reasoning;
     kimiInput += message.input;
     kimiCacheRead += message.cacheRead;
-    if (kimiRole(message.agent) === 'hub') {
+    if (role === 'hub') {
       hubCalls += 1;
       hubInput += message.input;
+    }
+    if (!message.inputAvailable || !message.outputAvailable) usageUnavailable += 1;
+    const warning = evaluateKimiCallUsage({
+      role,
+      sessionId: message.sessionId,
+      outputTokens: message.outputAvailable ? message.output : null,
+      uncachedInputTokens: message.inputAvailable ? message.input : null,
+    });
+    if (warning) {
+      if (warning.violations.includes('output')) overOutput += 1;
+      if (warning.violations.includes('uncachedInput')) overUncachedInput += 1;
+      if (budgetWarnings.length < 20) budgetWarnings.push(warning);
     }
   }
 
@@ -732,6 +786,11 @@ export function computeEfficiencyWindow(input: {
       reasoningShare: kimiOutput + kimiReasoning === 0 ? 0 : kimiReasoning / (kimiOutput + kimiReasoning),
       cacheHit: kimiInput + kimiCacheRead === 0 ? 0 : kimiCacheRead / (kimiInput + kimiCacheRead),
       uncachedInputPerHubCall: hubCalls === 0 ? 0 : hubInput / hubCalls,
+      calls: kimi.length,
+      overOutput,
+      overUncachedInput,
+      usageUnavailable,
+      budgetWarnings,
     },
     flow: {
       leadTimeMedianMs: median(leadTimes),
@@ -803,10 +862,11 @@ export function formatStatusMarkdown(snapshot: StatusSnapshot): string {
   const jobLine = (job: StatusJob): string => {
     const backend = job.backend ?? '-';
     const model = (job.model ?? '-').split('/').at(-1) ?? '-';
-    const where = job.step ? `ci:${job.step}` : job.mergeStep !== 'none' ? `ci:${job.mergeStep}` : job.state;
+    const where = job.step ? `ci:${job.step}` : job.mergeStep !== 'none' ? `ci:${job.mergeStep}` : job.alive ? 'preparing (alive)' : job.state;
     const tier = job.tier ? ` tier:${job.tier}` : '';
     const extra = job.ageMs !== null ? ` (${formatDuration(job.ageMs)})` : job.waitingMs !== null ? ` (waiting ${formatDuration(job.waitingMs)})` : job.at ? ` (${job.at.slice(0, 16).replace('T', ' ')})` : '';
-    return `${job.id}  ${backend}  ${model}  ${where}${tier}${extra}  ${job.title}`;
+    const health = job.health.length > 0 ? `  ! ${job.health.join(', ')}` : '';
+    return `${job.id}  ${backend}  ${model}  ${where}${tier}${extra}  ${job.title}${health}`;
   };
 
   lines.push('## Jobs now', '```');
@@ -848,6 +908,14 @@ export function formatStatusMarkdown(snapshot: StatusSnapshot): string {
     const roles = window.kimi.outputByRole;
     lines.push(`kimi: out hub ${formatTokens(roles.hub)} planner ${formatTokens(roles.planner)} jobs ${formatTokens(roles.jobs)} compaction ${formatTokens(roles.compaction)}`
       + ` | reasoning ${formatPercent(window.kimi.reasoningShare)} | cache hit ${formatPercent(window.kimi.cacheHit)} | uncached/hub call ${formatTokens(window.kimi.uncachedInputPerHubCall)}`);
+    lines.push(`kimi budget: ${window.kimi.calls} calls | over output ${window.kimi.overOutput} (>${KIMI_TURN_OUTPUT_TOKENS})`
+      + ` | over uncached input ${window.kimi.overUncachedInput} (>${KIMI_CALL_UNCACHED_INPUT_TOKENS})`
+      + ` | usage unavailable ${window.kimi.usageUnavailable} | split tasks <=${formatDuration(KIMI_TASK_SPLIT_MS)}`);
+    for (const warning of window.kimi.budgetWarnings.slice(0, 5)) {
+      const over = warning.violations.join('+');
+      lines.push(`  ! ${warning.role} ${warning.label}  out ${warning.outputTokens === null ? 'n/a' : formatTokens(warning.outputTokens)}`
+        + ` in ${warning.uncachedInputTokens === null ? 'n/a' : formatTokens(warning.uncachedInputTokens)}  over ${over}`);
+    }
     lines.push(`flow: lead ${formatDuration(window.flow.leadTimeMedianMs)} | review wait ${formatDuration(window.flow.reviewWaitMedianMs)} (max ${formatDuration(window.flow.reviewWaitMaxMs)})`
       + ` | fix rounds ${formatPercent(window.flow.fixRoundRate)} | tiers gate ${window.flow.reviewTiers.gate} refute ${window.flow.reviewTiers.refute} deep ${window.flow.reviewTiers.deep}`
       + ` | merged/h ${window.flow.mergedPerHour.toFixed(2)} | tokens/merged ${formatTokens(window.flow.tokensPerMergedJob)}`);
@@ -882,6 +950,8 @@ export function createStatusService(deps: {
   };
   morphUsage: MorphUsageService;
   hub: HubService;
+  /** Current job health flags; absent in tests that do not exercise them. */
+  health?: Pick<HealthService, 'flags'>;
   now?: () => Date;
   goalsPath?: string;
   databasePath?: string;
@@ -915,6 +985,8 @@ export function createStatusService(deps: {
     const config = deps.config();
     const rows = deps.jobs.list();
     const goals = readGoals();
+    const healthFlags = deps.health?.flags() ?? new Map<string, Array<{ label: string }>>();
+    const healthFor = (job: OrchestratorJobRow): string[] => (healthFlags.get(job.id) ?? []).map((flag) => flag.label);
 
     const needsYou: StatusNeedsYou = {
       goals: goals.map((goal) => goal.needs).filter((need): need is string => need !== null),
@@ -924,16 +996,16 @@ export function createStatusService(deps: {
         .map(({ job, reason }) => ({ id: job.id, title: job.title, reason })),
     };
 
-    const running = rows.filter((job) => job.state === 'preparing' || job.state === 'active').map((job) => toStatusJob(job, nowMs));
-    const review = rows.filter((job) => job.state === 'done' && job.merge_step === 'review').map((job) => toStatusJob(job, nowMs));
-    const queue = rows.filter((job) => QUEUE_STEPS.has(job.merge_step)).map((job) => toStatusJob(job, nowMs));
+    const running = rows.filter((job) => job.state === 'preparing' || job.state === 'active').map((job) => toStatusJob(job, nowMs, null, healthFor(job)));
+    const review = rows.filter((job) => job.state === 'done' && job.merge_step === 'review').map((job) => toStatusJob(job, nowMs, null, healthFor(job)));
+    const queue = rows.filter((job) => QUEUE_STEPS.has(job.merge_step)).map((job) => toStatusJob(job, nowMs, null, healthFor(job)));
     const merged = rows
       .filter((job) => job.merge_step === 'merged' && (mergedAt(job) ?? 0) >= nowMs - DAY_MS)
-      .map((job) => toStatusJob(job, nowMs))
+      .map((job) => toStatusJob(job, nowMs, null, healthFor(job)))
       .sort((a, b) => (b.at ?? '').localeCompare(a.at ?? ''));
     const failed = rows
       .filter((job) => (job.state === 'failed' || job.merge_step === 'blocked') && (parseTimestamp(job.updated_at) ?? 0) >= nowMs - DAY_MS)
-      .map((job) => toStatusJob(job, nowMs, jobNeedsPerson(job)))
+      .map((job) => toStatusJob(job, nowMs, jobNeedsPerson(job), healthFor(job)))
       .sort((a, b) => (b.at ?? '').localeCompare(a.at ?? ''));
 
     const quota: Record<string, string | null> = Object.fromEntries(BACKENDS.map((backend) => [backend, null]));

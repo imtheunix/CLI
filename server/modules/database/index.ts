@@ -27,11 +27,12 @@ export { vapidKeysDb } from '@/modules/database/repositories/vapid-keys.js';
 export { scheduledMessagesDb } from './repositories/scheduled-messages.db.js';
 export type { ScheduledMessageRow, ScheduledMessageStatus } from './repositories/scheduled-messages.db.js';
 // orchestratorJobsDb: used by the Orchestrator module to keep its jobs, balancing and CI/CD queue across restarts.
-export { orchestratorJobsDb, readBackendHandovers, readMergeStepHistory } from './repositories/orchestrator-jobs.db.js';
+export { orchestratorJobsDb, readBackendHandovers, readMergeStepHistory, readTitleHistory } from './repositories/orchestrator-jobs.db.js';
 export type {
   OrchestratorBackend,
   OrchestratorBackendHandover,
   OrchestratorJobRow,
+  OrchestratorTitleChange,
   OrchestratorJobState,
   OrchestratorMergeStep,
   OrchestratorMergeStepEvent,

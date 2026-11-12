@@ -608,7 +608,7 @@ async function queryCodex(
     }
 
   } finally {
-    detached?.complete();
+    await detached?.complete();
     // Update session status
     if (sessionKey()) {
       const session = activeCodexSessions.get(sessionKey() || '');

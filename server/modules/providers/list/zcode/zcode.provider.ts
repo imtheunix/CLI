@@ -301,7 +301,7 @@ export class ZcodeProvider extends AbstractProvider {
       mkdirSync(path.dirname(file), { recursive: true });
       // Each app session runs ZCode in its own home (private db/logs), reused on resume; prepared after
       // ~/.cloudcli exists so the job's tjob finds it through the home's links.
-      const home = prepareZcodeHome(zcodeHomeFor(sessionId));
+      const home = await prepareZcodeHome(zcodeHomeFor(sessionId));
       const turnId = randomUUID();
       const record = (event: AnyRecord) => {
         const row = { ...event, turnId, id: randomUUID(), timestamp: new Date().toISOString() };

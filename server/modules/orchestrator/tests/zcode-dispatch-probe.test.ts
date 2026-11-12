@@ -83,10 +83,20 @@ async function withFakeZcode(runTest: (ctx: {
   resetZcodeProbeCache();
   const previousDatabasePath = process.env.DATABASE_PATH;
   const previousPath = process.env.PATH;
+  const previousNodeEnv = process.env.NODE_ENV;
+  const previousLoginScript = process.env.ZCODE_APIKEY_LOGIN_SCRIPT;
   const root = await mkdtemp(path.join(tmpdir(), 'zcode-probe-test-'));
+
+  // The probe is explicit, so it still runs the fake binary; NODE_ENV=test only
+  // keeps prepareZcodeHome from running the real API-key login against the
+  // developer's home (which would add seconds to every probe and time the test out).
+  process.env.NODE_ENV = 'test';
 
   closeConnection();
   process.env.DATABASE_PATH = path.join(root, 'auth.db');
+  // The probe's throwaway home links the real credentials; never run the real
+  // API-key login from a test (it can be slow and is not what is under test).
+  process.env.ZCODE_APIKEY_LOGIN_SCRIPT = path.join(root, 'no-login.cjs');
   await initializeDatabase();
   userDb.createUser('orchestrator', 'hash');
 
@@ -190,6 +200,10 @@ if (mode === 'timeout') {
     else process.env.DATABASE_PATH = previousDatabasePath;
     if (previousPath === undefined) delete process.env.PATH;
     else process.env.PATH = previousPath;
+    if (previousNodeEnv === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = previousNodeEnv;
+    if (previousLoginScript === undefined) delete process.env.ZCODE_APIKEY_LOGIN_SCRIPT;
+    else process.env.ZCODE_APIKEY_LOGIN_SCRIPT = previousLoginScript;
     await rm(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 }).catch(() => {});
   }
 }

@@ -10,6 +10,7 @@ import { AppError } from '@/shared/index.js';
 
 import { createOrchestratorRouter } from './orchestrator.routes.js';
 import { getEffectOutbox } from './services/effect-outbox.service.js';
+import { createHealthService } from './services/health.service.js';
 import { createHubService } from './services/hub.service.js';
 import { createJobsService } from './services/jobs.service.js';
 import { createMergeQueueService } from './services/merge-queue.service.js';
@@ -35,17 +36,26 @@ export function createOrchestratorModule(input: { runtime: ProviderRuntimeGatewa
   const config = () => loadOrchestratorConfig();
   const morphUsage = createMorphUsageService({ config });
   const refuteService = createRefuteService({ runtime: input.runtime, config });
+  const mergeQueueRef: { current: ReturnType<typeof createMergeQueueService> | null } = { current: null };
   const jobs = createJobsService({
     runtime: input.runtime,
     config,
     morphUsage,
     abortRefutation: (job) => refuteService.abort(job),
+    withdrawFromMergeQueue: (job) => mergeQueueRef.current
+      ? mergeQueueRef.current.cancel(job)
+      : Promise.resolve({ cancelled: false, reason: `Job ${job.id} is already in the CI/CD queue (${job.merge_step})` }),
   });
   const review = createReviewService({ jobs, config, refuteService });
   const mergeQueue = createMergeQueueService({ jobs, config });
+  mergeQueueRef.current = mergeQueue;
   const hubWake = createHubWakeService({ runtime: input.runtime, config });
+  const health = createHealthService({
+    config,
+    sendToJob: (job, message) => jobs.notifyWithOutcome(job, message),
+  });
   const hub = createHubService({ config });
-  const status = createStatusService({ config, jobs, morphUsage, hub });
+  const status = createStatusService({ config, jobs, morphUsage, hub, health });
   let timer: ReturnType<typeof setInterval> | null = null;
   let statusTimer: ReturnType<typeof setInterval> | null = null;
   let unsubscribe: (() => void) | null = null;
@@ -58,6 +68,7 @@ export function createOrchestratorModule(input: { runtime: ProviderRuntimeGatewa
       await jobs.tick();
       void review.tick();
       void mergeQueue.tick();
+      await health.tick();
       await hubWake.tick();
     } catch (error) {
       console.error('[Orchestrator] Tick failed', error);

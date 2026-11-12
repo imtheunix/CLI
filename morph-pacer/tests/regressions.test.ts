@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { existsSync, readFileSync } from 'node:fs';
 import http from 'node:http';
 import test from 'node:test';
 
@@ -194,5 +195,45 @@ test('keeps the conservative reservation when an SSE stream ends without usage',
   } finally {
     await proxy.close();
     await upstream.close();
+  }
+});
+
+test('model alias: rewritten to the real model with its body fields, paced under that model, logged with the alias', { timeout: 10_000 }, async () => {
+  let seen: Record<string, unknown> | null = null;
+  const upstream = await startFakeUpstream((_request, body, response) => {
+    seen = JSON.parse(body);
+    response.writeHead(200, { 'content-type': 'application/json' });
+    response.end(JSON.stringify({ usage: { prompt_tokens: 10, completion_tokens: 2 } }));
+  });
+  const proxy = await startProxy({ upstream: upstream.url });
+  try {
+    const r = await post(proxy.url, JSON.stringify({ model: 'morph-kimik31-nothink', messages: [{ role: 'user', content: 'hi' }] }));
+    assert.equal(r.status, 200);
+    assert.equal(seen!.model, 'morph-kimik31');
+    assert.deepEqual(seen!.chat_template_kwargs, { thinking: false });
+    await waitFor(() => existsSync(proxy.ledgerPath) && readFileSync(proxy.ledgerPath, 'utf8').includes('"alias"'));
+    const line = JSON.parse(readFileSync(proxy.ledgerPath, 'utf8').trim().split('\n').pop()!);
+    assert.equal(line.model, 'morph-kimik31');
+    assert.equal(line.alias, 'morph-kimik31-nothink');
+    const usage = await (await fetch(`${proxy.url}/pacer/usage`)).json() as { groups: Record<string, { window: { out: number } }> };
+    assert.equal(usage.groups.kimik31.window.out, 2);
+  } finally {
+    await proxy.close(); await upstream.close();
+  }
+});
+
+test('model alias: client-set fields win over the alias body', { timeout: 10_000 }, async () => {
+  let seen: Record<string, unknown> | null = null;
+  const upstream = await startFakeUpstream((_request, body, response) => {
+    seen = JSON.parse(body);
+    response.writeHead(200, { 'content-type': 'application/json' });
+    response.end(JSON.stringify({ usage: { prompt_tokens: 1, completion_tokens: 1 } }));
+  });
+  const proxy = await startProxy({ upstream: upstream.url });
+  try {
+    await post(proxy.url, JSON.stringify({ model: 'morph-kimik31-nothink', chat_template_kwargs: { thinking: true }, messages: [] }));
+    assert.deepEqual(seen!.chat_template_kwargs, { thinking: true });
+  } finally {
+    await proxy.close(); await upstream.close();
   }
 });
