@@ -1,12 +1,23 @@
 # Full CLI test gate in clean Forgejo CI
 
-The full CLI gate now runs green on the clean `archsv` Forgejo runner.
+The full CLI gate ran green on the clean `archsv` Forgejo runner.
 
 - Run: `1244` (run number `4` in the repo)
 - Link: http://127.0.0.1:3000/imtheunix/CLI/actions/runs/4
 - Commit: `f8e25461b2d778e9f013d50405428f29e6f766f5` (`ci(cli): stub LABS control room for clean runner tests`)
 - Branch: `feature/cli-full-test-gate-runs-in-clean-forgejo-9dd184ab`
 - Status: success, 2026-11-11T20:06:59Z → 2026-11-11T20:11:48Z (289 s)
+
+## Rebased onto current `main`
+
+This branch was rebased with ordinary `git` onto `origin/main` at
+`06c27ec7` (no conflicts; the workflow and this report are new files).
+
+- Rebased workflow head: `f965f8d381985bf81d1d3708f932016026f82120`
+- The restored `.github/workflows/cli-tests.yml` is byte-for-byte identical
+  to the one that produced the green run-4 result above (`f8e25461`).
+- The rebased head has **not** run CI yet: the queue/CI gate must run it
+  before anyone treats the rebased branch as green.
 
 ## Gate
 
