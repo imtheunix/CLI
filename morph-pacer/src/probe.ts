@@ -494,10 +494,17 @@ export async function runProbe(options: ProbeOptions): Promise<ProbeResult> {
       }
       const group = findGroup(snapshot, options.model);
       if (!group) return { ok: false, reason: 'live_group_unavailable' };
-      const liveTotals = {
-        uncachedIn: Number(group.window?.uncached_in ?? 0),
-        out: Number(group.window?.out ?? 0),
-      };
+      const rawUncachedIn = group.window?.uncached_in;
+      const rawOut = group.window?.out;
+      if (
+        typeof rawUncachedIn !== 'number' ||
+        typeof rawOut !== 'number' ||
+        !Number.isFinite(rawUncachedIn) ||
+        !Number.isFinite(rawOut)
+      ) {
+        return { ok: false, reason: 'live_usage_unavailable' };
+      }
+      const liveTotals = { uncachedIn: rawUncachedIn, out: rawOut };
       const probe = probeWindow.totals(options.clock.now());
       const combined = {
         uncachedIn: liveTotals.uncachedIn + probe.uncachedIn,
@@ -657,6 +664,20 @@ export async function runProbe(options: ProbeOptions): Promise<ProbeResult> {
           );
         }
 
+        if (
+          usage.prompt_tokens < 0 ||
+          usage.cached_tokens < 0 ||
+          usage.completion_tokens < 0
+        ) {
+          record.outcome = 'missing_usage';
+          return conclude(
+            'missing_usage',
+            `HTTP ${response.status} with negative usage at level ${levelIndex}; stopped without eroding the window`,
+            false,
+            levelIndex,
+          );
+        }
+
         const observedRatio = built.contentChars / usage.prompt_tokens;
         if (Number.isFinite(observedRatio) && observedRatio > 0.5 && observedRatio < 20) {
           charsPerToken = observedRatio;
@@ -689,7 +710,9 @@ export async function runProbe(options: ProbeOptions): Promise<ProbeResult> {
         if (had429) belowLimit429 = true;
         maxSuccessfulUncachedIn = Math.max(maxSuccessfulUncachedIn, uncachedIn);
         maxSuccessfulOutput = Math.max(maxSuccessfulOutput, out);
-        if (usedTokens >= limits.maxTokens) {
+        const finalSuccess =
+          successes >= limits.successesPerLevel && levelIndex === levels.length - 1;
+        if (usedTokens >= limits.maxTokens && !finalSuccess) {
           return conclude(
             'budget',
             `token cap ${limits.maxTokens} reached at level ${levelIndex}`,

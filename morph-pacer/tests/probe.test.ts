@@ -633,6 +633,91 @@ test('an unavailable live-admission state stops before any provider request', as
   assert.equal(result.conclusion.tested, false);
 });
 
+test('a malformed live-usage window refuses admission before any provider request', async () => {
+  const malformedWindows: unknown[] = [
+    undefined,
+    null,
+    { uncached_in: null, out: 0 },
+    { uncached_in: 0, out: null },
+    { uncached_in: '5', out: 0 },
+    { uncached_in: 0, out: '5' },
+    { uncached_in: Number.NaN, out: 0 },
+    { uncached_in: 0, out: Number.POSITIVE_INFINITY },
+  ];
+
+  for (const window of malformedWindows) {
+    const clock = new FakeClock();
+    const { transport, calls } = scriptedTransport([ok(100, 10)]);
+    const result = await runProbe({
+      model: 'morph-test',
+      clock,
+      live: true,
+      apiKey: 'test-key',
+      levels: [{ sweep: 'output', input: 1_000, output: 10 }],
+      transport,
+      liveUsage: async () => ({
+        groups: {
+          test: { models: ['morph-test'], window } as never,
+        },
+      }),
+    });
+
+    assert.equal(calls.length, 0, `no transport for window ${JSON.stringify(window)}`);
+    assert.equal(result.calls.length, 0);
+    assert.equal(result.conclusion.kind, 'live_usage_unavailable');
+    assert.equal(result.conclusion.tested, false);
+  }
+});
+
+test('negative provider usage stops as missing_usage without eroding the window', async () => {
+  const negativeUsages: Array<[number, number, number]> = [
+    [-5, 20, 0],
+    [100, -5, 0],
+    [100, 20, -5],
+  ];
+
+  for (const [prompt, completion, cached] of negativeUsages) {
+    const clock = new FakeClock();
+    const { transport, calls } = scriptedTransport([ok(prompt, completion, cached)]);
+    const result = await runProbe({
+      model: 'morph-test',
+      clock,
+      live: true,
+      apiKey: 'test-key',
+      levels: [{ sweep: 'output', input: 1_000, output: 10 }],
+      limits: { successesPerLevel: 1 },
+      transport,
+      liveUsage: liveUsage(),
+    });
+
+    assert.equal(calls.length, 1);
+    assert.equal(result.calls[0].outcome, 'missing_usage');
+    assert.deepEqual(result.observed.probeWindow, { uncachedIn: 0, out: 0 });
+    assert.equal(result.conclusion.kind, 'missing_usage');
+    assert.equal(result.conclusion.tested, false);
+  }
+});
+
+test('a final success that exactly reaches the token cap still completes', async () => {
+  const clock = new FakeClock();
+  const { transport, calls } = scriptedTransport([ok(25, 25)]);
+  const result = await runProbe({
+    model: 'morph-test',
+    clock,
+    live: true,
+    apiKey: 'test-key',
+    levels: [{ sweep: 'output', input: 1_000, output: 10 }],
+    limits: { successesPerLevel: 1, maxTokens: 50 },
+    transport,
+    liveUsage: liveUsage(),
+  });
+
+  assert.equal(calls.length, 1);
+  assert.equal(result.calls[0].outcome, 'success');
+  assert.equal(result.conclusion.kind, 'completed');
+  assert.equal(result.conclusion.tested, true);
+});
+
 test('the result never contains the API key or authorization header', async () => {
   const clock = new FakeClock();
   const secret = 'sk-test-super-secret-value';
