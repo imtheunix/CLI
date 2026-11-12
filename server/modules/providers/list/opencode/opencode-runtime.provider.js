@@ -1,4 +1,6 @@
 import fsSync from 'node:fs';
+import { createRequire } from 'node:module';
+import { fileURLToPath } from 'node:url';
 
 import crossSpawn from 'cross-spawn';
 import Database from 'better-sqlite3';
@@ -17,6 +19,27 @@ import { createCompleteMessage, createNormalizedMessage, flattenPromptForWindows
 const spawnFunction = crossSpawn;
 
 const activeOpenCodeProcesses = new Map();
+const require = createRequire(import.meta.url);
+
+/**
+ * Resolves the bridge entry point for the detached turn.
+ *
+ * Production runs the compiled sibling `.js` under plain Node. Source tests
+ * have no compiled sibling, so they run the `.ts` through the locally
+ * installed tsx loader (resolved from this module, never a global install).
+ */
+function resolveOpenCodeBridge() {
+  const compiledPath = fileURLToPath(new URL('./opencode-bridge.js', import.meta.url));
+  if (fsSync.existsSync(compiledPath)) {
+    return { args: [compiledPath], env: {} };
+  }
+  const sourcePath = fileURLToPath(new URL('./opencode-bridge.ts', import.meta.url));
+  const tsconfigPath = fileURLToPath(new URL('../../../../tsconfig.json', import.meta.url));
+  return {
+    args: ['--import', require.resolve('tsx'), sourcePath],
+    env: { TSX_TSCONFIG_PATH: tsconfigPath },
+  };
+}
 
 /**
  * Maps the UI permission mode onto OpenCode's non-interactive controls.
@@ -185,6 +208,13 @@ export function createOpenCodeTurnLineParser(normalizeMessage) {
     const part = readPart(event);
     const partId = typeof part?.id === 'string' ? part.id : null;
 
+    // The bridge emits this when its live stream breaks: the completed part
+    // from run stdout must be sent instead of being suppressed as a duplicate.
+    if (type === 'stream_reset') {
+      streamedPartIds.clear();
+      return;
+    }
+
     if (type === 'text') {
       // A nested `part.text` is the completed part; flat `delta`/`text` is a
       // live increment. Suppress the completion when its deltas already went out.
@@ -219,6 +249,10 @@ export function createOpenCodeTurnLineParser(normalizeMessage) {
       const type = event.type || event.event;
       const part = readPart(event);
       const partId = typeof part?.id === 'string' ? part.id : null;
+      if (type === 'stream_reset') {
+        streamedPartIds.clear();
+        continue;
+      }
       if (type === 'text' && partId && typeof part?.text !== 'string') {
         streamedPartIds.add(partId);
       }
@@ -405,16 +439,17 @@ async function spawnOpenCode(command, options = {}, ws, context) {
 
       if (options.abortController?.signal.aborted) { resolve(); return; }
 
+      const bridge = resolveOpenCodeBridge();
       const turnExecution = spawnDetachedTurn({
-        command: 'opencode',
-        args,
+        command: process.execPath,
+        args: [...bridge.args, '--', ...args],
         cwd: workingDir,
         sessionId: processKey,
         // The real provider id: after a restart the turn reattaches through it
         // (provider lookup, abort), so a foreign label here would break both.
         backend: 'opencode',
         jobId: typeof options.jobId === 'string' ? options.jobId : null,
-        env: permissionOptions.env,
+        env: { ...permissionOptions.env, ...bridge.env },
         onLine: (line) => {
           const trimmed = line.trim();
           if (trimmed.startsWith('{')) {
