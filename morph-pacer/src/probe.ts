@@ -13,23 +13,43 @@ export interface ProbeCaps {
   out: number;
 }
 
+export type ProbeSweep = 'output' | 'input';
+
+/**
+ * A level is a target measured in provider tokens, never in planned characters.
+ * `output` levels require the actual completion to reach `output` while keeping
+ * actual uncached input at or below `input`. `input` levels require the actual
+ * uncached input to reach `input` while the actual completion reaches `output`.
+ */
 export interface ProbeLevel {
+  sweep: ProbeSweep;
   input: number;
   output: number;
 }
 
 export const DEFAULT_PROBE_CAPS: ProbeCaps = { uncachedIn: 240_000, out: 32_000 };
 
-/** Fractions of the per-model caps: 25%, 50% and 100%. */
+/**
+ * The next live protocol, prepared but not executed here: output first
+ * (128 -> 512 -> 2048 actual completion tokens with <= 2k actual uncached
+ * input), then input (50k -> 100k -> 200k actual uncached input with a fixed
+ * 128 actual completion).
+ */
 export const DEFAULT_PROBE_LEVELS: ProbeLevel[] = [
-  { input: 60_000, output: 8_000 },
-  { input: 120_000, output: 16_000 },
-  { input: 240_000, output: 32_000 },
+  { sweep: 'output', input: 2_000, output: 128 },
+  { sweep: 'output', input: 2_000, output: 512 },
+  { sweep: 'output', input: 2_000, output: 2_048 },
+  { sweep: 'input', input: 50_000, output: 128 },
+  { sweep: 'input', input: 100_000, output: 128 },
+  { sweep: 'input', input: 200_000, output: 128 },
 ];
 
 export interface ProbeLimits {
   maxTotalMs: number;
   successesPerLevel: number;
+  maxAttemptsPerLevel: number;
+  maxCalls: number;
+  maxTokens: number;
   maxConsecutive429: number;
   headroom: number;
   pollMs: number;
@@ -41,6 +61,9 @@ export interface ProbeLimits {
 export const DEFAULT_PROBE_LIMITS: ProbeLimits = {
   maxTotalMs: 20 * 60_000,
   successesPerLevel: 3,
+  maxAttemptsPerLevel: 5,
+  maxCalls: 30,
+  maxTokens: 2_000_000,
   maxConsecutive429: 2,
   headroom: 1,
   pollMs: 1_000,
@@ -116,6 +139,7 @@ export const fetchLiveUsage: LiveUsageFetcher = async (url, timeoutMs) => {
 
 export type ProbeOutcome =
   | 'success'
+  | 'below_threshold'
   | 'rate_limited'
   | 'capacity_error'
   | 'missing_usage'
@@ -143,12 +167,14 @@ export interface ProbeCallRecord {
 export type ProbeConclusionKind =
   | 'dry_run'
   | 'completed'
+  | 'inconclusive'
   | 'repeatable_limit'
   | 'capacity_error'
   | 'missing_usage'
   | 'live_usage_unavailable'
   | 'load_guard'
   | 'deadline'
+  | 'budget'
   | 'transport_error';
 
 export interface ProbeConclusion {
@@ -158,8 +184,14 @@ export interface ProbeConclusion {
   note: string;
   belowLimit429: boolean;
   belowThresholdSuccesses: boolean;
-  maxSuccessfulInput: number;
+  /** Largest actual uncached input among calls that met their level threshold. */
+  maxSuccessfulUncachedIn: number;
+  /** Largest actual completion among calls that met their level threshold. */
   maxSuccessfulOutput: number;
+  /** Largest actual uncached input seen in any response with usage. */
+  maxObservedUncachedIn: number;
+  /** Largest actual completion seen in any response with usage. */
+  maxObservedOutput: number;
 }
 
 export interface ProbeResult {
@@ -250,21 +282,85 @@ function findGroup(snapshot: LiveUsageSnapshot, model: string): LiveUsageGroup |
   return null;
 }
 
-export function syntheticPrompt(inputTokens: number): string {
-  const targetChars = Math.max(1, Math.round(inputTokens * 4));
-  const seed = 'The quick brown fox jumps over the lazy dog. ';
-  const body = seed.repeat(Math.ceil(targetChars / seed.length)).slice(0, targetChars);
-  return `${body}\nReply with the single word OK.`;
+const WORDS = [
+  'amber',
+  'basalt',
+  'cobalt',
+  'dune',
+  'ember',
+  'fjord',
+  'granite',
+  'harbor',
+  'indigo',
+  'juniper',
+  'kelp',
+  'lumen',
+  'meadow',
+  'nimbus',
+  'onyx',
+  'prairie',
+  'quartz',
+  'ridge',
+  'slate',
+  'tundra',
+  'umber',
+  'valley',
+  'willow',
+  'xenon',
+  'yarrow',
+  'zephyr',
+];
+
+const LONG_OUTPUT_INSTRUCTION =
+  'Write the counting sequence starting at 1, one integer per line, increasing by one each line. ' +
+  'Do not add commentary, headings or a conclusion. Keep going until the output limit is reached.';
+
+/**
+ * Deterministic but wholly unique filler. Every request gets a different seed,
+ * so the body is not a repeated prompt with a nonce prefix: the whole payload
+ * differs and cannot be served from the provider prompt cache.
+ */
+function uniqueText(chars: number, seed: number): string {
+  let state = seed >>> 0;
+  let out = '';
+  while (out.length < chars) {
+    state = (state + 0x6d2b79f5) >>> 0;
+    let t = state;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    const value = (t ^ (t >>> 14)) >>> 0;
+    out += `${WORDS[value % WORDS.length]} `;
+  }
+  return out.slice(0, chars);
 }
 
-function buildBody(model: string, level: ProbeLevel): string {
-  return JSON.stringify({
-    model,
-    messages: [{ role: 'user', content: syntheticPrompt(level.input) }],
-    max_tokens: level.output,
-    temperature: 0,
-    stream: false,
-  });
+interface BuiltBody {
+  body: string;
+  contentChars: number;
+}
+
+function buildBody(
+  model: string,
+  level: ProbeLevel,
+  seed: number,
+  charsPerToken: number,
+): BuiltBody {
+  const safety = level.sweep === 'output' ? 0.9 : 1.02;
+  const inputChars = Math.max(
+    1,
+    Math.round(level.input * charsPerToken * safety),
+  );
+  const content = `${uniqueText(inputChars, seed)}\n\n${LONG_OUTPUT_INSTRUCTION}`;
+  return {
+    contentChars: content.length,
+    body: JSON.stringify({
+      model,
+      messages: [{ role: 'user', content }],
+      max_tokens: level.output,
+      temperature: 0,
+      stream: false,
+    }),
+  };
 }
 
 function readApiKey(path: string): string {
@@ -280,9 +376,17 @@ function emptyConclusion(kind: ProbeConclusionKind, note: string): ProbeConclusi
     note,
     belowLimit429: false,
     belowThresholdSuccesses: false,
-    maxSuccessfulInput: 0,
+    maxSuccessfulUncachedIn: 0,
     maxSuccessfulOutput: 0,
+    maxObservedUncachedIn: 0,
+    maxObservedOutput: 0,
   };
+}
+
+function meetsThreshold(level: ProbeLevel, uncachedIn: number, out: number): boolean {
+  const inputOk =
+    level.sweep === 'output' ? uncachedIn <= level.input : uncachedIn >= level.input;
+  return inputOk && out >= level.output;
 }
 
 export async function runProbe(options: ProbeOptions): Promise<ProbeResult> {
@@ -298,8 +402,13 @@ export async function runProbe(options: ProbeOptions): Promise<ProbeResult> {
   let lastLive: { uncachedIn: number; out: number } | null = null;
   let consecutive429 = 0;
   let belowLimit429 = false;
-  let maxSuccessfulInput = 0;
+  let maxSuccessfulUncachedIn = 0;
   let maxSuccessfulOutput = 0;
+  let maxObservedUncachedIn = 0;
+  let maxObservedOutput = 0;
+  let usedTokens = 0;
+  let charsPerToken = 4;
+  let seed = 0x9e3779b9;
 
   const result = (conclusion: ProbeConclusion): ProbeResult => {
     const probe = probeWindow.totals(options.clock.now());
@@ -325,6 +434,25 @@ export async function runProbe(options: ProbeOptions): Promise<ProbeResult> {
     };
   };
 
+  const conclude = (
+    kind: ProbeConclusionKind,
+    note: string,
+    tested: boolean,
+    level?: number,
+  ): ProbeResult =>
+    result({
+      kind,
+      tested,
+      ...(level === undefined ? {} : { level }),
+      note,
+      belowLimit429,
+      belowThresholdSuccesses: maxSuccessfulOutput > 0,
+      maxSuccessfulUncachedIn,
+      maxSuccessfulOutput,
+      maxObservedUncachedIn,
+      maxObservedOutput,
+    });
+
   if (!live) {
     return result(
       emptyConclusion(
@@ -340,8 +468,10 @@ export async function runProbe(options: ProbeOptions): Promise<ProbeResult> {
   try {
     apiKey = options.apiKey ?? readApiKey(options.apiKeyFile ?? DEFAULT_API_KEY_FILE);
   } catch (error) {
-    return result(
-      emptyConclusion('transport_error', `cannot read API key: ${(error as Error).message}`),
+    return conclude(
+      'transport_error',
+      `cannot read API key: ${(error as Error).message}`,
+      false,
     );
   }
 
@@ -389,15 +519,34 @@ export async function runProbe(options: ProbeOptions): Promise<ProbeResult> {
   for (let levelIndex = 0; levelIndex < levels.length; levelIndex += 1) {
     const level = levels[levelIndex];
     let successes = 0;
+    let attempts = 0;
     while (successes < limits.successesPerLevel) {
       if (options.clock.now() >= deadline) {
-        return result({
-          ...emptyConclusion('deadline', `deadline reached at level ${levelIndex}`),
-          belowLimit429,
-          belowThresholdSuccesses: maxSuccessfulInput > 0,
-          maxSuccessfulInput,
-          maxSuccessfulOutput,
-        });
+        return conclude('deadline', `deadline reached at level ${levelIndex}`, false, levelIndex);
+      }
+      if (calls.length >= limits.maxCalls) {
+        return conclude(
+          'budget',
+          `call cap ${limits.maxCalls} reached at level ${levelIndex}`,
+          false,
+          levelIndex,
+        );
+      }
+      if (usedTokens >= limits.maxTokens) {
+        return conclude(
+          'budget',
+          `token cap ${limits.maxTokens} reached at level ${levelIndex}`,
+          false,
+          levelIndex,
+        );
+      }
+      if (attempts >= limits.maxAttemptsPerLevel) {
+        return conclude(
+          'inconclusive',
+          `level ${levelIndex} (${level.sweep} ${level.input} in / ${level.output} out) did not reach its actual-token threshold in ${attempts} attempts; ${successes} success(es)`,
+          false,
+          levelIndex,
+        );
       }
 
       const admission = await waitForAdmission(level);
@@ -408,23 +557,22 @@ export async function runProbe(options: ProbeOptions): Promise<ProbeResult> {
             : admission.reason === 'live_group_unavailable'
               ? 'load_guard'
               : 'deadline';
-        return result({
-          ...emptyConclusion(
-            kind,
-            admission.reason === 'live_usage_unavailable'
-              ? 'live admission state unavailable; stopped before a request'
-              : admission.reason === 'live_group_unavailable'
-                ? `live usage has no group for ${options.model}; stopped before a request`
-                : `deadline reached while waiting for admission at level ${levelIndex}`,
-          ),
-          belowLimit429,
-          belowThresholdSuccesses: maxSuccessfulInput > 0,
-          maxSuccessfulInput,
-          maxSuccessfulOutput,
-        });
+        return conclude(
+          kind,
+          admission.reason === 'live_usage_unavailable'
+            ? 'live admission state unavailable; stopped before a request'
+            : admission.reason === 'live_group_unavailable'
+              ? `live usage has no group for ${options.model}; stopped before a request`
+              : `deadline reached while waiting for admission at level ${levelIndex}`,
+          false,
+          levelIndex,
+        );
       }
       lastLive = admission.live;
 
+      seed = (seed + 0x9e3779b9) >>> 0;
+      const built = buildBody(options.model, level, seed, charsPerToken);
+      attempts += 1;
       const callStarted = options.clock.now();
       let response: ProbeTransportResponse;
       try {
@@ -435,7 +583,7 @@ export async function runProbe(options: ProbeOptions): Promise<ProbeResult> {
             'content-type': 'application/json',
             authorization: `Bearer ${apiKey}`,
           },
-          body: buildBody(options.model, level),
+          body: built.body,
           timeoutMs: limits.requestTimeoutMs,
         });
       } catch (error) {
@@ -450,30 +598,29 @@ export async function runProbe(options: ProbeOptions): Promise<ProbeResult> {
           usage: null,
           uncachedIn: null,
           out: null,
-          occupancy: { probe, live: admission.live, combined: {
-            uncachedIn: probe.uncachedIn + admission.live.uncachedIn,
-            out: probe.out + admission.live.out,
-          } },
+          occupancy: {
+            probe,
+            live: admission.live,
+            combined: {
+              uncachedIn: probe.uncachedIn + admission.live.uncachedIn,
+              out: probe.out + admission.live.out,
+            },
+          },
           outcome: 'transport_error',
           error: (error as Error).message,
         });
-        return result({
-          ...emptyConclusion(
-            'transport_error',
-            `transport failed at level ${levelIndex}; not a ceiling claim`,
-          ),
-          belowLimit429,
-          belowThresholdSuccesses: maxSuccessfulInput > 0,
-          maxSuccessfulInput,
-          maxSuccessfulOutput,
-        });
+        return conclude(
+          'transport_error',
+          `transport failed at level ${levelIndex}; not a ceiling claim`,
+          false,
+          levelIndex,
+        );
       }
 
       const latencyMs = options.clock.now() - callStarted;
       const retryAfterMs = parseRetryAfter(response.headers, options.clock.now());
-      const usage = response.status >= 200 && response.status < 300
-        ? parseUsage(response.body)
-        : null;
+      const usage =
+        response.status >= 200 && response.status < 300 ? parseUsage(response.body) : null;
       const probe = probeWindow.totals(options.clock.now());
       const combined = {
         uncachedIn: probe.uncachedIn + admission.live.uncachedIn,
@@ -502,29 +649,54 @@ export async function runProbe(options: ProbeOptions): Promise<ProbeResult> {
       if (response.status >= 200 && response.status < 300) {
         if (!usage) {
           record.outcome = 'missing_usage';
-          return result({
-            ...emptyConclusion(
-              'missing_usage',
-              `HTTP ${response.status} without usage at level ${levelIndex}; stopped without inventing numbers`,
-            ),
-            belowLimit429,
-            belowThresholdSuccesses: maxSuccessfulInput > 0,
-            maxSuccessfulInput,
-            maxSuccessfulOutput,
-          });
+          return conclude(
+            'missing_usage',
+            `HTTP ${response.status} without usage at level ${levelIndex}; stopped without inventing numbers`,
+            false,
+            levelIndex,
+          );
         }
+
+        const observedRatio = built.contentChars / usage.prompt_tokens;
+        if (Number.isFinite(observedRatio) && observedRatio > 0.5 && observedRatio < 20) {
+          charsPerToken = observedRatio;
+        }
+
+        const uncachedIn = record.uncachedIn as number;
+        const out = record.out as number;
+        usedTokens += uncachedIn + out;
+        maxObservedUncachedIn = Math.max(maxObservedUncachedIn, uncachedIn);
+        maxObservedOutput = Math.max(maxObservedOutput, out);
+        probeWindow.add({ t: options.clock.now(), uncachedIn, out });
         const had429 = consecutive429 > 0;
-        record.outcome = 'success';
-        probeWindow.add({
-          t: options.clock.now(),
-          uncachedIn: record.uncachedIn as number,
-          out: record.out as number,
-        });
-        successes += 1;
         consecutive429 = 0;
+
+        if (!meetsThreshold(level, uncachedIn, out)) {
+          record.outcome = 'below_threshold';
+          if (usedTokens >= limits.maxTokens) {
+            return conclude(
+              'budget',
+              `token cap ${limits.maxTokens} reached at level ${levelIndex}`,
+              false,
+              levelIndex,
+            );
+          }
+          continue;
+        }
+
+        record.outcome = 'success';
+        successes += 1;
         if (had429) belowLimit429 = true;
-        maxSuccessfulInput = Math.max(maxSuccessfulInput, level.input);
-        maxSuccessfulOutput = Math.max(maxSuccessfulOutput, level.output);
+        maxSuccessfulUncachedIn = Math.max(maxSuccessfulUncachedIn, uncachedIn);
+        maxSuccessfulOutput = Math.max(maxSuccessfulOutput, out);
+        if (usedTokens >= limits.maxTokens) {
+          return conclude(
+            'budget',
+            `token cap ${limits.maxTokens} reached at level ${levelIndex}`,
+            false,
+            levelIndex,
+          );
+        }
         continue;
       }
 
@@ -532,57 +704,41 @@ export async function runProbe(options: ProbeOptions): Promise<ProbeResult> {
         record.outcome = 'rate_limited';
         consecutive429 += 1;
         if (consecutive429 >= limits.maxConsecutive429) {
-          return result({
-            kind: 'repeatable_limit',
-            tested: true,
-            level: levelIndex,
-            note: `two consecutive 429s at level ${levelIndex} (${level.input} input / ${level.output} output); ${successes} success(es) at this level`,
-            belowLimit429,
-            belowThresholdSuccesses: maxSuccessfulInput > 0,
-            maxSuccessfulInput,
-            maxSuccessfulOutput,
-          });
+          return conclude(
+            'repeatable_limit',
+            `two consecutive 429s at level ${levelIndex} (${level.input} input / ${level.output} output); ${successes} success(es) at this level`,
+            true,
+            levelIndex,
+          );
         }
         const wait = retryAfterMs ?? limits.defaultRetryAfterMs;
         if (options.clock.now() + wait > deadline) {
-          return result({
-            ...emptyConclusion(
-              'deadline',
-              `Retry-After ${wait}ms would pass the deadline at level ${levelIndex}`,
-            ),
-            belowLimit429,
-            belowThresholdSuccesses: maxSuccessfulInput > 0,
-            maxSuccessfulInput,
-            maxSuccessfulOutput,
-          });
+          return conclude(
+            'deadline',
+            `Retry-After ${wait}ms would pass the deadline at level ${levelIndex}`,
+            false,
+            levelIndex,
+          );
         }
         await options.clock.sleep(wait);
         continue;
       }
 
       record.outcome = 'capacity_error';
-      return result({
-        ...emptyConclusion(
-          'capacity_error',
-          `HTTP ${response.status} at level ${levelIndex}; capacity error, not a ceiling claim`,
-        ),
-        belowLimit429,
-        belowThresholdSuccesses: maxSuccessfulInput > 0,
-        maxSuccessfulInput,
-        maxSuccessfulOutput,
-      });
+      return conclude(
+        'capacity_error',
+        `HTTP ${response.status} at level ${levelIndex}; capacity error, not a ceiling claim`,
+        false,
+        levelIndex,
+      );
     }
   }
 
-  return result({
-    kind: 'completed',
-    tested: true,
-    note: belowLimit429
-      ? 'all levels completed; a 429 was seen but was not repeatable, so it is not a ceiling claim'
-      : 'all levels completed with the required successes; no repeatable limit observed',
-    belowLimit429,
-    belowThresholdSuccesses: maxSuccessfulInput > 0,
-    maxSuccessfulInput,
-    maxSuccessfulOutput,
-  });
+  return conclude(
+    'completed',
+    belowLimit429
+      ? 'all levels reached their actual-token thresholds; a 429 was seen but was not repeatable, so it is not a ceiling claim'
+      : 'all levels reached their actual-token thresholds; no repeatable limit observed',
+    true,
+  );
 }

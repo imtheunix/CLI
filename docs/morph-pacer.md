@@ -107,12 +107,26 @@ Check it with `systemctl --user status morph-pacer` and `curl http://127.0.0.1:8
 config or defaults. It is offline by default: a dry run performs no provider request, no API-key lookup and no live
 usage lookup, and the default transport throws instead of reaching the network.
 
-The probe sends synthetic prompts only, one outstanding request at a time, with no transport retries. Before every
-live call it reads `GET http://127.0.0.1:8198/pacer/usage` (bounded timeout) and admits only when the live window plus
-the probe's own sliding-60s window plus the planned level fits under the assumed caps (240,000 uncached input /
-32,000 output by default). A missing usage response, an unavailable live-admission state or a failed load guard
-stops the run; failed or usage-less responses never invent tokens. The output JSON keeps `observed` (actual window
-values) separate from `assumedCaps` and reports only tested conclusions.
+The probe sends synthetic prompts only, one outstanding request at a time, with no transport retries. It runs two
+separate sweeps: output first (128 -> 512 -> 2048 actual completion tokens with at most 2,000 actual uncached input),
+then input (50,000 -> 100,000 -> 200,000 actual uncached input with a fixed 128 actual completion). A level succeeds
+only when the provider's returned usage meets its actual-token threshold. Planned characters, `max_tokens` and the
+planned level are never counted as measured success. A cached or short-finished response is `below_threshold` and
+inconclusive, never a capacity claim.
+
+Every request body is wholly unique (deterministic filler with a fresh seed, not a repeated body with a nonce
+prefix), so uncached input is genuinely exercised. The character-to-token ratio is calibrated from the provider's
+actual `prompt_tokens` after each response instead of a guessed 4 chars/token. Output levels ask for a deterministic
+long-form counting sequence rather than `OK`, so real completion volume is generated.
+
+Before every live call it reads `GET http://127.0.0.1:8198/pacer/usage` (bounded timeout) and admits only when the
+live window plus the probe's own sliding-60s window plus the level's worst-case reservation fits under the assumed
+caps (240,000 uncached input / 32,000 output by default). A missing usage response, an unavailable live-admission
+state or a failed load guard stops the run; failed or usage-less responses never invent tokens. The run also stops
+at a finite deadline, call cap, actual-token cap, attempt cap per level, or two consecutive 429s. The output JSON
+keeps `observed` (actual window values) separate from `assumedCaps`, reports actual observed and successful maxima,
+and marks a run `completed` only when every level met its actual-token threshold; otherwise it is `inconclusive` or
+a specific safe stop.
 
 Run the default dry run:
 
@@ -127,7 +141,9 @@ Run it live only when the hub explicitly gates it. The command needs both `--liv
 MORPH_PROBE_ALLOW_LIVE=1 npm run probe:morph -- --live --model morph-dsv41flash-1017
 ```
 
-Use `--levels input:output,...` to change the levels and `--max-total-ms` to shorten the hard deadline.
+Explicit finite controls: `--mode output|input|all`, `--levels sweep:input:output,...` (for example
+`output:2000:128,input:50000:128`), `--max-total-ms`, `--max-calls`, `--max-tokens`,
+`--successes-per-level`, `--max-attempts-per-level`, `--caps-in` and `--caps-out`.
 
 ## Guarded ceiling probe
 
