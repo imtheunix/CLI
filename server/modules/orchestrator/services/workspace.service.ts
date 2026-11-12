@@ -252,6 +252,32 @@ export async function hasCommitsAhead(worktreePath: string, baseBranch: string):
   return result.code === 0 && Number(result.stdout.trim()) > 0;
 }
 
+/**
+ * Used by the jobs service's cancel and the cleanup service: pushes the job's
+ * branch to origin when origin does not already have that exact commit. It
+ * pushes the branch ref, not HEAD, so a rebase in progress cannot publish a
+ * half-rebased tree. A missing remote branch is pushed too. Returns the push
+ * failure instead of throwing, so the caller can refuse cancellation or keep
+ * the worktree.
+ */
+export async function pushBranchIfDiverged(worktreePath: string, branch: string): Promise<{ pushed: boolean; error?: string }> {
+  const local = await git(worktreePath, 'rev-parse', '--verify', '--quiet', `refs/heads/${branch}`);
+  if (local.code !== 0) return { pushed: false, error: `cannot resolve branch ${branch}` };
+  const localHead = local.stdout.trim();
+  const remote = await git(worktreePath, 'ls-remote', '--exit-code', '--heads', 'origin', `refs/heads/${branch}`);
+  if (remote.code !== 0 && remote.code !== 2) {
+    return { pushed: false, error: `git ls-remote origin ${branch} failed: ${tail(remote.stderr, 10)}` };
+  }
+  if (remote.code === 0) {
+    // ls-remote is authoritative for the remote tip; a push race is still caught by the push itself.
+    const remoteHead = remote.stdout.trim().split(/\s+/)[0];
+    if (remoteHead === localHead) return { pushed: false };
+  }
+  const pushed = await git(worktreePath, 'push', 'origin', `refs/heads/${branch}:refs/heads/${branch}`);
+  if (pushed.code !== 0) return { pushed: false, error: `git push origin ${branch} failed: ${tail(pushed.stderr, 20)}` };
+  return { pushed: true };
+}
+
 /** Used by the jobs service: whether the worktree has uncommitted changes. */
 export async function isDirty(worktreePath: string): Promise<boolean> {
   const result = await git(worktreePath, 'status', '--porcelain');

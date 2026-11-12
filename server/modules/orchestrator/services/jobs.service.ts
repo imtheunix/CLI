@@ -61,6 +61,7 @@ import {
   isGitRepository,
   listGitRepositories,
   prepareWorktree,
+  pushBranchIfDiverged,
   resolveBaseBranch,
   resolveMainCheckout,
 } from './workspace.service.js';
@@ -272,7 +273,7 @@ export function createJobsService(deps: {
   /** Cancellation also stops this job's slotless automatic reviewer, when one is running. */
   abortRefutation?: (job: OrchestratorJobRow) => void;
   /** The CI/CD queue's own cancel: stops a running step by its tracked process and takes the job out of the queue. */
-  withdrawFromMergeQueue?: (job: OrchestratorJobRow) => Promise<{ cancelled: boolean; reason?: string }>;
+  withdrawFromMergeQueue?: (job: OrchestratorJobRow, options: { noPush?: boolean }) => Promise<{ cancelled: boolean; reason?: string }>;
 }) {
   const now = deps.now ?? (() => new Date());
   const morphUsage = deps.morphUsage ?? createMorphUsageService({ config: deps.config, now });
@@ -994,11 +995,22 @@ export function createJobsService(deps: {
      * slot and leaves the CI/CD queue; branch and session are kept; a clean worktree is removed after the session stops.
      * Before the push the queue stops the step it is running; from the push on the job is left to merge.
      */
-    async cancel(id: string): Promise<OrchestratorJobView> {
+    async cancel(id: string, options: { noPush?: boolean } = {}): Promise<OrchestratorJobView> {
       const job = orchestratorJobsDb.get(id);
       if (!job) throw new AppError(`Job ${id} was not found`, { code: 'JOB_NOT_FOUND', statusCode: 404 });
+      const noPush = options.noPush === true;
+      // Preserve committed work before anything can remove the worktree. A job already pushing is left to merge.
+      if (!noPush && !['push', 'deploy', 'merged'].includes(job.merge_step) && job.branch && existsSync(job.worktree_path)) {
+        const pushed = await pushBranchIfDiverged(job.worktree_path, job.branch);
+        if (pushed.error) {
+          throw new AppError(
+            `Job ${id} was not cancelled: its branch ${job.branch} could not be pushed to origin (${pushed.error}). The worktree is kept.`,
+            { code: 'JOB_PUSH_FAILED', statusCode: 409 },
+          );
+        }
+      }
       if (['queued', 'rebase', 'check', 'push', 'deploy', 'merged'].includes(job.merge_step)) {
-        const withdrawn = await deps.withdrawFromMergeQueue?.(job);
+        const withdrawn = await deps.withdrawFromMergeQueue?.(job, { noPush });
         if (withdrawn) {
           if (!withdrawn.cancelled) {
             throw new AppError(withdrawn.reason ?? `Job ${id} is already in the CI/CD queue (${job.merge_step})`, { code: 'JOB_MERGING', statusCode: 409 });
@@ -1007,12 +1019,12 @@ export function createJobsService(deps: {
           throw new AppError(`Job ${id} is already pushing; it will merge`, { code: 'JOB_MERGING', statusCode: 409 });
         } else {
           // No queue wired (a service used on its own): a job before the push has no process to stop.
-          orchestratorJobsDb.update(id, { state: 'cancelled', merge_step: 'none', in_turn: 0 });
+          orchestratorJobsDb.update(id, { state: 'cancelled', merge_step: 'none', in_turn: 0, cancel_no_push: noPush ? 1 : 0 });
           orchestratorJobsDb.recordMergeStep(id, 'cancelled', now().toISOString(), 'tjob cancel');
           appendHubEvent({ jobId: id, state: 'cancelled', title: job.title, reason: `cancelled from the CI/CD queue at ${job.merge_step}; branch kept` });
         }
       } else {
-        orchestratorJobsDb.update(id, { state: 'cancelled', merge_step: 'none', in_turn: 0 });
+        orchestratorJobsDb.update(id, { state: 'cancelled', merge_step: 'none', in_turn: 0, cancel_no_push: noPush ? 1 : 0 });
       }
       // Persist cancellation first: a late verdict is superseded even while the provider interrupt is in flight.
       try {
@@ -1075,7 +1087,7 @@ export function createJobsService(deps: {
             : `cleanup:${current.id}:manual:${now().toISOString()}`;
           const ran = await outbox.run({ key, jobId: current.id, kind: 'cleanup', replay: 'safe', blocking: true }, async () => {
             const result = await cleanupJob(current, deps.config(), false);
-            if (result.status.startsWith('worktree removal failed')) throw new Error(result.status);
+            if (result.status.startsWith('worktree removal failed') || result.status.startsWith('branch push failed')) throw new Error(result.status);
             return result;
           });
           const outcome = ran.status === 'ran' ? ran.value : { id: current.id, status: ran.reason === 'done' ? 'cleaned before a restart' : 'cleanup in progress' };

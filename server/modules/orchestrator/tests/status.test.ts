@@ -50,6 +50,7 @@ function job(overrides: Partial<OrchestratorJobRow> & Pick<OrchestratorJobRow, '
     limit_recovery: null,
     backend_history: null,
     title_history: null,
+    cancel_no_push: 0,
     created_at: sqliteAgo(2 * HOUR),
     updated_at: sqliteAgo(MINUTE),
     ...overrides,

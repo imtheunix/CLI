@@ -550,7 +550,7 @@ export function createMergeQueueService(deps: {
      * started), take it out of the queue and keep its branch. A push cannot be undone safely, so from `push` on
      * the job is left to merge.
      */
-    async cancel(job: OrchestratorJobRow): Promise<{ cancelled: boolean; reason?: string }> {
+    async cancel(job: OrchestratorJobRow, options: { noPush?: boolean } = {}): Promise<{ cancelled: boolean; reason?: string }> {
       if (['push', 'deploy', 'merged'].includes(job.merge_step)) {
         return { cancelled: false, reason: `Job ${job.id} is already pushing; it will merge` };
       }
@@ -571,7 +571,8 @@ export function createMergeQueueService(deps: {
       if (step === 'rebase') {
         try { await git(job.worktree_path, 'rebase', '--abort'); } catch { /* no rebase in progress */ }
       }
-      orchestratorJobsDb.update(job.id, { state: 'cancelled', merge_step: 'none', in_turn: 0, last_error: null });
+      // State and the --no-push override land in one UPDATE: a crash cannot leave a cancelled job that cleanup would push.
+      orchestratorJobsDb.update(job.id, { state: 'cancelled', merge_step: 'none', in_turn: 0, last_error: null, cancel_no_push: options.noPush === true ? 1 : 0 });
       orchestratorJobsDb.recordMergeStep(job.id, 'cancelled', new Date(now()).toISOString(), 'tjob cancel');
       appendHubEvent({ jobId: job.id, state: 'cancelled', title: job.title, reason: `cancelled from the CI/CD queue at ${step}; branch kept` });
       return { cancelled: true };

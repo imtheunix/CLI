@@ -205,7 +205,11 @@ export function createOrchestratorRouter(services: {
   }));
 
   router.post('/:id/cancel', asyncHandler(async (req, res) => {
-    res.json(createApiSuccessResponse({ job: await services.jobs.cancel(String(req.params.id)) }));
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    if (body.noPush !== undefined && typeof body.noPush !== 'boolean') {
+      throw new AppError('noPush must be a boolean', { code: 'INVALID_REQUEST_BODY', statusCode: 400 });
+    }
+    res.json(createApiSuccessResponse({ job: await services.jobs.cancel(String(req.params.id), { noPush: body.noPush === true }) }));
   }));
 
   router.post('/:id/resume', asyncHandler(async (req, res) => {

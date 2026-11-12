@@ -521,6 +521,12 @@ const addOrchestratorJobTitleHistoryColumn = (db: Database): void => {
   addColumnToTableIfNotExists(db, 'orchestrator_jobs', columnNames, 'title_history', 'TEXT');
 };
 
+/** Jobs from before `--no-push` existed have no override; 0 means cleanup may push the branch (the new default). */
+const addOrchestratorJobCancelNoPushColumn = (db: Database): void => {
+  const columnNames = getTableInfo(db, 'orchestrator_jobs').map((column) => column.name);
+  addColumnToTableIfNotExists(db, 'orchestrator_jobs', columnNames, 'cancel_no_push', 'INTEGER NOT NULL DEFAULT 0');
+};
+
 /** Jobs from before automatic review have not started one; nullable results stay NULL. */
 const addOrchestratorJobReviewColumns = (db: Database): void => {
   const columnNames = getTableInfo(db, 'orchestrator_jobs').map((column) => column.name);
@@ -667,6 +673,7 @@ export const runMigrations = (db: Database) => {
     addOrchestratorJobLimitRecoveryColumns(db);
     addOrchestratorJobBackendHistoryColumn(db);
     addOrchestratorJobTitleHistoryColumn(db);
+    addOrchestratorJobCancelNoPushColumn(db);
     addOrchestratorJobReviewColumns(db);
     db.exec(RUNNING_TURNS_TABLE_SCHEMA_SQL);
     db.exec(ORCHESTRATOR_EFFECTS_TABLE_SCHEMA_SQL);

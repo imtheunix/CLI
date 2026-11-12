@@ -6,7 +6,7 @@ import type { OrchestratorJobRow } from '@/modules/database/index.js';
 import { pruneJobCheckpoints, runGitCommand } from '@/modules/worktrees/index.js';
 
 import type { OrchestratorConfig } from './orchestrator-config.service.js';
-import { runCommand } from './workspace.service.js';
+import { pushBranchIfDiverged, runCommand } from './workspace.service.js';
 
 /** Untracked files a job's agent may leave as live state (a TSGE arena ledger was lost to a cleanup on 2026-11-07). */
 const LIVE_STATE_EXTENSIONS = ['.sqlite', '.sqlite-wal', '.db', '.jsonl'] as const;
@@ -115,6 +115,12 @@ export async function cleanupJob(
         console.warn(`[Orchestrator] Cleanup ${job.id}: live-state move failed`, error);
         return result(`live-state move failed (${error instanceof Error ? error.message : String(error)}); kept`);
       }
+    }
+    // A commit can land after cancellation (an abort race) and before this removal: push the branch again,
+    // unless the person explicitly cancelled with --no-push. A failed push keeps the worktree.
+    if (job.state === 'cancelled' && !job.cancel_no_push && job.branch) {
+      const pushed = await pushBranchIfDiverged(job.worktree_path, job.branch);
+      if (pushed.error) return result(`branch push failed (${pushed.error}); kept`);
     }
     const removed = await runCommand('git', ['worktree', 'remove', '--force', job.worktree_path], { cwd: job.repo_path });
     if (removed.code !== 0) return result(`worktree removal failed: ${removed.stderr.trim()}`);

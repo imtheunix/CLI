@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -13,6 +13,8 @@ type TjobResult = {
   status: number | null;
   stdout: string;
   stderr: string;
+  /** The arguments the script passed to curl, one per line. */
+  curlArgs: string;
 };
 
 /**
@@ -29,10 +31,12 @@ function runTjob(args: string[], options: { body?: string; curlExit?: number } =
     writeFileSync(path.join(home, '.cloudcli', 'local-server.json'), JSON.stringify({ url: 'http://127.0.0.1:9' }));
     writeFileSync(path.join(home, '.cloudcli', 'orchestrator.token'), 'test-token\n');
     const fakeCurl = path.join(bin, 'curl');
+    const argsFile = path.join(root, 'curl-args');
     writeFileSync(
       fakeCurl,
       [
         '#!/usr/bin/env bash',
+        'printf \'%s\\n\' "$@" > "$TJARGS"',
         'cat >/dev/null',
         'if [ -n "${TJBODY:-}" ]; then printf \'%s\' "$TJBODY"; fi',
         'if [ "${TJEXIT:-0}" -ne 0 ]; then echo "curl: (${TJEXIT}) fake transport failure" >&2; fi',
@@ -50,9 +54,15 @@ function runTjob(args: string[], options: { body?: string; curlExit?: number } =
         PATH: `${bin}:${process.env.PATH ?? ''}`,
         TJBODY: options.body ?? '',
         TJEXIT: String(options.curlExit ?? 0),
+        TJARGS: argsFile,
       },
     });
-    return { status: result.status, stdout: result.stdout, stderr: result.stderr };
+    return {
+      status: result.status,
+      stdout: result.stdout,
+      stderr: result.stderr,
+      curlArgs: existsSync(argsFile) ? readFileSync(argsFile, 'utf8') : '',
+    };
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -342,4 +352,30 @@ test('tjob ls exits nonzero when the transport fails', () => {
   const result = runTjob(['ls'], { curlExit: 7 });
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /fake transport failure/);
+});
+
+const cancelBody = JSON.stringify({
+  success: true,
+  data: { job: { id: 'j1', title: 'Cancelled job', state: 'cancelled', merge_step: 'none' } },
+});
+
+test('tjob cancel posts noPush false by default', () => {
+  const result = runTjob(['cancel', 'j1'], { body: cancelBody });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.curlArgs, /\{"noPush":false\}/);
+});
+
+test('tjob cancel --no-push posts noPush true', () => {
+  const result = runTjob(['cancel', 'j1', '--no-push'], { body: cancelBody });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.curlArgs, /\{"noPush":true\}/);
+});
+
+test('tjob cancel rejects an unknown flag and a missing id', () => {
+  const unknown = runTjob(['cancel', 'j1', '--push'], { body: cancelBody });
+  assert.equal(unknown.status, 2);
+  assert.match(unknown.stderr, /usage: tjob cancel <id> \[--no-push\]/);
+  const missing = runTjob(['cancel'], { body: cancelBody });
+  assert.equal(missing.status, 2);
+  assert.match(missing.stderr, /usage: tjob cancel <id> \[--no-push\]/);
 });

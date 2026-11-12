@@ -195,6 +195,16 @@ test('tjob hub use refuses an unknown session; hub/new refuses an unknown provid
   });
 });
 
+test('tjob cancel route refuses a non-boolean noPush with INVALID_REQUEST_BODY/400', async () => {
+  await withHubServer(async ({ baseUrl }) => {
+    const refused = await post(baseUrl, '/j1/cancel', { noPush: 'true' });
+    const error = errorOf(refused.status, refused.body);
+    assert.equal(error.status, 400);
+    assert.equal(error.code, 'INVALID_REQUEST_BODY');
+    assert.match(error.message, /noPush must be a boolean/);
+  });
+});
+
 test('tjob hub use refuses to rewrite an invalid orchestrator.json instead of dropping its settings', async () => {
   await withHubServer(async ({ baseUrl, configFile }) => {
     const created = await post(baseUrl, '/hub/new', { provider: 'opencode', model: 'morph/morph-kimik31', cwd: tmpdir() });

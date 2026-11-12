@@ -175,6 +175,8 @@ CREATE TABLE IF NOT EXISTS orchestrator_jobs (
     backend_history TEXT,
     -- JSON [{at, from, to}]: title changes made with tjob rename, oldest first.
     title_history TEXT,
+    -- 1 when the person cancelled with tjob cancel --no-push: cleanup must not push the branch.
+    cancel_no_push INTEGER NOT NULL DEFAULT 0,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );

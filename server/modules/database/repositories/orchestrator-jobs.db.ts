@@ -98,6 +98,8 @@ export type OrchestratorJobRow = {
   backend_history: string | null;
   /** JSON array of OrchestratorTitleChange; read it with `readTitleHistory`. */
   title_history: string | null;
+  /** 1 when `tjob cancel --no-push` asked cleanup not to push the branch. */
+  cancel_no_push: number;
   created_at: string;
   updated_at: string;
 };
@@ -106,13 +108,13 @@ type JobPatch = Partial<Pick<OrchestratorJobRow,
   'backend' | 'model' | 'session_id' | 'state' | 'in_turn' | 'merge_step' | 'merge_attempts'
   | 'pushed_sha' | 'deploy_waiting_since' | 'last_error' | 'base_branch'
   | 'review_step' | 'review_verdict' | 'review_risk' | 'review_tier' | 'review_round' | 'review_head_sha' | 'review_session_id'
-  | 'failure_class' | 'resume_at' | 'limit_recovery' | 'backend_history' | 'title' | 'title_history'>>;
+  | 'failure_class' | 'resume_at' | 'limit_recovery' | 'backend_history' | 'title' | 'title_history' | 'cancel_no_push'>>;
 
 const PATCHABLE_COLUMNS: Array<keyof JobPatch> = [
   'backend', 'model', 'session_id', 'state', 'in_turn', 'merge_step', 'merge_attempts',
   'pushed_sha', 'deploy_waiting_since', 'last_error', 'base_branch',
   'review_step', 'review_verdict', 'review_risk', 'review_tier', 'review_round', 'review_head_sha', 'review_session_id',
-  'failure_class', 'resume_at', 'limit_recovery', 'backend_history', 'title', 'title_history',
+  'failure_class', 'resume_at', 'limit_recovery', 'backend_history', 'title', 'title_history', 'cancel_no_push',
 ];
 
 /** Used by the Orchestrator's views: a job's backend handovers, oldest first. */
