@@ -1,10 +1,13 @@
 # Full CLI test gate in clean Forgejo CI
 
-The full CLI gate now runs green on the clean `archsv` Forgejo runner.
+The full CLI gate ran green on the clean `archsv` Forgejo runner against an
+older head. This workflow and report were relanded onto current `main`; the run
+below is historical evidence only, not proof that current `main` is green. The
+CI/CD queue reruns the same gate on the landing commit.
 
 - Run: `1244` (run number `4` in the repo)
 - Link: http://127.0.0.1:3000/imtheunix/CLI/actions/runs/4
-- Commit: `f8e25461b2d778e9f013d50405428f29e6f766f5` (`ci(cli): stub LABS control room for clean runner tests`)
+- Head: `f8e25461b2d778e9f013d50405428f29e6f766f5` (`ci(cli): stub LABS control room for clean runner tests`) — an older head from the cancelled `9dd184ab` job, **not current `main`**
 - Branch: `feature/cli-full-test-gate-runs-in-clean-forgejo-9dd184ab`
 - Status: success, 2026-11-11T20:06:59Z → 2026-11-11T20:11:48Z (289 s)
 
@@ -25,6 +28,8 @@ env -u CLAUDE_CLI_PATH -u CLAUDE_CODE_EXECUTABLE -u CLAUDE_CODE_EXECPATH \
 `LC_ALL=C`, and `TZ=UTC`.
 
 ## Results
+
+At the older head `f8e25461` (not current `main`):
 
 | Suite | Tests | Passed | Failed | Skipped |
 | --- | ---: | ---: | ---: | ---: |
