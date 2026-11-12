@@ -4,8 +4,10 @@ import {
   DEFAULT_LIVE_USAGE_URL,
   DEFAULT_PROBE_CAPS,
   DEFAULT_PROBE_LEVELS,
+  DEFAULT_PROBE_LIMITS,
   MORPH_CHAT_COMPLETIONS_URL,
   runProbe,
+  type ProbeCaps,
   type ProbeLevel,
 } from './probe.js';
 
@@ -15,15 +17,46 @@ function arg(name: string): string | undefined {
   return process.argv[index + 1];
 }
 
+function numberArg(name: string, fallback: number): number {
+  const raw = arg(name);
+  if (raw === undefined) return fallback;
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new Error(`invalid ${name}: ${raw}`);
+  }
+  return value;
+}
+
 function parseLevels(raw: string | undefined): ProbeLevel[] | undefined {
   if (!raw) return undefined;
   return raw.split(',').map((part) => {
-    const [input, output] = part.split(':').map(Number);
-    if (!Number.isFinite(input) || !Number.isFinite(output) || input <= 0 || output <= 0) {
-      throw new Error(`invalid level "${part}", expected input:output`);
+    const [mode, target, companion] = part.split(':');
+    if (mode !== 'input' && mode !== 'output') {
+      throw new Error(
+        `invalid level "${part}", expected mode:target:companion with mode input|output`,
+      );
     }
-    return { input, output };
+    const targetValue = Number(target);
+    const companionValue = Number(companion);
+    if (
+      !Number.isFinite(targetValue) ||
+      !Number.isFinite(companionValue) ||
+      targetValue <= 0 ||
+      companionValue <= 0
+    ) {
+      throw new Error(`invalid level "${part}", expected positive mode:target:companion`);
+    }
+    return { mode, target: targetValue, companion: companionValue };
   });
+}
+
+function parseCaps(raw: string | undefined): ProbeCaps | undefined {
+  if (!raw) return undefined;
+  const [uncachedIn, out] = raw.split(':').map(Number);
+  if (!Number.isFinite(uncachedIn) || !Number.isFinite(out) || uncachedIn <= 0 || out <= 0) {
+    throw new Error(`invalid caps "${raw}", expected uncachedIn:out`);
+  }
+  return { uncachedIn, out };
 }
 
 const live = process.argv.includes('--live');
@@ -40,10 +73,27 @@ const result = await runProbe({
   endpoint: arg('--endpoint') ?? MORPH_CHAT_COMPLETIONS_URL,
   usageUrl: arg('--usage-url') ?? DEFAULT_LIVE_USAGE_URL,
   apiKeyFile: arg('--api-key-file') ?? DEFAULT_API_KEY_FILE,
-  caps: DEFAULT_PROBE_CAPS,
+  caps: parseCaps(arg('--caps')) ?? DEFAULT_PROBE_CAPS,
   levels: parseLevels(arg('--levels')) ?? DEFAULT_PROBE_LEVELS,
   limits: {
-    maxTotalMs: Number(arg('--max-total-ms') ?? 20 * 60_000),
+    maxTotalMs: numberArg('--max-total-ms', DEFAULT_PROBE_LIMITS.maxTotalMs),
+    successesPerLevel: numberArg(
+      '--successes-per-level',
+      DEFAULT_PROBE_LIMITS.successesPerLevel,
+    ),
+    attemptsPerLevel: numberArg(
+      '--attempts-per-level',
+      DEFAULT_PROBE_LIMITS.attemptsPerLevel,
+    ),
+    maxCalls: numberArg('--max-calls', DEFAULT_PROBE_LIMITS.maxCalls),
+    maxInputTokens: numberArg(
+      '--max-input-tokens',
+      DEFAULT_PROBE_LIMITS.maxInputTokens,
+    ),
+    maxOutputTokens: numberArg(
+      '--max-output-tokens',
+      DEFAULT_PROBE_LIMITS.maxOutputTokens,
+    ),
   },
 });
 
