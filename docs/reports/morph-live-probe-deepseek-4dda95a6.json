@@ -1,0 +1,346 @@
+{
+  "mode": "live",
+  "model": "morph-dsv41flash-1017",
+  "endpoint": "https://api.morphllm.com/v1/chat/completions",
+  "levels": [
+    {
+      "input": 60000,
+      "output": 8000
+    },
+    {
+      "input": 120000,
+      "output": 16000
+    },
+    {
+      "input": 240000,
+      "output": 32000
+    }
+  ],
+  "limits": {
+    "maxTotalMs": 1200000,
+    "successesPerLevel": 3,
+    "maxConsecutive429": 2,
+    "headroom": 1,
+    "pollMs": 1000,
+    "usageTimeoutMs": 2000,
+    "requestTimeoutMs": 120000,
+    "defaultRetryAfterMs": 1000
+  },
+  "assumedCaps": {
+    "uncachedIn": 240000,
+    "out": 32000
+  },
+  "calls": [
+    {
+      "level": 0,
+      "planned": {
+        "input": 60000,
+        "output": 8000
+      },
+      "model": "morph-dsv41flash-1017",
+      "status": 200,
+      "latencyMs": 2862,
+      "retryAfterMs": null,
+      "usage": {
+        "prompt_tokens": 53371,
+        "completion_tokens": 13
+      },
+      "uncachedIn": 49275,
+      "out": 13,
+      "occupancy": {
+        "probe": {
+          "uncachedIn": 0,
+          "out": 0
+        },
+        "live": {
+          "uncachedIn": 51325,
+          "out": 1196
+        },
+        "combined": {
+          "uncachedIn": 51325,
+          "out": 1196
+        }
+      },
+      "outcome": "success"
+    },
+    {
+      "level": 0,
+      "planned": {
+        "input": 60000,
+        "output": 8000
+      },
+      "model": "morph-dsv41flash-1017",
+      "status": 200,
+      "latencyMs": 1820,
+      "retryAfterMs": null,
+      "usage": {
+        "prompt_tokens": 53371,
+        "completion_tokens": 13
+      },
+      "uncachedIn": 53371,
+      "out": 13,
+      "occupancy": {
+        "probe": {
+          "uncachedIn": 49275,
+          "out": 13
+        },
+        "live": {
+          "uncachedIn": 51325,
+          "out": 1196
+        },
+        "combined": {
+          "uncachedIn": 100600,
+          "out": 1209
+        }
+      },
+      "outcome": "success"
+    },
+    {
+      "level": 0,
+      "planned": {
+        "input": 60000,
+        "output": 8000
+      },
+      "model": "morph-dsv41flash-1017",
+      "status": 200,
+      "latencyMs": 1821,
+      "retryAfterMs": null,
+      "usage": {
+        "prompt_tokens": 53371,
+        "completion_tokens": 13
+      },
+      "uncachedIn": 123,
+      "out": 13,
+      "occupancy": {
+        "probe": {
+          "uncachedIn": 102646,
+          "out": 26
+        },
+        "live": {
+          "uncachedIn": 51325,
+          "out": 1196
+        },
+        "combined": {
+          "uncachedIn": 153971,
+          "out": 1222
+        }
+      },
+      "outcome": "success"
+    },
+    {
+      "level": 1,
+      "planned": {
+        "input": 120000,
+        "output": 16000
+      },
+      "model": "morph-dsv41flash-1017",
+      "status": 200,
+      "latencyMs": 2282,
+      "retryAfterMs": null,
+      "usage": {
+        "prompt_tokens": 106704,
+        "completion_tokens": 13
+      },
+      "uncachedIn": 53456,
+      "out": 13,
+      "occupancy": {
+        "probe": {
+          "uncachedIn": 102769,
+          "out": 39
+        },
+        "live": {
+          "uncachedIn": 7005,
+          "out": 606
+        },
+        "combined": {
+          "uncachedIn": 109774,
+          "out": 645
+        }
+      },
+      "outcome": "success"
+    },
+    {
+      "level": 1,
+      "planned": {
+        "input": 120000,
+        "output": 16000
+      },
+      "model": "morph-dsv41flash-1017",
+      "status": 200,
+      "latencyMs": 3446,
+      "retryAfterMs": null,
+      "usage": {
+        "prompt_tokens": 106704,
+        "completion_tokens": 13
+      },
+      "uncachedIn": 52432,
+      "out": 13,
+      "occupancy": {
+        "probe": {
+          "uncachedIn": 53456,
+          "out": 13
+        },
+        "live": {
+          "uncachedIn": 0,
+          "out": 0
+        },
+        "combined": {
+          "uncachedIn": 53456,
+          "out": 13
+        }
+      },
+      "outcome": "success"
+    },
+    {
+      "level": 1,
+      "planned": {
+        "input": 120000,
+        "output": 16000
+      },
+      "model": "morph-dsv41flash-1017",
+      "status": 200,
+      "latencyMs": 3017,
+      "retryAfterMs": null,
+      "usage": {
+        "prompt_tokens": 106704,
+        "completion_tokens": 13
+      },
+      "uncachedIn": 208,
+      "out": 13,
+      "occupancy": {
+        "probe": {
+          "uncachedIn": 105888,
+          "out": 26
+        },
+        "live": {
+          "uncachedIn": 0,
+          "out": 0
+        },
+        "combined": {
+          "uncachedIn": 105888,
+          "out": 26
+        }
+      },
+      "outcome": "success"
+    },
+    {
+      "level": 2,
+      "planned": {
+        "input": 240000,
+        "output": 32000
+      },
+      "model": "morph-dsv41flash-1017",
+      "status": 200,
+      "latencyMs": 5110,
+      "retryAfterMs": null,
+      "usage": {
+        "prompt_tokens": 213371,
+        "completion_tokens": 13
+      },
+      "uncachedIn": 379,
+      "out": 13,
+      "occupancy": {
+        "probe": {
+          "uncachedIn": 0,
+          "out": 0
+        },
+        "live": {
+          "uncachedIn": 0,
+          "out": 0
+        },
+        "combined": {
+          "uncachedIn": 0,
+          "out": 0
+        }
+      },
+      "outcome": "success"
+    },
+    {
+      "level": 2,
+      "planned": {
+        "input": 240000,
+        "output": 32000
+      },
+      "model": "morph-dsv41flash-1017",
+      "status": 200,
+      "latencyMs": 2327,
+      "retryAfterMs": null,
+      "usage": {
+        "prompt_tokens": 213371,
+        "completion_tokens": 13
+      },
+      "uncachedIn": 379,
+      "out": 13,
+      "occupancy": {
+        "probe": {
+          "uncachedIn": 0,
+          "out": 0
+        },
+        "live": {
+          "uncachedIn": 0,
+          "out": 0
+        },
+        "combined": {
+          "uncachedIn": 0,
+          "out": 0
+        }
+      },
+      "outcome": "success"
+    },
+    {
+      "level": 2,
+      "planned": {
+        "input": 240000,
+        "output": 32000
+      },
+      "model": "morph-dsv41flash-1017",
+      "status": 200,
+      "latencyMs": 3046,
+      "retryAfterMs": null,
+      "usage": {
+        "prompt_tokens": 213371,
+        "completion_tokens": 13
+      },
+      "uncachedIn": 379,
+      "out": 13,
+      "occupancy": {
+        "probe": {
+          "uncachedIn": 0,
+          "out": 0
+        },
+        "live": {
+          "uncachedIn": 0,
+          "out": 0
+        },
+        "combined": {
+          "uncachedIn": 0,
+          "out": 0
+        }
+      },
+      "outcome": "success"
+    }
+  ],
+  "observed": {
+    "probeWindow": {
+      "uncachedIn": 379,
+      "out": 13
+    },
+    "liveWindow": {
+      "uncachedIn": 0,
+      "out": 0
+    },
+    "combined": {
+      "uncachedIn": 379,
+      "out": 13
+    }
+  },
+  "conclusion": {
+    "kind": "completed",
+    "tested": true,
+    "note": "all levels completed with the required successes; no repeatable limit observed",
+    "belowLimit429": false,
+    "belowThresholdSuccesses": true,
+    "maxSuccessfulInput": 240000,
+    "maxSuccessfulOutput": 32000
+  }
+}
