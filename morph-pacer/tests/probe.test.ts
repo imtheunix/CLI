@@ -653,3 +653,120 @@ test('the result never contains the API key or authorization header', async () =
   assert.ok(!output.includes(secret));
   assert.ok(!output.includes('authorization'));
 });
+
+test('a malformed live-usage window refuses admission before any provider request', async () => {
+  const malformedWindows: unknown[] = [
+    undefined,
+    null,
+    { uncached_in: null, out: 0 },
+    { uncached_in: '12', out: 0 },
+    { uncached_in: 0, out: Number.NaN },
+  ];
+  for (const window of malformedWindows) {
+    const clock = new FakeClock();
+    const { transport, calls } = scriptedTransport([ok(100, 20)]);
+    const result = await runProbe({
+      model: 'morph-test',
+      clock,
+      live: true,
+      apiKey: 'test-key',
+      levels: [{ sweep: 'output', input: 1_000, output: 10 }],
+      transport,
+      liveUsage: async () =>
+        ({ groups: { test: { models: ['morph-test'], window } } }) as never,
+    });
+
+    assert.equal(calls.length, 0, `no transport for window ${JSON.stringify(window)}`);
+    assert.equal(result.calls.length, 0);
+    assert.equal(result.conclusion.kind, 'live_usage_unavailable');
+    assert.equal(result.conclusion.tested, false);
+  }
+});
+
+test('negative usage is malformed and stops as missing_usage without eroding the window', async () => {
+  const responses = [ok(-1, 20), ok(100, -5), ok(100, 20, -3)];
+  for (const response of responses) {
+    const clock = new FakeClock();
+    const { transport, calls } = scriptedTransport([response]);
+    const result = await runProbe({
+      model: 'morph-test',
+      clock,
+      live: true,
+      apiKey: 'test-key',
+      levels: [{ sweep: 'input', input: 1_000, output: 10 }],
+      limits: { successesPerLevel: 1 },
+      caps: { uncachedIn: 1_000_000, out: 1_000_000 },
+      transport,
+      liveUsage: liveUsage(),
+    });
+
+    assert.equal(calls.length, 1);
+    assert.equal(result.calls[0].outcome, 'missing_usage');
+    assert.equal(result.calls[0].uncachedIn, null);
+    assert.equal(result.calls[0].out, null);
+    assert.deepEqual(result.observed.probeWindow, { uncachedIn: 0, out: 0 });
+    assert.equal(result.conclusion.kind, 'missing_usage');
+    assert.equal(result.conclusion.tested, false);
+  }
+});
+
+test('an exact-token final success completes instead of reporting budget', async () => {
+  const clock = new FakeClock();
+  const { transport, calls } = scriptedTransport([ok(30, 20)]);
+  const result = await runProbe({
+    model: 'morph-test',
+    clock,
+    live: true,
+    apiKey: 'test-key',
+    levels: [{ sweep: 'output', input: 1_000, output: 10 }],
+    limits: { successesPerLevel: 1, maxTokens: 50 },
+    transport,
+    liveUsage: liveUsage(),
+  });
+
+  assert.equal(calls.length, 1);
+  assert.equal(result.calls[0].outcome, 'success');
+  assert.equal(result.conclusion.kind, 'completed');
+  assert.equal(result.conclusion.tested, true);
+});
+
+test('an exact-token success still stops as budget when another call is needed', async () => {
+  const clock = new FakeClock();
+  const { transport, calls } = scriptedTransport([ok(30, 20)]);
+  const result = await runProbe({
+    model: 'morph-test',
+    clock,
+    live: true,
+    apiKey: 'test-key',
+    levels: [
+      { sweep: 'output', input: 1_000, output: 10 },
+      { sweep: 'output', input: 1_000, output: 20 },
+    ],
+    limits: { successesPerLevel: 1, maxTokens: 50 },
+    transport,
+    liveUsage: liveUsage(),
+  });
+
+  assert.equal(calls.length, 1);
+  assert.equal(result.conclusion.kind, 'budget');
+  assert.equal(result.conclusion.tested, false);
+});
+
+test('an exact-token success on the final level still stops as budget when more successes are needed', async () => {
+  const clock = new FakeClock();
+  const { transport, calls } = scriptedTransport([ok(30, 20)]);
+  const result = await runProbe({
+    model: 'morph-test',
+    clock,
+    live: true,
+    apiKey: 'test-key',
+    levels: [{ sweep: 'output', input: 1_000, output: 10 }],
+    limits: { successesPerLevel: 2, maxTokens: 50 },
+    transport,
+    liveUsage: liveUsage(),
+  });
+
+  assert.equal(calls.length, 1);
+  assert.equal(result.conclusion.kind, 'budget');
+  assert.equal(result.conclusion.tested, false);
+});

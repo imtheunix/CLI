@@ -494,9 +494,22 @@ export async function runProbe(options: ProbeOptions): Promise<ProbeResult> {
       }
       const group = findGroup(snapshot, options.model);
       if (!group) return { ok: false, reason: 'live_group_unavailable' };
+      const window = group.window as
+        | { uncached_in?: unknown; out?: unknown }
+        | null
+        | undefined;
+      if (
+        !window ||
+        typeof window.uncached_in !== 'number' ||
+        typeof window.out !== 'number' ||
+        !Number.isFinite(window.uncached_in) ||
+        !Number.isFinite(window.out)
+      ) {
+        return { ok: false, reason: 'live_usage_unavailable' };
+      }
       const liveTotals = {
-        uncachedIn: Number(group.window?.uncached_in ?? 0),
-        out: Number(group.window?.out ?? 0),
+        uncachedIn: window.uncached_in,
+        out: window.out,
       };
       const probe = probeWindow.totals(options.clock.now());
       const combined = {
@@ -657,6 +670,23 @@ export async function runProbe(options: ProbeOptions): Promise<ProbeResult> {
           );
         }
 
+        if (
+          usage.prompt_tokens < 0 ||
+          usage.completion_tokens < 0 ||
+          usage.cached_tokens < 0
+        ) {
+          record.outcome = 'missing_usage';
+          record.usage = null;
+          record.uncachedIn = null;
+          record.out = null;
+          return conclude(
+            'missing_usage',
+            `HTTP ${response.status} with negative usage at level ${levelIndex}; stopped without eroding the window`,
+            false,
+            levelIndex,
+          );
+        }
+
         const observedRatio = built.contentChars / usage.prompt_tokens;
         if (Number.isFinite(observedRatio) && observedRatio > 0.5 && observedRatio < 20) {
           charsPerToken = observedRatio;
@@ -690,12 +720,16 @@ export async function runProbe(options: ProbeOptions): Promise<ProbeResult> {
         maxSuccessfulUncachedIn = Math.max(maxSuccessfulUncachedIn, uncachedIn);
         maxSuccessfulOutput = Math.max(maxSuccessfulOutput, out);
         if (usedTokens >= limits.maxTokens) {
-          return conclude(
-            'budget',
-            `token cap ${limits.maxTokens} reached at level ${levelIndex}`,
-            false,
-            levelIndex,
-          );
+          const finalSuccess =
+            successes >= limits.successesPerLevel && levelIndex === levels.length - 1;
+          if (!finalSuccess) {
+            return conclude(
+              'budget',
+              `token cap ${limits.maxTokens} reached at level ${levelIndex}`,
+              false,
+              levelIndex,
+            );
+          }
         }
         continue;
       }
