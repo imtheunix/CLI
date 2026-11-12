@@ -17,6 +17,8 @@ mcp = FastMCP(
     "tribeira-recall",
     instructions=(
         "Search local code/docs/jobs/decisions/experiments and artifacts in one call. "
+        "When exploring unfamiliar code, start with one targeted recall call instead of shell searches; "
+        "then read only the selected source files for exact context. "
         "Use artifact references for large delegation outputs instead of pasting content."
     ),
 )
@@ -65,7 +67,12 @@ def _result_rows(results: list[dict]) -> list[dict]:
 @mcp.tool()
 @bounded_errors
 def recall(query: str, kinds: list[str] | None = None, repo: str | None = None, k: int = 5) -> str:
-    """Hybrid BM25+cosine search; <=k ranked snippets (<=200 tokens each), source and evidence."""
+    """Locate relevant local code, docs, jobs or lessons in one hybrid BM25+cosine call.
+
+    When the path is unknown, use this once before find/grep or broad file reads. Ask for the
+    function, error or task by name; optionally restrict kinds/repo. Returns <=k short snippets
+    with source locations and evidence. Read only the selected files afterward for full context.
+    """
     with _lock:
         _, search, _ = services()
         results = search.recall(query, kinds, repo, k)
@@ -75,7 +82,11 @@ def recall(query: str, kinds: list[str] | None = None, repo: str | None = None, 
 @mcp.tool()
 @bounded_errors
 def symbol(name: str, repo: str | None = None) -> str:
-    """Find a function/class/export definition location and signature without reading source files."""
+    """Resolve a known function/class/export name to its definition location and signature.
+
+    Prefer this to grep when you already know the symbol name; then read the identified file only
+    if implementation details are needed.
+    """
     with _lock:
         _, search, _ = services()
         rows = search.symbol(name, repo)
